@@ -14,7 +14,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::binance::{BinanceFetcher, BinanceRegion};
-use crate::data_fetch::{fetch_pipeline, Deposit};
+use crate::data_fetch::fetch_pipeline;
 #[cfg(feature = "private_ops")]
 use crate::private::PrivateOps;
 use crate::result::Result;

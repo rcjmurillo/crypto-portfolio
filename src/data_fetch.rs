@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::convert::From;
-use std::iter::{Extend, IntoIterator};
 use std::vec::Vec;
 
 use crate::binance::{BinanceFetcher, BinanceRegion};
@@ -13,9 +12,7 @@ use crate::tracker::{IntoOperations, Operation};
 use async_stream::stream;
 
 use async_trait::async_trait;
-use futures::future::{join_all, Future};
 use serde::Deserialize;
-use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt;
 
 #[async_trait]
@@ -126,32 +123,6 @@ impl From<&HashMap<String, String>> for Deposit {
             amount: data.get("amount").unwrap().parse::<f64>().unwrap(),
         }
     }
-}
-
-async fn await_in_chunks<T>(handles: Vec<T>, chunk_size: usize) -> Vec<Operation>
-where
-    T: Future<Output = Vec<Operation>>,
-{
-    let mut all_chunks = Vec::new();
-    let mut chunks = Vec::new();
-    let len = handles.len();
-    for (i, handle) in handles.into_iter().enumerate() {
-        chunks.push(handle);
-        if chunks.len() == chunk_size || i == len - 1 {
-            all_chunks.push(chunks);
-            chunks = Vec::new();
-        }
-    }
-
-    let mut ops = Vec::new();
-    for (_, chunk) in all_chunks.into_iter().enumerate() {
-        for result_ops in join_all(chunk).await {
-            ops.extend(result_ops);
-        }
-        // wait a little bit to not overwelm the API
-        sleep(Duration::from_millis(1000)).await;
-    }
-    ops
 }
 
 async fn ops_from_client<'a, T: ExchangeClient>(
