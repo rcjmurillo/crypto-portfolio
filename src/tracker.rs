@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub trait IntoOperations {
-    fn into_ops(&self) -> Vec<Operation>;
+    fn into_ops(self) -> Vec<Operation>;
 }
 
 #[derive(Debug, Clone)]

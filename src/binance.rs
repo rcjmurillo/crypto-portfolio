@@ -23,7 +23,7 @@ use sha2::Sha256;
 use tokio;
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 
-use crate::data_fetch::{self, ExchangeClient, TradeSide};
+use crate::data_fetch::{self, ExchangeClient, OperationStatus, TradeSide};
 use crate::errors::Error;
 use crate::result::Result;
 use crate::tracker::{IntoOperations, Operation};
@@ -160,6 +160,15 @@ pub struct BinanceFiatDeposit {
     platform_fee: f64,
 }
 
+impl From<BinanceFiatDeposit> for data_fetch::Deposit {
+    fn from(d: BinanceFiatDeposit) -> Self {
+        Self {
+            asset: "USD".to_string(), // fixme: grab the actual asset from the API
+            amount: d.amount,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct BinanceDepositResponse {
@@ -181,14 +190,14 @@ pub struct BinanceWithdraw {
     status: u16,
 }
 
-#[async_trait]
-impl IntoOperations for BinanceWithdraw {
-    fn into_ops(&self) -> Vec<Operation> {
-        vec![Operation {
-            asset: self.asset.clone(),
-            amount: -self.transaction_fee,
-            cost: 0.0,
-        }]
+impl From<BinanceWithdraw> for data_fetch::Withdraw {
+    fn from(w: BinanceWithdraw) -> Self {
+        Self {
+            asset: w.asset,
+            amount: w.amount,
+            time: w.apply_time,
+            fee: w.transaction_fee,
+        }
     }
 }
 
@@ -260,18 +269,17 @@ pub struct MarginBorrow {
     status: String,
 }
 
-#[async_trait]
-impl IntoOperations for MarginBorrow {
-    fn into_ops(&self) -> Vec<Operation> {
-        let mut ops = Vec::new();
-        if self.status == "CONFIRMED" {
-            ops.push(Operation {
-                asset: self.asset.to_string(),
-                amount: self.principal,
-                cost: 0.0,
-            });
+impl From<MarginBorrow> for data_fetch::Loan {
+    fn from(m: MarginBorrow) -> Self {
+        Self {
+            asset: m.asset,
+            amount: m.principal,
+            timestamp: m.timestamp,
+            status: match m.status.as_str() {
+                "CONFIRMED" => OperationStatus::Success,
+                _ => OperationStatus::Failed,
+            },
         }
-        ops
     }
 }
 
@@ -291,18 +299,18 @@ pub struct MarginRepay {
     tx_id: u64,
 }
 
-#[async_trait]
-impl IntoOperations for MarginRepay {
-    fn into_ops(&self) -> Vec<Operation> {
-        let mut ops = Vec::new();
-        if self.status == "CONFIRMED" {
-            ops.push(Operation {
-                asset: self.asset.to_string(),
-                amount: -self.amount,
-                cost: 0.0,
-            });
+impl From<MarginRepay> for data_fetch::Repay {
+    fn from(r: MarginRepay) -> Self {
+        Self {
+            asset: r.asset,
+            amount: r.amount,
+            interest: r.interest,
+            timestamp: r.timestamp,
+            status: match r.status.as_str() {
+                "CONFIRMED" => OperationStatus::Success,
+                _ => OperationStatus::Failed,
+            }
         }
-        ops
     }
 }
 
@@ -529,7 +537,7 @@ impl BinanceFetcher {
 
     pub async fn fetch_fiat_deposits(&self) -> Result<Vec<BinanceFiatDeposit>> {
         if let None = self.endpoints.fiat_deposits {
-            return Ok(vec![])
+            return Ok(vec![]);
         }
 
         let now = Utc::now();
@@ -921,7 +929,13 @@ impl BinanceFetcher {
 
 #[async_trait]
 impl ExchangeClient for BinanceFetcher {
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
+    type Trade = BinanceTrade;
+    type Loan = MarginBorrow;
+    type Repay = MarginRepay;
+    type Deposit = BinanceFiatDeposit;
+    type Withdraw = BinanceWithdraw;
+
+    async fn trades<T>(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -949,13 +963,10 @@ impl ExchangeClient for BinanceFetcher {
             .collect();
 
         //println!("fetching trades for {} pairs from binance", handles.len());
-        Ok(all_trades
-            .into_iter()
-            .map(|x| Box::new(data_fetch::Trade::from(x)) as Box<dyn IntoOperations>)
-            .collect())
+        Ok(all_trades)
     }
 
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
+    async fn margin_trades<T>(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -972,7 +983,7 @@ impl ExchangeClient for BinanceFetcher {
             }
         }
 
-        let all_trades: Vec<BinanceTrade> = await_chunks(handles, 15)
+        Ok(await_chunks(handles, 15)
             .await
             .into_iter()
             .filter_map(|trades_result| match trades_result {
@@ -980,15 +991,10 @@ impl ExchangeClient for BinanceFetcher {
                 Err(err) => panic!("could not get trades: {:?}", err),
             })
             .flatten()
-            .collect();
-
-        Ok(all_trades
-            .into_iter()
-            .map(|x| Box::new(data_fetch::Trade::from(x)) as Box<dyn IntoOperations>)
             .collect())
     }
 
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
+    async fn loans<T>(&self, symbols: &[String]) -> Result<Vec<MarginBorrow>> {
         let mut handles = Vec::new();
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1012,11 +1018,10 @@ impl ExchangeClient for BinanceFetcher {
                 Err(err) => panic!("could not get borrows: {:?}", err),
             })
             .flatten()
-            .map(|x| Box::new(x) as Box<dyn IntoOperations>)
             .collect())
     }
 
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
+    async fn repays<T>(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
         let mut handles = Vec::new();
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1040,26 +1045,19 @@ impl ExchangeClient for BinanceFetcher {
                 Err(err) => panic!("could not get repays: {:?}", err),
             })
             .flatten()
-            .map(|x| Box::new(x) as Box<dyn IntoOperations>)
             .collect())
     }
 
-    async fn deposits(&self, _: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
+    async fn deposits<T>(&self, _: &[String]) -> Result<Vec<BinanceFiatDeposit>> {
         // Ok(self.fetch_fiat_deposits()
         //     .await?
         //     .into_iter()
-        //     .map(|x| Box::new(x) as Box<dyn IntoOperations>)
         //     .collect())
         Ok(Vec::new())
     }
 
-    async fn withdraws(&self, _: &[String]) -> Result<Vec<Box<dyn IntoOperations>>> {
-        Ok(self
-            .fetch_withdraws()
-            .await?
-            .into_iter()
-            .map(|x| Box::new(x) as Box<dyn IntoOperations>)
-            .collect())
+    async fn withdraws<T>(&self, _: &[String]) -> Result<Vec<BinanceWithdraw>> {
+        Ok(self.fetch_withdraws().await?.into_iter().collect())
     }
 }
 

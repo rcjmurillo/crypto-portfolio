@@ -22,12 +22,35 @@ pub trait DataFetcher {
 
 #[async_trait]
 pub trait ExchangeClient {
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
-    async fn deposits(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
-    async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Box<dyn IntoOperations>>>;
+    type Trade;
+    type Loan;
+    type Repay;
+    type Deposit;
+    type Withdraw;
+
+    async fn trades<T>(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    where
+        T: From<Self::Trade> + IntoOperations;
+
+    async fn margin_trades<T>(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    where
+        T: From<Self::Trade> + IntoOperations;
+
+    async fn loans<T>(&self, symbols: &[String]) -> Result<Vec<Self::Loan>>
+    where
+        T: From<Self::Loan> + IntoOperations;
+
+    async fn repays<T>(&self, symbols: &[String]) -> Result<Vec<Self::Repay>>
+    where
+        T: From<Self::Repay> + IntoOperations;
+
+    async fn deposits<T>(&self, symbols: &[String]) -> Result<Vec<Self::Deposit>>
+    where
+        T: From<Self::Deposit> + IntoOperations;
+
+    async fn withdraws<T>(&self, symbols: &[String]) -> Result<Vec<Self::Withdraw>>
+    where
+        T: From<Self::Withdraw> + IntoOperations;
 }
 
 pub enum TradeSide {
@@ -50,7 +73,7 @@ pub struct Trade {
 
 #[async_trait]
 impl IntoOperations for Trade {
-    fn into_ops(&self) -> Vec<Operation> {
+    fn into_ops(self) -> Vec<Operation> {
         let mut ops = Vec::new();
         // determines if the first operation is going to increase or to decrease
         // the balance, then the second operation does the opposit.
@@ -97,6 +120,17 @@ pub struct Deposit {
     pub amount: f64,
 }
 
+#[async_trait]
+impl IntoOperations for Deposit {
+    fn into_ops(self) -> Vec<Operation> {
+        vec![Operation {
+            asset: self.asset,
+            amount: self.amount,
+            cost: 0.0,
+        }]
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct Withdraw {
     pub asset: String,
@@ -107,12 +141,64 @@ pub struct Withdraw {
 
 #[async_trait]
 impl IntoOperations for Withdraw {
-    fn into_ops(&self) -> Vec<Operation> {
+    fn into_ops(self) -> Vec<Operation> {
         vec![Operation {
             asset: self.asset.clone(),
             amount: -self.fee,
             cost: 0.0,
         }]
+    }
+}
+
+pub enum OperationStatus {
+    Success,
+    Failed,
+}
+
+pub struct Loan {
+    pub asset: String,
+    pub amount: f64,
+    pub timestamp: u64,
+    pub status: OperationStatus,
+}
+
+#[async_trait]
+impl IntoOperations for Loan {
+    fn into_ops(self) -> Vec<Operation> {
+        match self.status {
+            OperationStatus::Success => {
+                vec![Operation {
+                    asset: self.asset.clone(),
+                    amount: self.amount,
+                    cost: 0.0,
+                }]
+            }
+            OperationStatus::Failed => vec![],
+        }
+    }
+}
+
+pub struct Repay {
+    pub asset: String,
+    pub amount: f64,
+    pub interest: f64,
+    pub timestamp: u64,
+    pub status: OperationStatus,
+}
+
+#[async_trait]
+impl IntoOperations for Repay {
+    fn into_ops(self) -> Vec<Operation> {
+        match self.status {
+            OperationStatus::Success => {
+                vec![Operation {
+                    asset: self.asset,
+                    amount: -(self.amount + self.interest),
+                    cost: 0.0,
+                }]
+            }
+            OperationStatus::Failed => vec![],
+        }
     }
 }
 
@@ -125,23 +211,69 @@ impl From<&HashMap<String, String>> for Deposit {
     }
 }
 
-async fn ops_from_client<'a, T: ExchangeClient>(
-    c: &'a mut T,
-    symbols: &'a [String],
-) -> Vec<Box<dyn IntoOperations>> {
+async fn ops_from_client<'a, T>(c: &'a mut T, symbols: &'a [String]) -> Vec<Operation>
+where
+    T: ExchangeClient,
+    Trade: From<T::Trade>,
+    T::Trade: Into<Trade>,
+    Loan: From<T::Loan>,
+    T::Loan: Into<Loan>,
+    Repay: From<T::Repay>,
+    T::Repay: Into<Repay>,
+    Deposit: From<T::Deposit>,
+    T::Deposit: Into<Deposit>,
+    Withdraw: From<T::Withdraw>,
+    T::Withdraw: Into<Withdraw>,
+{
     let mut all_ops = Vec::new();
     println!("> fetching trades...");
-    all_ops.extend(c.trades(symbols).await.unwrap());
+    all_ops.extend(
+        c.trades::<Trade>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| Trade::from(t).into_ops()),
+    );
     println!("> fetching margin trades...");
-    all_ops.extend(c.margin_trades(symbols).await.unwrap());
+    all_ops.extend(
+        c.margin_trades::<Trade>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
     println!("> fetching loans...");
-    all_ops.extend(c.loans(symbols).await.unwrap());
+    all_ops.extend(
+        c.loans::<Loan>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
     println!("> fetching repays...");
-    all_ops.extend(c.repays(symbols).await.unwrap());
+    all_ops.extend(
+        c.repays::<Repay>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
     println!("> fetching fiat deposits...");
-    all_ops.extend(c.deposits(symbols).await.unwrap());
+    all_ops.extend(
+        c.deposits::<Deposit>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
     println!("> fetching coins withdraws...");
-    all_ops.extend(c.withdraws(symbols).await.unwrap());
+    all_ops.extend(
+        c.withdraws::<Withdraw>(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
     println!("> ALL DONE!!!");
     all_ops
 }
@@ -166,9 +298,7 @@ pub fn fetch_pipeline<'a>() -> impl StreamExt<Item = Result<Operation>> + 'a {
 
         println!("\nDONE getting operations...");
         for op in ops {
-            for x in op.into_ops() {
-                yield Ok(x);
-            }
+            yield Ok(op);
         }
 
         ()
