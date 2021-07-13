@@ -28,29 +28,29 @@ pub trait ExchangeClient {
     type Deposit;
     type Withdraw;
 
-    async fn trades<T>(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    async fn trades(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
     where
-        T: From<Self::Trade> + IntoOperations;
+        Self::Trade: Into<Trade>;
 
-    async fn margin_trades<T>(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
     where
-        T: From<Self::Trade> + IntoOperations;
+        Self::Trade: Into<Trade>;
 
-    async fn loans<T>(&self, symbols: &[String]) -> Result<Vec<Self::Loan>>
+    async fn loans(&self, symbols: &[String]) -> Result<Vec<Self::Loan>>
     where
-        T: From<Self::Loan> + IntoOperations;
+        Self::Loan: Into<Loan>;
 
-    async fn repays<T>(&self, symbols: &[String]) -> Result<Vec<Self::Repay>>
+    async fn repays(&self, symbols: &[String]) -> Result<Vec<Self::Repay>>
     where
-        T: From<Self::Repay> + IntoOperations;
+        Self::Repay: Into<Repay>;
 
-    async fn deposits<T>(&self, symbols: &[String]) -> Result<Vec<Self::Deposit>>
+    async fn deposits(&self, symbols: &[String]) -> Result<Vec<Self::Deposit>>
     where
-        T: From<Self::Deposit> + IntoOperations;
+        Self::Deposit: Into<Deposit>;
 
-    async fn withdraws<T>(&self, symbols: &[String]) -> Result<Vec<Self::Withdraw>>
+    async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Self::Withdraw>>
     where
-        T: From<Self::Withdraw> + IntoOperations;
+        Self::Withdraw: Into<Withdraw>;
 }
 
 pub enum TradeSide {
@@ -214,29 +214,24 @@ impl From<&HashMap<String, String>> for Deposit {
 async fn ops_from_client<'a, T>(c: &'a mut T, symbols: &'a [String]) -> Vec<Operation>
 where
     T: ExchangeClient,
-    Trade: From<T::Trade>,
     T::Trade: Into<Trade>,
-    Loan: From<T::Loan>,
     T::Loan: Into<Loan>,
-    Repay: From<T::Repay>,
     T::Repay: Into<Repay>,
-    Deposit: From<T::Deposit>,
     T::Deposit: Into<Deposit>,
-    Withdraw: From<T::Withdraw>,
     T::Withdraw: Into<Withdraw>,
 {
     let mut all_ops = Vec::new();
     println!("> fetching trades...");
     all_ops.extend(
-        c.trades::<Trade>(symbols)
+        c.trades(symbols)
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| Trade::from(t).into_ops()),
+            .flat_map(|t| t.into().into_ops()),
     );
     println!("> fetching margin trades...");
     all_ops.extend(
-        c.margin_trades::<Trade>(symbols)
+        c.margin_trades(symbols)
             .await
             .unwrap()
             .into_iter()
@@ -244,7 +239,7 @@ where
     );
     println!("> fetching loans...");
     all_ops.extend(
-        c.loans::<Loan>(symbols)
+        c.loans(symbols)
             .await
             .unwrap()
             .into_iter()
@@ -252,7 +247,7 @@ where
     );
     println!("> fetching repays...");
     all_ops.extend(
-        c.repays::<Repay>(symbols)
+        c.repays(symbols)
             .await
             .unwrap()
             .into_iter()
@@ -260,7 +255,7 @@ where
     );
     println!("> fetching fiat deposits...");
     all_ops.extend(
-        c.deposits::<Deposit>(symbols)
+        c.deposits(symbols)
             .await
             .unwrap()
             .into_iter()
@@ -268,7 +263,7 @@ where
     );
     println!("> fetching coins withdraws...");
     all_ops.extend(
-        c.withdraws::<Withdraw>(symbols)
+        c.withdraws(symbols)
             .await
             .unwrap()
             .into_iter()

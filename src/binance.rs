@@ -935,7 +935,7 @@ impl ExchangeClient for BinanceFetcher {
     type Deposit = BinanceFiatDeposit;
     type Withdraw = BinanceWithdraw;
 
-    async fn trades<T>(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
+    async fn trades(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -966,7 +966,7 @@ impl ExchangeClient for BinanceFetcher {
         Ok(all_trades)
     }
 
-    async fn margin_trades<T>(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
+    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -994,7 +994,7 @@ impl ExchangeClient for BinanceFetcher {
             .collect())
     }
 
-    async fn loans<T>(&self, symbols: &[String]) -> Result<Vec<MarginBorrow>> {
+    async fn loans(&self, symbols: &[String]) -> Result<Vec<MarginBorrow>> {
         let mut handles = Vec::new();
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1021,7 +1021,7 @@ impl ExchangeClient for BinanceFetcher {
             .collect())
     }
 
-    async fn repays<T>(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
+    async fn repays(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
         let mut handles = Vec::new();
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1048,7 +1048,7 @@ impl ExchangeClient for BinanceFetcher {
             .collect())
     }
 
-    async fn deposits<T>(&self, _: &[String]) -> Result<Vec<BinanceFiatDeposit>> {
+    async fn deposits(&self, _: &[String]) -> Result<Vec<BinanceFiatDeposit>> {
         // Ok(self.fetch_fiat_deposits()
         //     .await?
         //     .into_iter()
@@ -1056,7 +1056,7 @@ impl ExchangeClient for BinanceFetcher {
         Ok(Vec::new())
     }
 
-    async fn withdraws<T>(&self, _: &[String]) -> Result<Vec<BinanceWithdraw>> {
+    async fn withdraws(&self, _: &[String]) -> Result<Vec<BinanceWithdraw>> {
         Ok(self.fetch_withdraws().await?.into_iter().collect())
     }
 }
