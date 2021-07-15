@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::env;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use binance::api::Binance;
@@ -20,12 +20,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
-use tokio;
-use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Mutex;
 
 use crate::data_fetch::{self, ExchangeClient, OperationStatus, TradeSide};
 use crate::errors::Error;
 use crate::result::Result;
+use crate::sync::ValueLock;
 
 const AWAIT_CHUNK_SIZE: usize = 15;
 
@@ -325,35 +325,12 @@ pub struct Symbol {
 
 type Cache = HashMap<String, Bytes>;
 
-struct ApiLock {
-    entries: AsyncMutex<HashMap<(String, String), Arc<Semaphore>>>,
-}
-
-impl ApiLock {
-    fn new() -> Self {
-        Self {
-            entries: AsyncMutex::new(HashMap::new()),
-        }
-    }
-
-    async fn lock_for(&self, endpoint: &str, query: String) -> Result<OwnedSemaphorePermit> {
-        let key = (endpoint.to_string(), query.clone());
-        let mut entries = self.entries.lock().await;
-        if !entries.contains_key(&key) {
-            entries.insert(key, Arc::new(Semaphore::new(1)));
-        }
-        let key = (endpoint.to_string(), query);
-        let sem = entries.get(&key).unwrap();
-        Ok(sem.clone().acquire_owned().await.unwrap())
-    }
-}
-
 pub struct BinanceFetcher {
     market_client: Market,
     credentials: BinanceCredentials,
     region: BinanceRegion,
     endpoints: BinanceEndpoints,
-    api_lock: ApiLock,
+    api_lock: ValueLock<String>,
     domain: BinanceDomain,
     cache: Arc<Mutex<Cache>>,
 }
@@ -383,7 +360,7 @@ impl BinanceFetcher {
             credentials,
             region,
             endpoints: region.into(),
-            api_lock: ApiLock::new(),
+            api_lock: ValueLock::new(),
             domain: region.into(),
             cache: Arc::new(Mutex::new(Cache::new())),
         }
@@ -399,27 +376,21 @@ impl BinanceFetcher {
     ) -> Result<T> {
         let client = reqwest::Client::new();
 
+        let cache_key = match query {
+            Some(ref q) => format!("{}{}", endpoint, q),
+            None => endpoint.to_string()
+        };
         let _endpoint_lock;
         if cache {
             _endpoint_lock = self
                 .api_lock
-                .lock_for(endpoint, query.clone().unwrap_or("".to_string()))
+                .lock_for(cache_key.clone())
                 .await
                 .unwrap();
-        }
-        let cache_key = format!("{} {}", endpoint, query.as_ref().unwrap_or(&"".to_string()));
-        let b;
-        {
-            // the lock grabbed here must not live enough to reach the await
-            // below, otherwise the future generated might use it.
-            let c = Arc::clone(&self.cache);
-            b = match c.lock().unwrap().get(&cache_key) {
-                Some(v) => Some(v.clone()),
-                None => None,
-            };
-        }
-        if let Some(val) = b {
-            return self.as_json(&val.clone()).await;
+            match Arc::clone(&self.cache).lock().await.get(&cache_key) {
+                Some(v) => return self.as_json(&v).await,
+                None => (),
+            }
         }
 
         let full_url = if let Some(ref q) = query {
@@ -448,7 +419,7 @@ impl BinanceFetcher {
         let r = client
             .get(full_url)
             .headers(self.default_headers())
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .send()
             .await;
 
@@ -458,8 +429,7 @@ impl BinanceFetcher {
                 let resp_bytes = resp.bytes().await?;
 
                 if cache {
-                    let c = Arc::clone(&self.cache);
-                    c.lock().unwrap().insert(cache_key, resp_bytes.clone());
+                    Arc::clone(&self.cache).lock().await.insert(cache_key, resp_bytes.clone());
                 }
 
                 match self.as_json::<T>(&resp_bytes).await {
@@ -1081,7 +1051,6 @@ impl ExchangeClient for BinanceFetcher {
                 handles.push(self.margin_borrows(asset, symbol.clone()));
             }
         }
-        println!("fetching borrows for {} pairs from binance", handles.len());
         Ok(join_all(handles)
             .await
             .into_iter()
@@ -1107,7 +1076,6 @@ impl ExchangeClient for BinanceFetcher {
                 handles.push(self.margin_repays(asset, symbol.clone()));
             }
         }
-        println!("fetching repays for {} pairs from binance", handles.len());
         Ok(join_all(handles)
             .await
             .into_iter()

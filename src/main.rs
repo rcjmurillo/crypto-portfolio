@@ -9,6 +9,7 @@ mod errors;
 mod result;
 mod tracker;
 mod utils;
+mod sync;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
