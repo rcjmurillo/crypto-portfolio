@@ -26,7 +26,8 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore};
 use crate::data_fetch::{self, ExchangeClient, OperationStatus, TradeSide};
 use crate::errors::Error;
 use crate::result::Result;
-use crate::tracker::{IntoOperations, Operation};
+
+const AWAIT_CHUNK_SIZE: usize = 15;
 
 pub(crate) mod string_or_float {
     use std::fmt;
@@ -309,7 +310,7 @@ impl From<MarginRepay> for data_fetch::Repay {
             status: match r.status.as_str() {
                 "CONFIRMED" => OperationStatus::Success,
                 _ => OperationStatus::Failed,
-            }
+            },
         }
     }
 }
@@ -444,12 +445,10 @@ impl BinanceFetcher {
             format!("{}{}", self.domain, endpoint)
         };
 
-        // println!("request -> {:?}", full_url);
-
         let r = client
             .get(full_url)
             .headers(self.default_headers())
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
 
@@ -677,6 +676,97 @@ impl BinanceFetcher {
         }
     }
 
+    pub async fn prices_in_range(
+        &self,
+        symbol: &str,
+        start_ts: u64,
+        end_ts: u64,
+    ) -> Result<Vec<(u64, f64)>> {
+        let start_time = start_ts - 30 * 60 * 1000 * 2;
+        let end_time = end_ts + 30 * 60 * 1000 * 2;
+
+        let limit = 1000;
+
+        // create buckets to fetch the results
+        let candle_size_milis: u64 = 30 * 60 * 1000;
+        let milis_per_batch = candle_size_milis * limit;
+        let num_candles = (end_time - start_time) / candle_size_milis
+            + (if (end_time - start_time) % candle_size_milis > 0 {
+                1
+            } else {
+                0
+            });
+        let num_batches = num_candles / limit + (if num_candles % limit > 0 { 1 } else { 0 });
+        let ranges: Vec<(u64, u64)> = (0..num_batches)
+            .scan(start_time, |current_ts, _| {
+                let ts = *current_ts;
+                *current_ts += milis_per_batch;
+                Some((ts, *current_ts))
+            })
+            .collect();
+
+        let mut all_prices = Vec::new();
+
+        for (start, end) in ranges {
+            let query = format!(
+                "symbol={}&interval=30m&startTime={}&endTime={}&limit={}",
+                symbol, start, end, limit
+            );
+
+            let resp = self
+                .make_request::<Vec<Vec<Value>>>(
+                    &self.endpoints.klines,
+                    Some(query),
+                    false,
+                    false,
+                    true,
+                )
+                .await;
+
+            match resp {
+                Ok(klines) => {
+                    all_prices.extend(klines.iter().map(|x| {
+                        let high = x[2].as_str().unwrap().parse::<f64>().unwrap();
+                        let low = x[3].as_str().unwrap().parse::<f64>().unwrap();
+                        (
+                            x[6].as_u64().unwrap(), // close time
+                            (high + low) / 2.0,     // avg
+                        )
+                    }))
+                }
+                Err(err) => {
+                    println!("could not parse klines response {:?}: {:?}", symbol, err);
+                    return Err(err.into());
+                }
+            }
+        }
+        all_prices.sort_by_key(|x| x.0);
+        Ok(all_prices)
+    }
+
+    async fn usd_prices_in_range(
+        &self,
+        asset: &str,
+        start_ts: u64,
+        end_ts: u64,
+    ) -> Result<Vec<(u64, f64)>> {
+        let (first, second) = match self.region {
+            BinanceRegion::Global => ("USDT", "USD"),
+            BinanceRegion::Us => ("USD", "USDT"),
+        };
+        match self
+            .prices_in_range(&format!("{}{}", asset, first), start_ts, end_ts)
+            .await
+        {
+            Ok(p) => Ok(p),
+            Err(_) => {
+                // retry with the other one
+                self.prices_in_range(&format!("{}{}", asset, second), start_ts, end_ts)
+                    .await
+            }
+        }
+    }
+
     async fn fetch_trades_from_endpoint(
         &self,
         symbol: &str,
@@ -702,34 +792,37 @@ impl BinanceFetcher {
 
         match resp {
             Ok(parsed) => match parsed {
-                Response::Success(binance_trades) => {
+                Response::Success(mut binance_trades) => {
                     if binance_trades.len() >= 500 {
                         println!("still have to query for more trades for {:?}", symbol);
                     }
-                    let mut handles = Vec::new();
-                    for mut t in binance_trades.into_iter() {
-                        handles.push(async {
-                            let (b, q) = self.symbol_into_assets(&t.symbol).await;
-                            t.base_asset = b;
-                            t.quote_asset = q;
-
-                            if t.base_asset == "" || t.quote_asset == "" {
-                                panic!("empty base or quote asset for symbol: {:?}", t.symbol);
+                    binance_trades.sort_by_key(|k| k.time);
+                    let min = match binance_trades.first() {
+                        Some(t) => Some(t.time),
+                        _ => None,
+                    };
+                    let max = match binance_trades.last() {
+                        Some(t) => Some(t.time),
+                        _ => None,
+                    };
+                    match (min, max) {
+                        (Some(min), Some(max)) => {
+                            let (base_asset, _) = self.symbol_into_assets(symbol).await;
+                            let prices = self.usd_prices_in_range(&base_asset, min, max).await?;
+                            for mut t in binance_trades.into_iter() {
+                                let (b, q) = self.symbol_into_assets(&t.symbol).await;
+                                t.base_asset = b;
+                                t.quote_asset = q;
+                                let price = match &t.base_asset {
+                                    q if q.starts_with("USD") => 1.0,
+                                    _ => find_price_at(&prices, t.time),
+                                };
+                                t.cost = t.qty * price;
+                                trades.push(t);
                             }
-
-                            let price = match &t.base_asset {
-                                q if q.starts_with("USD") => 1.0,
-                                _ => self
-                                    .asset_usd_price_at_time(&t.base_asset, t.time)
-                                    .await
-                                    .unwrap(),
-                            };
-                            t.cost = t.qty * price;
-                            t
-                        });
+                        }
+                        (_, _) => (),
                     }
-                    let binance_trades = await_chunks(handles, 15).await;
-                    trades.extend(binance_trades);
                 }
                 Response::Error { code, msg } => {
                     if code != -11001 {
@@ -751,7 +844,6 @@ impl BinanceFetcher {
 
     async fn fetch_margin_trades(&self, symbol: String) -> Result<Vec<BinanceTrade>> {
         if let None = self.endpoints.margin_trades {
-            // println!("margin trades not supported in exchange");
             return Ok(Vec::new());
         }
 
@@ -834,7 +926,6 @@ impl BinanceFetcher {
 
     pub async fn margin_repays(&self, asset: String, symbol: String) -> Result<Vec<MarginRepay>> {
         if let None = self.endpoints.margin_repays {
-            // println!("margin repays not supported in exchange");
             return Ok(Vec::new());
         }
 
@@ -895,26 +986,11 @@ impl BinanceFetcher {
                 let mut iter = symbols.iter();
                 loop {
                     if let Some(s) = iter.next() {
-                        if s.base_asset == "" || s.quote_asset == "" {
-                            panic!("found no base or quote asset for binance symbol");
-                        }
                         if symbol.starts_with(&s.base_asset) {
                             let (base, quote) = symbol.split_at(s.base_asset.len());
-                            if base == "" || quote == "" {
-                                panic!(
-                                    "found no base or quote asset for binance symbol {} {} {}",
-                                    base, quote, symbol
-                                );
-                            }
                             break (base.to_string(), quote.to_string());
                         } else if symbol.starts_with(&s.quote_asset) {
                             let (base, quote) = symbol.split_at(s.quote_asset.len());
-                            if base == "" || quote == "" {
-                                panic!(
-                                    "found no base or quote asset for binance symbol {} {} {}",
-                                    base, quote, symbol
-                                );
-                            }
                             break (base.to_string(), quote.to_string());
                         }
                     } else {
@@ -947,12 +1023,11 @@ impl ExchangeClient for BinanceFetcher {
         let mut handles = Vec::new();
         for symbol in symbols.iter() {
             if all_symbols.contains(&symbol) {
-                // println!("getting trades for {:?}", symbol);
                 handles.push(self.fetch_trades(symbol.clone()));
             }
         }
 
-        let all_trades: Vec<BinanceTrade> = await_chunks(handles, 15)
+        let all_trades: Vec<BinanceTrade> = await_chunks(handles, AWAIT_CHUNK_SIZE)
             .await
             .into_iter()
             .filter_map(|r| match r {
@@ -962,7 +1037,6 @@ impl ExchangeClient for BinanceFetcher {
             .flatten()
             .collect();
 
-        //println!("fetching trades for {} pairs from binance", handles.len());
         Ok(all_trades)
     }
 
@@ -978,12 +1052,11 @@ impl ExchangeClient for BinanceFetcher {
         let mut handles = Vec::new();
         for symbol in symbols.iter() {
             if all_symbols.contains(&symbol) {
-                // println!("getting trades for {:?}", symbol);
                 handles.push(self.fetch_margin_trades(symbol.clone()));
             }
         }
 
-        Ok(await_chunks(handles, 15)
+        Ok(await_chunks(handles, AWAIT_CHUNK_SIZE)
             .await
             .into_iter()
             .filter_map(|trades_result| match trades_result {
@@ -1005,7 +1078,6 @@ impl ExchangeClient for BinanceFetcher {
         for symbol in symbols.iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = self.symbol_into_assets(&symbol).await;
-                // println!("fetching borrows for asset {:?}", asset);
                 handles.push(self.margin_borrows(asset, symbol.clone()));
             }
         }
@@ -1032,7 +1104,6 @@ impl ExchangeClient for BinanceFetcher {
         for symbol in symbols.iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = self.symbol_into_assets(&symbol).await;
-                // println!("fetching repays for symbol {:?}", symbol);
                 handles.push(self.margin_repays(asset, symbol.clone()));
             }
         }
@@ -1049,15 +1120,11 @@ impl ExchangeClient for BinanceFetcher {
     }
 
     async fn deposits(&self, _: &[String]) -> Result<Vec<BinanceFiatDeposit>> {
-        // Ok(self.fetch_fiat_deposits()
-        //     .await?
-        //     .into_iter()
-        //     .collect())
         Ok(Vec::new())
     }
 
     async fn withdraws(&self, _: &[String]) -> Result<Vec<BinanceWithdraw>> {
-        Ok(self.fetch_withdraws().await?.into_iter().collect())
+        self.fetch_withdraws().await
     }
 }
 
@@ -1075,4 +1142,14 @@ async fn await_chunks<T>(handles: Vec<impl Future<Output = T>>, chunk_size: usiz
         }
     }
     all_results
+}
+
+fn find_price_at(prices: &Vec<(u64, f64)>, time: u64) -> f64 {
+    prices
+        .iter()
+        .find_map(|p| match p.0 > time {
+            true => Some(p.1),
+            false => None,
+        })
+        .unwrap_or(0.0)
 }
