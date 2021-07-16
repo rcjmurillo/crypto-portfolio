@@ -324,6 +324,29 @@ pub struct Symbol {
 }
 
 type Cache = HashMap<String, Bytes>;
+struct QueryParams(Vec<(&'static str, String)>);
+
+impl QueryParams {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn add<T: ToString>(&mut self, name: &'static str, value: T) {
+        self.0.push((name, value.to_string()));
+    }
+
+    fn extend(&mut self, params: QueryParams) {
+        self.0.extend(params.0);
+    }
+
+    fn to_string(&self) -> String {
+        self.0
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<String>>()
+            .join("&")
+    }
+}
 
 pub struct BinanceFetcher {
     market_client: Market,
@@ -369,56 +392,43 @@ impl BinanceFetcher {
     async fn make_request<T: DeserializeOwned>(
         &self,
         endpoint: &str,
-        query: Option<String>,
+        query: Option<QueryParams>,
         signed: bool,
         add_timestamp: bool,
         cache: bool,
     ) -> Result<T> {
         let client = reqwest::Client::new();
 
-        let cache_key = match query {
-            Some(ref q) => format!("{}{}", endpoint, q),
-            None => endpoint.to_string()
+        let (query, cache_key) = match query {
+            Some(mut query) => {
+                let query_str = query.to_string();
+                if add_timestamp {
+                    query.add("recvWindow", 60000);
+                    query.add("timestamp", Utc::now().timestamp_millis());
+                }
+                if signed {
+                    query = self.sign_request(query);
+                }
+                (query, format!("{}{}", endpoint, query_str))
+            }
+            None => (QueryParams::new(), endpoint.to_string()),
         };
+
         let _endpoint_lock;
         if cache {
-            _endpoint_lock = self
-                .api_lock
-                .lock_for(cache_key.clone())
-                .await
-                .unwrap();
+            _endpoint_lock = self.api_lock.lock_for(cache_key.clone()).await.unwrap();
             match Arc::clone(&self.cache).lock().await.get(&cache_key) {
                 Some(v) => return self.as_json(&v).await,
                 None => (),
             }
         }
 
-        let full_url = if let Some(ref q) = query {
-            let mut full_query = q.clone();
-            if add_timestamp {
-                full_query = format!(
-                    "{}&timestamp={}&recvWindow=60000",
-                    q,
-                    Utc::now().timestamp_millis()
-                );
-            }
-            format!(
-                "{}{}?{}",
-                self.domain,
-                endpoint,
-                if signed {
-                    self.sign_request(&full_query)
-                } else {
-                    full_query.clone()
-                }
-            )
-        } else {
-            format!("{}{}", self.domain, endpoint)
-        };
+        let full_url = format!("{}{}?{}", self.domain, endpoint, query.to_string());
 
         let r = client
-            .get(full_url)
+            .get(&full_url)
             .headers(self.default_headers())
+            // .query(&query.0)
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await;
@@ -429,9 +439,13 @@ impl BinanceFetcher {
                 let resp_bytes = resp.bytes().await?;
 
                 if cache {
-                    Arc::clone(&self.cache).lock().await.insert(cache_key, resp_bytes.clone());
+                    Arc::clone(&self.cache)
+                        .lock()
+                        .await
+                        .insert(cache_key, resp_bytes.clone());
                 }
 
+                // println!("full url for ok: {}", full_url);
                 match self.as_json::<T>(&resp_bytes).await {
                     Ok(v) => Ok(v),
                     Err(err) => {
@@ -440,7 +454,10 @@ impl BinanceFetcher {
                     }
                 }
             }
-            Err(err) => Err(err.into()),
+            Err(err) => {
+                // println!("full url for error: {:?}", full_url);
+                Err(err.into())
+            },
         };
         x
     }
@@ -469,12 +486,13 @@ impl BinanceFetcher {
         }
     }
 
-    fn sign_request(&self, params: &String) -> String {
+    fn sign_request(&self, mut query_params: QueryParams) -> QueryParams {
         let mut signed_key =
             Hmac::<Sha256>::new_from_slice(self.credentials.secret_key.as_bytes()).unwrap();
-        signed_key.update(params.as_bytes());
+        signed_key.update(query_params.to_string().as_ref());
         let signature = hex_encode(signed_key.finalize().into_bytes());
-        format!("{}&signature={}", params, signature)
+        query_params.add("signature", signature);
+        query_params
     }
 
     fn default_headers(&self) -> HeaderMap {
@@ -517,11 +535,9 @@ impl BinanceFetcher {
             let start = now - Duration::days(90 * (i + 1));
             let end = now - Duration::days(90 * i);
 
-            let query = format!(
-                "startTime={}&endTime={}",
-                start.timestamp_millis(),
-                end.timestamp_millis(),
-            );
+            let mut query = QueryParams::new();
+            query.add("startTime", start.timestamp_millis());
+            query.add("endTime", end.timestamp_millis());
 
             let result_deposits = self
                 .make_request::<BinanceDepositResponse>(
@@ -562,11 +578,9 @@ impl BinanceFetcher {
             let start = now - Duration::days(90 * (i + 1));
             let end = now - Duration::days(90 * i);
 
-            let query = format!(
-                "startTime={}&endTime={}",
-                start.timestamp_millis(),
-                end.timestamp_millis(),
-            );
+            let mut query = QueryParams::new();
+            query.add("startTime", start.timestamp_millis().to_string());
+            query.add("endTime", end.timestamp_millis().to_string());
 
             let resp = self
                 .make_request::<BinanceWithdrawResponse>(
@@ -617,10 +631,12 @@ impl BinanceFetcher {
     pub async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
         let start_time = time - 30 * 60 * 1000;
         let end_time = time + 30 * 60 * 1000;
-        let query = format!(
-            "symbol={}&interval=30m&startTime={}&endTime={}",
-            symbol, start_time, end_time,
-        );
+
+        let mut query = QueryParams::new();
+        query.add("symbol", symbol.to_string());
+        query.add("interval", "30m".to_string());
+        query.add("startTime", start_time.to_string());
+        query.add("endTime", end_time.to_string());
 
         let resp = self
             .make_request::<Vec<Vec<Value>>>(
@@ -678,10 +694,12 @@ impl BinanceFetcher {
         let mut all_prices = Vec::new();
 
         for (start, end) in ranges {
-            let query = format!(
-                "symbol={}&interval=30m&startTime={}&endTime={}&limit={}",
-                symbol, start, end, limit
-            );
+            let mut query = QueryParams::new();
+            query.add("symbol", symbol);
+            query.add("interval", "30m");
+            query.add("startTime", start);
+            query.add("endTime", end);
+            query.add("limit", limit);
 
             let resp = self
                 .make_request::<Vec<Vec<Value>>>(
@@ -741,20 +759,18 @@ impl BinanceFetcher {
         &self,
         symbol: &str,
         endpoint: &str,
-        extra_params: Option<&str>,
+        extra_params: Option<QueryParams>,
     ) -> Result<Vec<BinanceTrade>> {
         let mut trades = Vec::<BinanceTrade>::new();
 
-        let query = format!(
-            "symbol={}&fromId={}&limit=1000{}",
-            symbol,
-            0,
-            if let Some(params) = extra_params {
-                format!("&{}", params)
-            } else {
-                "".to_string()
-            }
-        );
+        let mut query = QueryParams::new();
+        query.add("symbol", symbol);
+        query.add("fromId", 0);
+        query.add("limit", 1000);
+
+        if let Some(extra_params) = extra_params {
+            query.extend(extra_params);
+        }
 
         let resp = self
             .make_request::<Response<Vec<BinanceTrade>>>(endpoint, Some(query), true, true, true)
@@ -820,11 +836,13 @@ impl BinanceFetcher {
         let mut trades = Vec::<BinanceTrade>::new();
 
         for is_isolated in vec!["TRUE", "FALSE"] {
+            let mut extra_params = QueryParams::new();
+            extra_params.add("isIsolated", is_isolated);
             let result_trades = self
                 .fetch_trades_from_endpoint(
                     &symbol,
                     self.endpoints.margin_trades.as_ref().unwrap(),
-                    Some(&format!("isIsolated={}", is_isolated)),
+                    Some(extra_params),
                 )
                 .await?;
             trades.extend(result_trades);
@@ -852,20 +870,17 @@ impl BinanceFetcher {
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
-                let mut current_page = 1;
+                let mut current_page: usize = 1;
                 loop {
-                    let query = format!(
-                        "asset={}&startTime={}&size=100&archived={}&current={}{}",
-                        asset,
-                        ts,
-                        archived,
-                        current_page,
-                        if let Some(s) = isolated_symbol {
-                            format!("&isolatedSymbol={}", s)
-                        } else {
-                            "".to_string()
-                        }
-                    );
+                    let mut query = QueryParams::new();
+                    query.add("asset", &asset);
+                    query.add("startTime", ts);
+                    query.add("size", 100);
+                    query.add("archived", archived);
+                    query.add("current", current_page);
+                    if let Some(s) = isolated_symbol {
+                        query.add("isolatedSymbol", s);
+                    }
 
                     let resp = self
                         .make_request::<Response>(
@@ -913,17 +928,15 @@ impl BinanceFetcher {
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
-                let query = format!(
-                    "asset={}&startTime={}&size=100&archived={}{}",
-                    asset,
-                    ts,
-                    archived,
-                    if let Some(s) = isolated_symbol {
-                        format!("&isolatedSymbol={}", s)
-                    } else {
-                        "".to_string()
-                    }
-                );
+                let mut query = QueryParams::new();
+                query.add("asset", &asset);
+                query.add("startTime", ts);
+                query.add("size", 100);
+                query.add("archived", archived);
+                // query.add("current", current_page);
+                if let Some(s) = isolated_symbol {
+                    query.add("isolatedSymbol", s);
+                }
                 let resp = self
                     .make_request::<Response>(
                         self.endpoints.margin_repays.as_ref().unwrap(),
