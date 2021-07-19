@@ -29,37 +29,6 @@ use crate::sync::ValueLock;
 
 const AWAIT_CHUNK_SIZE: usize = 15;
 
-pub(crate) mod string_or_float {
-    use std::fmt;
-
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: fmt::Display,
-        S: Serializer,
-    {
-        serializer.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum StringOrFloat {
-            String(String),
-            Float(f64),
-        }
-
-        match StringOrFloat::deserialize(deserializer)? {
-            StringOrFloat::String(s) => s.parse().map_err(de::Error::custom),
-            StringOrFloat::Float(i) => Ok(i),
-        }
-    }
-}
-
 #[derive(Copy, Clone)]
 pub enum BinanceRegion {
     Global,
@@ -457,7 +426,7 @@ impl BinanceFetcher {
             Err(err) => {
                 // println!("full url for error: {:?}", full_url);
                 Err(err.into())
-            },
+            }
         };
         x
     }
@@ -506,7 +475,7 @@ impl BinanceFetcher {
 
     pub async fn exchange_symbols(&self) -> Result<Vec<Symbol>> {
         #[derive(Deserialize, Clone)]
-        struct Response {
+        struct EndpointResponse {
             symbols: Vec<Symbol>,
         }
 
@@ -514,7 +483,14 @@ impl BinanceFetcher {
             .make_request(&self.endpoints.exchange_info, None, false, false, true)
             .await;
         match resp {
-            Ok(Response { symbols }) => Ok(symbols),
+            Ok(Response::Success(EndpointResponse { symbols })) => Ok(symbols),
+            Ok(Response::Error { code, msg }) => {
+                println!();
+                Err(Error::new(format!(
+                    "error from API: {:?} code: {}",
+                    msg, code
+                )))
+            }
             Err(err) => {
                 println!("could not parse exchange info response: {:?}", err);
                 Err(err)
@@ -655,10 +631,7 @@ impl BinanceFetcher {
                 let low = s[3].as_str().unwrap().parse::<f64>().unwrap();
                 Ok((high + low) / 2.0) // avg
             }
-            Err(err) => {
-                println!("could not parse klines response {:?}: {:?}", symbol, err);
-                Err(err.into())
-            }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -811,6 +784,8 @@ impl BinanceFetcher {
                     }
                 }
                 Response::Error { code, msg } => {
+                    // -11001 means the trade pair is not available in the exchange,
+                    // so we can just ignore it.
                     if code != -11001 {
                         return Err(Error::new(msg));
                     }
@@ -857,7 +832,7 @@ impl BinanceFetcher {
         }
 
         #[derive(Deserialize)]
-        struct Response {
+        struct EndpointResponse {
             rows: Vec<MarginBorrow>,
             total: u16,
         }
@@ -883,7 +858,7 @@ impl BinanceFetcher {
                     }
 
                     let resp = self
-                        .make_request::<Response>(
+                        .make_request::<EndpointResponse>(
                             self.endpoints.margin_borrows.as_ref().unwrap(),
                             Some(query),
                             true,
@@ -915,7 +890,7 @@ impl BinanceFetcher {
         }
 
         #[derive(Deserialize)]
-        struct Response {
+        struct EndpointResponse {
             rows: Vec<MarginRepay>,
             total: u16,
         }
@@ -928,33 +903,36 @@ impl BinanceFetcher {
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
-                let mut query = QueryParams::new();
-                query.add("asset", &asset);
-                query.add("startTime", ts);
-                query.add("size", 100);
-                query.add("archived", archived);
-                // query.add("current", current_page);
-                if let Some(s) = isolated_symbol {
-                    query.add("isolatedSymbol", s);
-                }
-                let resp = self
-                    .make_request::<Response>(
-                        self.endpoints.margin_repays.as_ref().unwrap(),
-                        Some(query),
-                        true,
-                        true,
-                        true,
-                    )
-                    .await;
-                match resp {
-                    Ok(repays_resp) => {
-                        if repays_resp.total >= 100 {
-                            println!("still have to query for more repays for {:?}", symbol);
-                        }
-                        repays.extend(repays_resp.rows);
+                let mut current_page: usize = 1;
+                loop {
+                    let mut query = QueryParams::new();
+                    query.add("asset", &asset);
+                    query.add("startTime", ts);
+                    query.add("size", 100);
+                    query.add("archived", archived);
+                    query.add("current", current_page);
+                    if let Some(s) = isolated_symbol {
+                        query.add("isolatedSymbol", s);
                     }
-                    Err(err) => {
-                        println!("couldn't get margin repays: {:?}", err);
+                    let resp = self
+                        .make_request::<EndpointResponse>(
+                            self.endpoints.margin_repays.as_ref().unwrap(),
+                            Some(query),
+                            true,
+                            true,
+                            true,
+                        )
+                        .await;
+                    match resp {
+                        Ok(repays_resp) => {
+                            repays.extend(repays_resp.rows);
+                            if repays_resp.total >= 100 {
+                                current_page += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        Err(err) => return Err(err),
                     }
                 }
             }
@@ -1015,6 +993,7 @@ impl ExchangeClient for BinanceFetcher {
             .into_iter()
             .filter_map(|r| match r {
                 Ok(trades) => Some(trades),
+                // fixme: propagate the error
                 Err(err) => panic!("could not fetch trades for {:?}: {:?}", symbols, err),
             })
             .flatten()
@@ -1044,6 +1023,7 @@ impl ExchangeClient for BinanceFetcher {
             .into_iter()
             .filter_map(|trades_result| match trades_result {
                 Ok(trades) => Some(trades),
+                // fixme: propagate the error
                 Err(err) => panic!("could not get trades: {:?}", err),
             })
             .flatten()
@@ -1094,6 +1074,7 @@ impl ExchangeClient for BinanceFetcher {
             .into_iter()
             .filter_map(|result| match result {
                 Ok(repays) => Some(repays),
+                // fixme: propagate the error
                 Err(err) => panic!("could not get repays: {:?}", err),
             })
             .flatten()
@@ -1133,4 +1114,35 @@ fn find_price_at(prices: &Vec<(u64, f64)>, time: u64) -> f64 {
             false => None,
         })
         .unwrap_or(0.0)
+}
+
+pub(crate) mod string_or_float {
+    use std::fmt;
+
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: fmt::Display,
+        S: Serializer,
+    {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrFloat {
+            String(String),
+            Float(f64),
+        }
+
+        match StringOrFloat::deserialize(deserializer)? {
+            StringOrFloat::String(s) => s.parse().map_err(de::Error::custom),
+            StringOrFloat::Float(i) => Ok(i),
+        }
+    }
 }
