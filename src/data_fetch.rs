@@ -83,13 +83,6 @@ impl IntoOperations for Trade {
             -1.0
         };
 
-        if self.base_asset == "" || self.quote_asset == "" {
-            panic!(
-                "found empty base or quote asset in into_ops for symbol {}",
-                self.symbol
-            );
-        }
-
         ops.push(Operation {
             asset: self.base_asset.to_string(),
             amount: self.amount * sign,
@@ -211,7 +204,7 @@ impl From<&HashMap<String, String>> for Deposit {
     }
 }
 
-async fn ops_from_client<'a, T>(c: &'a mut T, symbols: &'a [String]) -> Vec<Operation>
+async fn ops_from_client<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
 where
     T: ExchangeClient,
     T::Trade: Into<Trade>,
@@ -221,7 +214,7 @@ where
     T::Withdraw: Into<Withdraw>,
 {
     let mut all_ops = Vec::new();
-    println!("> fetching trades...");
+    println!("[{}]> fetching trades...", prefix);
     all_ops.extend(
         c.trades(symbols)
             .await
@@ -229,7 +222,7 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> fetching margin trades...");
+    println!("[{}]> fetching margin trades...", prefix);
     all_ops.extend(
         c.margin_trades(symbols)
             .await
@@ -237,7 +230,7 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> fetching loans...");
+    println!("[{}]> fetching loans...", prefix);
     all_ops.extend(
         c.loans(symbols)
             .await
@@ -245,7 +238,7 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> fetching repays...");
+    println!("[{}]> fetching repays...", prefix);
     all_ops.extend(
         c.repays(symbols)
             .await
@@ -253,7 +246,7 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> fetching fiat deposits...");
+    println!("[{}]> fetching fiat deposits...", prefix);
     all_ops.extend(
         c.deposits(symbols)
             .await
@@ -261,7 +254,7 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> fetching coins withdraws...");
+    println!("[{}]> fetching coins withdraws...", prefix);
     all_ops.extend(
         c.withdraws(symbols)
             .await
@@ -269,27 +262,36 @@ where
             .into_iter()
             .flat_map(|t| t.into().into_ops()),
     );
-    println!("> ALL DONE!!!");
+    println!("[{}]> ALL DONE!!!", prefix);
     all_ops
 }
 
 pub fn fetch_pipeline<'a>() -> impl StreamExt<Item = Result<Operation>> + 'a {
     stream! {
-        let mut binance_client = BinanceFetcher::new(BinanceRegion::Global);
-        let mut binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
 
-        println!("========== binance ==========");
-        let mut ops = ops_from_client(&mut binance_client, &all_symbols()[..]).await;
+        let mut ops = Vec::new();
+
+        let h1 = tokio::spawn(async {
+            let binance_client = BinanceFetcher::new(BinanceRegion::Global);    
+            ops_from_client("binance", &binance_client, &all_symbols()[..]).await
+        });
+
+        let h2 = tokio::spawn(async {
+            let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
+            ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await
+        });
 
         #[cfg(feature="private_ops")]
         {
-            println!("========== private ops ==========");
-            let mut private_ops = PrivateOps::new();
-            ops.extend(ops_from_client(&mut private_ops, &all_symbols()[..]).await);
+            let h3 = tokio::spawn(async {
+                let private_ops = PrivateOps::new();
+                ops_from_client("private ops", &private_ops, &all_symbols()[..]).await
+            });
+            ops.extend(h3.await.unwrap());
         }
 
-        println!("========== binance US ==========");
-        ops.extend(ops_from_client(&mut binance_us_client, &all_symbols()[..]).await);
+        ops.extend(h1.await.unwrap());
+        ops.extend(h2.await.unwrap());
 
         println!("\nDONE getting operations...");
         for op in ops {

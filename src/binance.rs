@@ -426,7 +426,7 @@ impl BinanceFetcher {
             Err(err) => {
                 println!("err could not process response");
                 Err(err.into())
-            },
+            }
         };
         x
     }
@@ -615,7 +615,7 @@ impl BinanceFetcher {
         query.add("endTime", end_time.to_string());
 
         let resp = self
-            .make_request::<Vec<Vec<Value>>>(
+            .make_request::<Response<Vec<Vec<Value>>>>(
                 &self.endpoints.klines,
                 Some(query),
                 false,
@@ -625,11 +625,14 @@ impl BinanceFetcher {
             .await;
 
         match resp {
-            Ok(klines) => {
+            Ok(Response::Success(klines)) => {
                 let s = &klines[0];
                 let high = s[2].as_str().unwrap().parse::<f64>().unwrap();
                 let low = s[3].as_str().unwrap().parse::<f64>().unwrap();
                 Ok((high + low) / 2.0) // avg
+            }
+            Ok(Response::Error { code: _, msg }) => {
+                return Err(Error::new(msg));
             }
             Err(err) => Err(err.into()),
         }
@@ -675,7 +678,7 @@ impl BinanceFetcher {
             query.add("limit", limit);
 
             let resp = self
-                .make_request::<Vec<Vec<Value>>>(
+                .make_request::<Response<Vec<Vec<Value>>>>(
                     &self.endpoints.klines,
                     Some(query),
                     false,
@@ -685,7 +688,7 @@ impl BinanceFetcher {
                 .await;
 
             match resp {
-                Ok(klines) => {
+                Ok(Response::Success(klines)) => {
                     all_prices.extend(klines.iter().map(|x| {
                         let high = x[2].as_str().unwrap().parse::<f64>().unwrap();
                         let low = x[3].as_str().unwrap().parse::<f64>().unwrap();
@@ -694,6 +697,13 @@ impl BinanceFetcher {
                             (high + low) / 2.0,     // avg
                         )
                     }))
+                }
+                Ok(Response::Error { code, msg }) => {
+                    // -11001 means the trade pair is not available in the exchange,
+                    // so we can just ignore it.
+                    if code != -11001 {
+                        return Err(Error::new(msg));
+                    }
                 }
                 Err(err) => {
                     println!("could not parse klines response {:?}: {:?}", symbol, err);
@@ -769,10 +779,10 @@ impl BinanceFetcher {
                             _ => None,
                         };
 
-                        let fetch_more = binance_trades.len() >= 1000; 
+                        let fetch_more = binance_trades.len() >= 1000;
                         if fetch_more {
                             // the API will return id >= fromId, thus add one to not include
-                            // the last processed id. 
+                            // the last processed id.
                             last_id = binance_trades.iter().last().unwrap().id + 1;
                         };
                         match (min, max) {
