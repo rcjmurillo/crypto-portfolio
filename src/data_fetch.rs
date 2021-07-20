@@ -2,18 +2,13 @@ use std::collections::HashMap;
 use std::convert::From;
 use std::vec::Vec;
 
-use crate::binance::{BinanceFetcher, BinanceRegion};
-use crate::private::all_symbols;
-#[cfg(feature = "private_ops")]
-use crate::private::PrivateOps;
 use crate::result::Result;
 use crate::tracker::{IntoOperations, Operation};
-
-use async_stream::stream;
+#[cfg(feature = "private_ops")]
+use crate::private::PrivateOps;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio_stream::StreamExt;
 
 #[async_trait]
 pub trait DataFetcher {
@@ -201,103 +196,5 @@ impl From<&HashMap<String, String>> for Deposit {
             asset: String::from("USD"),
             amount: data.get("amount").unwrap().parse::<f64>().unwrap(),
         }
-    }
-}
-
-async fn ops_from_client<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
-where
-    T: ExchangeClient,
-    T::Trade: Into<Trade>,
-    T::Loan: Into<Loan>,
-    T::Repay: Into<Repay>,
-    T::Deposit: Into<Deposit>,
-    T::Withdraw: Into<Withdraw>,
-{
-    let mut all_ops = Vec::new();
-    println!("[{}]> fetching trades...", prefix);
-    all_ops.extend(
-        c.trades(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> fetching margin trades...", prefix);
-    all_ops.extend(
-        c.margin_trades(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> fetching loans...", prefix);
-    all_ops.extend(
-        c.loans(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> fetching repays...", prefix);
-    all_ops.extend(
-        c.repays(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> fetching fiat deposits...", prefix);
-    all_ops.extend(
-        c.deposits(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> fetching coins withdraws...", prefix);
-    all_ops.extend(
-        c.withdraws(symbols)
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| t.into().into_ops()),
-    );
-    println!("[{}]> ALL DONE!!!", prefix);
-    all_ops
-}
-
-pub fn fetch_pipeline<'a>() -> impl StreamExt<Item = Result<Operation>> + 'a {
-    stream! {
-
-        let mut ops = Vec::new();
-
-        let h1 = tokio::spawn(async {
-            let binance_client = BinanceFetcher::new(BinanceRegion::Global);    
-            ops_from_client("binance", &binance_client, &all_symbols()[..]).await
-        });
-
-        let h2 = tokio::spawn(async {
-            let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
-            ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await
-        });
-
-        #[cfg(feature="private_ops")]
-        {
-            let h3 = tokio::spawn(async {
-                let private_ops = PrivateOps::new();
-                ops_from_client("private ops", &private_ops, &all_symbols()[..]).await
-            });
-            ops.extend(h3.await.unwrap());
-        }
-
-        ops.extend(h1.await.unwrap());
-        ops.extend(h2.await.unwrap());
-
-        println!("\nDONE getting operations...");
-        for op in ops {
-            yield Ok(op);
-        }
-
-        ()
     }
 }

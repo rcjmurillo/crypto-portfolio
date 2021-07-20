@@ -7,22 +7,130 @@ mod private_ops;
 mod data_fetch;
 mod errors;
 mod result;
+mod sync;
 mod tracker;
 mod utils;
-mod sync;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::binance::{BinanceFetcher, BinanceRegion};
-use crate::data_fetch::fetch_pipeline;
+use crate::data_fetch::{Deposit, ExchangeClient, Loan, Repay, Trade, Withdraw};
+use crate::private::all_symbols;
 #[cfg(feature = "private_ops")]
 use crate::private::PrivateOps;
 use crate::result::Result;
-use crate::tracker::CoinTracker;
+use crate::tracker::Operation;
+use crate::tracker::{CoinTracker, IntoOperations};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
-use tokio_stream::StreamExt;
+use tokio::sync::mpsc;
+
+
+async fn ops_from_client<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
+where
+    T: ExchangeClient,
+    T::Trade: Into<Trade>,
+    T::Loan: Into<Loan>,
+    T::Repay: Into<Repay>,
+    T::Deposit: Into<Deposit>,
+    T::Withdraw: Into<Withdraw>,
+{
+    let mut all_ops = Vec::new();
+    println!("[{}]> fetching trades...", prefix);
+    all_ops.extend(
+        c.trades(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> fetching margin trades...", prefix);
+    all_ops.extend(
+        c.margin_trades(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> fetching loans...", prefix);
+    all_ops.extend(
+        c.loans(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> fetching repays...", prefix);
+    all_ops.extend(
+        c.repays(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> fetching fiat deposits...", prefix);
+    all_ops.extend(
+        c.deposits(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> fetching coins withdraws...", prefix);
+    all_ops.extend(
+        c.withdraws(symbols)
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| t.into().into_ops()),
+    );
+    println!("[{}]> ALL DONE!!!", prefix);
+    all_ops
+}
+
+pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
+        let (tx, rx) = mpsc::channel(100);
+        let tx1 = tx.clone();
+        let tx2 = tx.clone();
+
+        tokio::spawn(async move {
+            let binance_client = BinanceFetcher::new(BinanceRegion::Global);
+            for op in ops_from_client("binance", &binance_client, &all_symbols()[..]).await {
+                match tx1.send(op).await {
+                    Ok(()) => (),
+                    Err(err) => panic!("could not send operation: {}", err)
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
+            for op in ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await {
+                match tx2.send(op).await {
+                    Ok(()) => (),
+                    Err(err) => panic!("could not send operation: {}", err)
+                }
+            }
+        });
+
+        #[cfg(feature="private_ops")]
+        {
+            let tx3 = tx.clone();
+            tokio::spawn(async move {
+                let private_ops = PrivateOps::new();
+                for op in ops_from_client("private ops", &private_ops, &all_symbols()[..]).await {
+                    match tx3.send(op).await {
+                        Ok(()) => (),
+                        Err(err) => panic!("could not send operation: {}", err)
+                    }
+                }
+            });
+        }
+        println!("\nDONE getting operations...");
+
+        rx
+}
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -30,10 +138,9 @@ pub async fn main() -> Result<()> {
     let binance_client = BinanceFetcher::new(BinanceRegion::Global);
     let binance_client_us = BinanceFetcher::new(BinanceRegion::Us);
 
-    let s = fetch_pipeline();
-    tokio::pin!(s);
+    let mut s = fetch_pipeline().await;
 
-    while let Some(Ok(op)) = s.next().await {
+    while let Some(op) = s.recv().await {
         coin_tracker.track_operation(op);
     }
     let mut coins_value = 0f64;
