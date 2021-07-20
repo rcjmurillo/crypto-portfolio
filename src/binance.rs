@@ -27,7 +27,7 @@ use crate::errors::Error;
 use crate::result::Result;
 use crate::sync::ValueLock;
 
-const AWAIT_CHUNK_SIZE: usize = 15;
+const AWAIT_CHUNK_SIZE: usize = 10;
 
 #[derive(Copy, Clone)]
 pub enum BinanceRegion {
@@ -293,6 +293,8 @@ pub struct Symbol {
 }
 
 type Cache = HashMap<String, Bytes>;
+
+#[derive(Clone)]
 struct QueryParams(Vec<(&'static str, String)>);
 
 impl QueryParams {
@@ -397,7 +399,6 @@ impl BinanceFetcher {
         let r = client
             .get(&full_url)
             .headers(self.default_headers())
-            // .query(&query.0)
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await;
@@ -414,19 +415,18 @@ impl BinanceFetcher {
                         .insert(cache_key, resp_bytes.clone());
                 }
 
-                // println!("full url for ok: {}", full_url);
                 match self.as_json::<T>(&resp_bytes).await {
                     Ok(v) => Ok(v),
                     Err(err) => {
-                        println!("could not parse = {:?}", resp_bytes);
+                        println!("could not parse response: {:?}", resp_bytes);
                         Err(err)
                     }
                 }
             }
             Err(err) => {
-                // println!("full url for error: {:?}", full_url);
+                println!("err could not process response");
                 Err(err.into())
-            }
+            },
         };
         x
     }
@@ -735,65 +735,82 @@ impl BinanceFetcher {
         extra_params: Option<QueryParams>,
     ) -> Result<Vec<BinanceTrade>> {
         let mut trades = Vec::<BinanceTrade>::new();
+        let mut last_id = 0;
+        loop {
+            let mut query = QueryParams::new();
+            query.add("symbol", symbol);
+            query.add("fromId", last_id);
+            query.add("limit", 1000);
 
-        let mut query = QueryParams::new();
-        query.add("symbol", symbol);
-        query.add("fromId", 0);
-        query.add("limit", 1000);
+            if let Some(extra_params) = extra_params.as_ref() {
+                query.extend(extra_params.clone());
+            }
 
-        if let Some(extra_params) = extra_params {
-            query.extend(extra_params);
-        }
+            let resp = self
+                .make_request::<Response<Vec<BinanceTrade>>>(
+                    endpoint,
+                    Some(query),
+                    true,
+                    true,
+                    true,
+                )
+                .await;
 
-        let resp = self
-            .make_request::<Response<Vec<BinanceTrade>>>(endpoint, Some(query), true, true, true)
-            .await;
+            match resp {
+                Ok(parsed) => match parsed {
+                    Response::Success(mut binance_trades) => {
+                        binance_trades.sort_by_key(|k| k.time);
+                        let min = match binance_trades.first() {
+                            Some(t) => Some(t.time),
+                            _ => None,
+                        };
+                        let max = match binance_trades.last() {
+                            Some(t) => Some(t.time),
+                            _ => None,
+                        };
 
-        match resp {
-            Ok(parsed) => match parsed {
-                Response::Success(mut binance_trades) => {
-                    if binance_trades.len() >= 500 {
-                        println!("still have to query for more trades for {:?}", symbol);
-                    }
-                    binance_trades.sort_by_key(|k| k.time);
-                    let min = match binance_trades.first() {
-                        Some(t) => Some(t.time),
-                        _ => None,
-                    };
-                    let max = match binance_trades.last() {
-                        Some(t) => Some(t.time),
-                        _ => None,
-                    };
-                    match (min, max) {
-                        (Some(min), Some(max)) => {
-                            let (base_asset, _) = self.symbol_into_assets(symbol).await;
-                            let prices = self.usd_prices_in_range(&base_asset, min, max).await?;
-                            for mut t in binance_trades.into_iter() {
-                                let (b, q) = self.symbol_into_assets(&t.symbol).await;
-                                t.base_asset = b;
-                                t.quote_asset = q;
-                                let price = match &t.base_asset {
-                                    q if q.starts_with("USD") => 1.0,
-                                    _ => find_price_at(&prices, t.time),
-                                };
-                                t.cost = t.qty * price;
-                                trades.push(t);
+                        let fetch_more = binance_trades.len() >= 1000; 
+                        if fetch_more {
+                            // the API will return id >= fromId, thus add one to not include
+                            // the last processed id. 
+                            last_id = binance_trades.iter().last().unwrap().id + 1;
+                        };
+                        match (min, max) {
+                            (Some(min), Some(max)) => {
+                                let (base_asset, _) = self.symbol_into_assets(symbol).await;
+                                let prices =
+                                    self.usd_prices_in_range(&base_asset, min, max).await?;
+                                for mut t in binance_trades.into_iter() {
+                                    let (b, q) = self.symbol_into_assets(&t.symbol).await;
+                                    t.base_asset = b;
+                                    t.quote_asset = q;
+                                    let price = match &t.base_asset {
+                                        q if q.starts_with("USD") => 1.0,
+                                        _ => find_price_at(&prices, t.time),
+                                    };
+                                    t.cost = t.qty * price;
+                                    trades.push(t);
+                                }
                             }
+                            (_, _) => (),
                         }
-                        (_, _) => (),
+                        if !fetch_more {
+                            break;
+                        }
                     }
-                }
-                Response::Error { code, msg } => {
-                    // -11001 means the trade pair is not available in the exchange,
-                    // so we can just ignore it.
-                    if code != -11001 {
-                        return Err(Error::new(msg));
+                    Response::Error { code, msg } => {
+                        // -11001 means the trade pair is not available in the exchange,
+                        // so we can just ignore it.
+                        if code != -11001 {
+                            return Err(Error::new(msg));
+                        } else {
+                            break;
+                        }
                     }
-                }
-            },
-            Err(err) => return Err(err.into()),
+                },
+                Err(err) => return Err(err.into()),
+            }
         }
-
         Ok(trades)
     }
 
