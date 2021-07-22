@@ -11,7 +11,6 @@ use bytes::Bytes;
 use chrono::prelude::*;
 use chrono::Duration;
 use futures::future::join_all;
-use futures::future::Future;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -20,14 +19,14 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::data_fetch::{self, ExchangeClient, OperationStatus, TradeSide};
 use crate::errors::Error;
 use crate::result::Result;
 use crate::sync::ValueLock;
 
-const AWAIT_CHUNK_SIZE: usize = 10;
+const ENDPOINT_CONCURRENCY: usize = 10;
 
 #[derive(Copy, Clone)]
 pub enum BinanceRegion {
@@ -324,9 +323,10 @@ pub struct BinanceFetcher {
     credentials: BinanceCredentials,
     region: BinanceRegion,
     endpoints: BinanceEndpoints,
-    api_lock: ValueLock<String>,
+    endpoint_params_lock: ValueLock<String>,
+    endpoint_lock: ValueLock<String>,
     domain: BinanceDomain,
-    cache: Arc<Mutex<Cache>>,
+    cache: Arc<RwLock<Cache>>,
 }
 
 impl BinanceFetcher {
@@ -354,9 +354,10 @@ impl BinanceFetcher {
             credentials,
             region,
             endpoints: region.into(),
-            api_lock: ValueLock::new(),
+            endpoint_params_lock: ValueLock::new(),
+            endpoint_lock: ValueLock::with_capacity(ENDPOINT_CONCURRENCY),
             domain: region.into(),
-            cache: Arc::new(Mutex::new(Cache::new())),
+            cache: Arc::new(RwLock::new(Cache::new())),
         }
     }
 
@@ -380,19 +381,30 @@ impl BinanceFetcher {
                 if signed {
                     query = self.sign_request(query);
                 }
-                (query, format!("{}{}", endpoint, query_str))
+                (
+                    query, 
+                    // form a cache key = endpoint + query params
+                    format!("{}{}", endpoint, query_str)
+                )
             }
             None => (QueryParams::new(), endpoint.to_string()),
         };
 
-        let _endpoint_lock;
+        let _endpoint_params_lock;
         if cache {
-            _endpoint_lock = self.api_lock.lock_for(cache_key.clone()).await.unwrap();
-            match Arc::clone(&self.cache).lock().await.get(&cache_key) {
-                Some(v) => return self.as_json(&v).await,
+            // Lock this endpoint with the cacheable params until the response is added to the cache
+            _endpoint_params_lock = self.endpoint_params_lock.lock_for(cache_key.clone()).await.unwrap();
+            match Arc::clone(&self.cache).read().await.get(&cache_key) {
+                Some(v) => {
+                    return self.as_json(&v).await;
+                }
                 None => (),
             }
         }
+
+        // Restrict concurrency for each API endpoint, this allows `ENDPOINT_CONCURRENCY` requests to 
+        // be awaiting on the same endpoint at the same time.
+        let _endpoint_lock = self.endpoint_lock.lock_for(endpoint.to_string());
 
         let full_url = format!("{}{}?{}", self.domain, endpoint, query.to_string());
 
@@ -410,11 +422,11 @@ impl BinanceFetcher {
 
                 if cache {
                     Arc::clone(&self.cache)
-                        .lock()
+                        .write()
                         .await
                         .insert(cache_key, resp_bytes.clone());
                 }
-
+                // parse the json response into the provided struct
                 match self.as_json::<T>(&resp_bytes).await {
                     Ok(v) => Ok(v),
                     Err(err) => {
@@ -424,7 +436,6 @@ impl BinanceFetcher {
                 }
             }
             Err(err) => {
-                println!("err could not process response");
                 Err(err.into())
             }
         };
@@ -485,7 +496,6 @@ impl BinanceFetcher {
         match resp {
             Ok(Response::Success(EndpointResponse { symbols })) => Ok(symbols),
             Ok(Response::Error { code, msg }) => {
-                println!();
                 Err(Error::new(format!(
                     "error from API: {:?} code: {}",
                     msg, code
@@ -669,6 +679,8 @@ impl BinanceFetcher {
 
         let mut all_prices = Vec::new();
 
+        let mut handles = Vec::new();
+
         for (start, end) in ranges {
             let mut query = QueryParams::new();
             query.add("symbol", symbol);
@@ -677,16 +689,16 @@ impl BinanceFetcher {
             query.add("endTime", end);
             query.add("limit", limit);
 
-            let resp = self
-                .make_request::<Response<Vec<Vec<Value>>>>(
-                    &self.endpoints.klines,
-                    Some(query),
-                    false,
-                    false,
-                    true,
-                )
-                .await;
+            handles.push(self.make_request::<Response<Vec<Vec<Value>>>>(
+                &self.endpoints.klines,
+                Some(query),
+                false,
+                false,
+                true,
+            ));
+        }
 
+        for resp in join_all(handles).await {
             match resp {
                 Ok(Response::Success(klines)) => {
                     all_prices.extend(klines.iter().map(|x| {
@@ -746,6 +758,9 @@ impl BinanceFetcher {
     ) -> Result<Vec<BinanceTrade>> {
         let mut trades = Vec::<BinanceTrade>::new();
         let mut last_id = 0;
+
+        let exchange_symbols = self.exchange_symbols().await?;
+
         loop {
             let mut query = QueryParams::new();
             query.add("symbol", symbol);
@@ -787,11 +802,11 @@ impl BinanceFetcher {
                         };
                         match (min, max) {
                             (Some(min), Some(max)) => {
-                                let (base_asset, _) = self.symbol_into_assets(symbol).await;
+                                let (base_asset, _) = symbol_into_assets(symbol, &exchange_symbols);
                                 let prices =
                                     self.usd_prices_in_range(&base_asset, min, max).await?;
                                 for mut t in binance_trades.into_iter() {
-                                    let (b, q) = self.symbol_into_assets(&t.symbol).await;
+                                    let (b, q) = symbol_into_assets(&t.symbol, &exchange_symbols);
                                     t.base_asset = b;
                                     t.quote_asset = q;
                                     let price = match &t.base_asset {
@@ -967,28 +982,6 @@ impl BinanceFetcher {
 
         Ok(repays)
     }
-
-    async fn symbol_into_assets(&self, symbol: &str) -> (String, String) {
-        match self.exchange_symbols().await {
-            Ok(symbols) => {
-                let mut iter = symbols.iter();
-                loop {
-                    if let Some(s) = iter.next() {
-                        if symbol.starts_with(&s.base_asset) {
-                            let (base, quote) = symbol.split_at(s.base_asset.len());
-                            break (base.to_string(), quote.to_string());
-                        } else if symbol.starts_with(&s.quote_asset) {
-                            let (base, quote) = symbol.split_at(s.quote_asset.len());
-                            break (base.to_string(), quote.to_string());
-                        }
-                    } else {
-                        panic!("could not find a asset for symbol {:?}", symbol);
-                    }
-                }
-            }
-            Err(err) => panic!("couldn't get binance symbols: {:?}", err),
-        }
-    }
 }
 
 #[async_trait]
@@ -1015,7 +1008,7 @@ impl ExchangeClient for BinanceFetcher {
             }
         }
 
-        let all_trades: Vec<BinanceTrade> = await_chunks(handles, AWAIT_CHUNK_SIZE)
+        let all_trades: Vec<BinanceTrade> = join_all(handles)
             .await
             .into_iter()
             .filter_map(|r| match r {
@@ -1045,7 +1038,7 @@ impl ExchangeClient for BinanceFetcher {
             }
         }
 
-        Ok(await_chunks(handles, AWAIT_CHUNK_SIZE)
+        Ok(join_all(handles)
             .await
             .into_iter()
             .filter_map(|trades_result| match trades_result {
@@ -1059,15 +1052,11 @@ impl ExchangeClient for BinanceFetcher {
 
     async fn loans(&self, symbols: &[String]) -> Result<Vec<MarginBorrow>> {
         let mut handles = Vec::new();
-        let all_symbols: Vec<String> = self
-            .exchange_symbols()
-            .await?
-            .into_iter()
-            .map(|x| x.symbol)
-            .collect();
-        for symbol in symbols.iter() {
+        let exchange_symbols = self.exchange_symbols().await?;
+        let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
+        for symbol in symbols.into_iter() {
             if all_symbols.contains(&symbol) {
-                let (asset, _) = self.symbol_into_assets(&symbol).await;
+                let (asset, _) = symbol_into_assets(&symbol, &exchange_symbols);
                 handles.push(self.margin_borrows(asset, symbol.clone()));
             }
         }
@@ -1084,15 +1073,11 @@ impl ExchangeClient for BinanceFetcher {
 
     async fn repays(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
         let mut handles = Vec::new();
-        let all_symbols: Vec<String> = self
-            .exchange_symbols()
-            .await?
-            .into_iter()
-            .map(|x| x.symbol)
-            .collect();
-        for symbol in symbols.iter() {
+        let exchange_symbols = self.exchange_symbols().await?;
+        let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
+        for symbol in symbols.into_iter() {
             if all_symbols.contains(&symbol) {
-                let (asset, _) = self.symbol_into_assets(&symbol).await;
+                let (asset, _) = symbol_into_assets(&symbol, &exchange_symbols);
                 handles.push(self.margin_repays(asset, symbol.clone()));
             }
         }
@@ -1117,22 +1102,6 @@ impl ExchangeClient for BinanceFetcher {
     }
 }
 
-async fn await_chunks<T>(handles: Vec<impl Future<Output = T>>, chunk_size: usize) -> Vec<T> {
-    let mut all_results = Vec::new();
-
-    let mut chunk = Vec::new();
-    let handles_size = handles.len();
-    for (i, handle) in handles.into_iter().enumerate() {
-        chunk.push(handle);
-
-        if chunk.len() == chunk_size || i == handles_size - 1 {
-            all_results.extend(join_all(chunk).await);
-            chunk = Vec::new();
-        }
-    }
-    all_results
-}
-
 fn find_price_at(prices: &Vec<(u64, f64)>, time: u64) -> f64 {
     prices
         .iter()
@@ -1141,6 +1110,23 @@ fn find_price_at(prices: &Vec<(u64, f64)>, time: u64) -> f64 {
             false => None,
         })
         .unwrap_or(0.0)
+}
+
+fn symbol_into_assets(symbol: &str, exchange_symbols: &Vec<Symbol>) -> (String, String) {
+    let mut iter = exchange_symbols.iter();
+    loop {
+        if let Some(s) = iter.next() {
+            if symbol.starts_with(&s.base_asset) {
+                let (base, quote) = symbol.split_at(s.base_asset.len());
+                break (base.to_string(), quote.to_string());
+            } else if symbol.starts_with(&s.quote_asset) {
+                let (base, quote) = symbol.split_at(s.quote_asset.len());
+                break (base.to_string(), quote.to_string());
+            }
+        } else {
+            panic!("could not find a asset for symbol {:?}", symbol);
+        }
+    }
 }
 
 pub(crate) mod string_or_float {
