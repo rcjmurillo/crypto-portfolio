@@ -1,52 +1,52 @@
-use std::collections::HashMap;
-use std::env;
-use std::sync::Arc;
+use std::{collections::HashMap, env, sync::Arc};
 
 use async_trait::async_trait;
-use binance::api::Binance;
-use binance::config::Config;
-use binance::market::Market;
-use binance::model::{Prices, SymbolPrice};
+use binance::{
+    api::Binance,
+    config::Config,
+    market::Market,
+    model::{Prices, SymbolPrice},
+};
 use bytes::Bytes;
-use chrono::prelude::*;
-use chrono::Duration;
+use chrono::{prelude::*, Duration};
 use futures::future::join_all;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    StatusCode,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use tokio::sync::RwLock;
 
-use crate::data_fetch::{self, ExchangeClient, OperationStatus, TradeSide};
-use crate::errors::Error;
-use crate::result::Result;
-use crate::sync::ValueLock;
+use crate::{
+    binance::response_model::*, data_fetch::ExchangeClient, errors::Error, result::Result,
+    sync::ValueLock,
+};
 
 const ENDPOINT_CONCURRENCY: usize = 10;
 
 #[derive(Copy, Clone)]
-pub enum BinanceRegion {
+pub enum Region {
     Global,
     Us,
 }
 
-struct BinanceCredentials {
+struct Credentials {
     api_key: String,
     secret_key: String,
 }
 
-impl From<BinanceRegion> for BinanceCredentials {
-    fn from(region: BinanceRegion) -> Self {
+impl From<Region> for Credentials {
+    fn from(region: Region) -> Self {
         match region {
-            BinanceRegion::Global => BinanceCredentials {
+            Region::Global => Credentials {
                 api_key: env::var("API_KEY").unwrap(),
                 secret_key: env::var("API_SECRET").unwrap(),
             },
-            BinanceRegion::Us => BinanceCredentials {
+            Region::Us => Credentials {
                 api_key: env::var("API_KEY_US").unwrap(),
                 secret_key: env::var("API_SECRET_US").unwrap(),
             },
@@ -54,37 +54,37 @@ impl From<BinanceRegion> for BinanceCredentials {
     }
 }
 
-struct BinanceEndpoints {
-    fiat_deposits: Option<String>,
-    deposits: String,
-    withdraws: Option<String>,
-    trades: String,
-    margin_trades: Option<String>,
-    margin_borrows: Option<String>,
-    margin_repays: Option<String>,
-    klines: String,
-    exchange_info: String,
+struct Endpoints {
+    fiat_deposits: Option<&'static str>,
+    deposits: &'static str,
+    withdraws: Option<&'static str>,
+    trades: &'static str,
+    margin_trades: Option<&'static str>,
+    margin_borrows: Option<&'static str>,
+    margin_repays: Option<&'static str>,
+    klines: &'static str,
+    exchange_info: &'static str,
 }
 
-impl From<BinanceRegion> for BinanceEndpoints {
-    fn from(region: BinanceRegion) -> Self {
+impl From<Region> for Endpoints {
+    fn from(region: Region) -> Self {
         match region {
-            BinanceRegion::Global => BinanceEndpoints {
-                deposits: String::from("/wapi/v3/depositHistory.html"),
+            Region::Global => Endpoints {
+                deposits: "/wapi/v3/depositHistory.html",
                 fiat_deposits: None,
-                trades: String::from("/api/v3/myTrades"),
-                klines: String::from("/api/v3/klines"),
+                trades: "/api/v3/myTrades",
+                klines: "/api/v3/klines",
                 exchange_info: "/api/v3/exchangeInfo".into(),
-                withdraws: Some(String::from("/wapi/v3/withdrawHistory.html")),
-                margin_trades: Some(String::from("/sapi/v1/margin/myTrades")),
-                margin_borrows: Some(String::from("/sapi/v1/margin/loan")),
-                margin_repays: Some(String::from("/sapi/v1/margin/repay")),
+                withdraws: Some("/wapi/v3/withdrawHistory.html"),
+                margin_trades: Some("/sapi/v1/margin/myTrades"),
+                margin_borrows: Some("/sapi/v1/margin/loan"),
+                margin_repays: Some("/sapi/v1/margin/repay"),
             },
-            BinanceRegion::Us => BinanceEndpoints {
-                deposits: String::from("/wapi/v3/depositHistory.html"),
-                fiat_deposits: Some(String::from("/sapi/v1/fiatpayment/query/deposit/history")),
-                trades: String::from("/api/v3/myTrades"),
-                klines: String::from("/api/v3/klines"),
+            Region::Us => Endpoints {
+                deposits: "/wapi/v3/depositHistory.html",
+                fiat_deposits: Some("/sapi/v1/fiatpayment/query/deposit/history"),
+                trades: "/api/v3/myTrades",
+                klines: "/api/v3/klines",
                 exchange_info: "/api/v3/exchangeInfo".into(),
                 withdraws: None,
                 margin_trades: None,
@@ -95,13 +95,13 @@ impl From<BinanceRegion> for BinanceEndpoints {
     }
 }
 
-type BinanceDomain = String;
+type Domain = String;
 
-impl From<BinanceRegion> for BinanceDomain {
-    fn from(region: BinanceRegion) -> Self {
+impl From<Region> for Domain {
+    fn from(region: Region) -> Self {
         match region {
-            BinanceRegion::Global => String::from("https://api3.binance.com"),
-            BinanceRegion::Us => String::from("https://api.binance.us"),
+            Region::Global => String::from("https://api3.binance.com"),
+            Region::Us => String::from("https://api.binance.us"),
         }
     }
 }
@@ -111,184 +111,6 @@ impl From<BinanceRegion> for BinanceDomain {
 enum Response<T> {
     Success(T),
     Error { code: i16, msg: String },
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BinanceFiatDeposit {
-    order_id: String,
-    offset: Option<u64>,
-    payment_channel: String,
-    payment_method: String,
-    order_status: String,
-    #[serde(with = "string_or_float")]
-    pub amount: f64,
-    #[serde(with = "string_or_float")]
-    transaction_fee: f64,
-    #[serde(with = "string_or_float")]
-    platform_fee: f64,
-}
-
-impl From<BinanceFiatDeposit> for data_fetch::Deposit {
-    fn from(d: BinanceFiatDeposit) -> Self {
-        Self {
-            asset: "USD".to_string(), // fixme: grab the actual asset from the API
-            amount: d.amount,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BinanceDepositResponse {
-    asset_log_record_list: Vec<BinanceFiatDeposit>,
-    //success: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BinanceWithdraw {
-    id: String,
-    withdraw_order_id: Option<String>,
-    amount: f64,
-    transaction_fee: f64,
-    address: String,
-    asset: String,
-    tx_id: String,
-    apply_time: u64,
-    status: u16,
-}
-
-impl From<BinanceWithdraw> for data_fetch::Withdraw {
-    fn from(w: BinanceWithdraw) -> Self {
-        Self {
-            asset: w.asset,
-            amount: w.amount,
-            time: w.apply_time,
-            fee: w.transaction_fee,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct BinanceWithdrawResponse {
-    withdraw_list: Vec<BinanceWithdraw>,
-    success: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct BinanceTrade {
-    pub symbol: String,
-    id: u64,
-    order_id: i64,
-    #[serde(with = "string_or_float")]
-    price: f64,
-    #[serde(with = "string_or_float")]
-    qty: f64,
-    // #[serde(with = "string_or_float")]
-    // quote_qty: f64,
-    #[serde(with = "string_or_float")]
-    commission: f64,
-    commission_asset: String,
-    pub time: u64,
-    is_buyer: bool,
-    // is_maker: bool,
-    // is_best_match: bool,
-
-    // computed
-    #[serde(skip)]
-    cost: f64,
-    #[serde(skip)]
-    base_asset: String,
-    #[serde(skip)]
-    quote_asset: String,
-}
-
-impl From<BinanceTrade> for data_fetch::Trade {
-    fn from(t: BinanceTrade) -> Self {
-        Self {
-            symbol: t.symbol,
-            base_asset: t.base_asset,
-            quote_asset: t.quote_asset,
-            price: t.price,
-            cost: t.cost,
-            amount: t.qty,
-            fee: t.commission,
-            fee_asset: t.commission_asset,
-            time: t.time,
-            side: if t.is_buyer {
-                TradeSide::Buy
-            } else {
-                TradeSide::Sell
-            },
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MarginBorrow {
-    tx_id: u64,
-    asset: String,
-    #[serde(with = "string_or_float")]
-    principal: f64,
-    timestamp: u64,
-    status: String,
-}
-
-impl From<MarginBorrow> for data_fetch::Loan {
-    fn from(m: MarginBorrow) -> Self {
-        Self {
-            asset: m.asset,
-            amount: m.principal,
-            timestamp: m.timestamp,
-            status: match m.status.as_str() {
-                "CONFIRMED" => OperationStatus::Success,
-                _ => OperationStatus::Failed,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MarginRepay {
-    //isolated_symbol: String,
-    #[serde(with = "string_or_float")]
-    amount: f64,
-    asset: String,
-    #[serde(with = "string_or_float")]
-    interest: f64,
-    #[serde(with = "string_or_float")]
-    principal: f64,
-    status: String,
-    timestamp: u64,
-    tx_id: u64,
-}
-
-impl From<MarginRepay> for data_fetch::Repay {
-    fn from(r: MarginRepay) -> Self {
-        Self {
-            asset: r.asset,
-            amount: r.amount,
-            interest: r.interest,
-            timestamp: r.timestamp,
-            status: match r.status.as_str() {
-                "CONFIRMED" => OperationStatus::Success,
-                _ => OperationStatus::Failed,
-            },
-        }
-    }
-}
-
-#[derive(Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Symbol {
-    pub symbol: String,
-    pub base_asset: String,
-    pub quote_asset: String,
 }
 
 type Cache = HashMap<String, Bytes>;
@@ -320,19 +142,19 @@ impl QueryParams {
 
 pub struct BinanceFetcher {
     market_client: Market,
-    credentials: BinanceCredentials,
-    region: BinanceRegion,
-    endpoints: BinanceEndpoints,
+    credentials: Credentials,
+    region: Region,
+    endpoints: Endpoints,
     endpoint_params_lock: ValueLock<String>,
     endpoint_lock: ValueLock<String>,
-    domain: BinanceDomain,
+    domain: Domain,
     cache: Arc<RwLock<Cache>>,
 }
 
 impl BinanceFetcher {
-    pub fn new(region: BinanceRegion) -> Self {
-        let credentials: BinanceCredentials = region.into();
-        let config = if let BinanceRegion::Global = region {
+    pub fn new(region: Region) -> Self {
+        let credentials: Credentials = region.into();
+        let config = if let Region::Global = region {
             Config::default()
         } else {
             Config {
@@ -382,9 +204,9 @@ impl BinanceFetcher {
                     query = self.sign_request(query);
                 }
                 (
-                    query, 
+                    query,
                     // form a cache key = endpoint + query params
-                    format!("{}{}", endpoint, query_str)
+                    format!("{}{}", endpoint, query_str),
                 )
             }
             None => (QueryParams::new(), endpoint.to_string()),
@@ -393,7 +215,10 @@ impl BinanceFetcher {
         let _endpoint_params_lock;
         if cache {
             // Lock this endpoint with the cacheable params until the response is added to the cache
-            _endpoint_params_lock = self.endpoint_params_lock.lock_for(cache_key.clone()).await.unwrap();
+            _endpoint_params_lock = self
+                .endpoint_params_lock
+                .lock_for(cache_key.clone())
+                .await?;
             match Arc::clone(&self.cache).read().await.get(&cache_key) {
                 Some(v) => {
                     return self.as_json(&v).await;
@@ -402,9 +227,9 @@ impl BinanceFetcher {
             }
         }
 
-        // Restrict concurrency for each API endpoint, this allows `ENDPOINT_CONCURRENCY` requests to 
+        // Restrict concurrency for each API endpoint, this allows `ENDPOINT_CONCURRENCY` requests to
         // be awaiting on the same endpoint at the same time.
-        let _endpoint_lock = self.endpoint_lock.lock_for(endpoint.to_string());
+        let _endpoint_lock = self.endpoint_lock.lock_for(endpoint.to_string()).await?;
 
         let full_url = format!("{}{}?{}", self.domain, endpoint, query.to_string());
 
@@ -435,9 +260,7 @@ impl BinanceFetcher {
                     }
                 }
             }
-            Err(err) => {
-                Err(err.into())
-            }
+            Err(err) => Err(err.into()),
         };
         x
     }
@@ -491,16 +314,14 @@ impl BinanceFetcher {
         }
 
         let resp = self
-            .make_request(&self.endpoints.exchange_info, None, false, false, true)
+            .make_request(self.endpoints.exchange_info, None, false, false, true)
             .await;
         match resp {
             Ok(Response::Success(EndpointResponse { symbols })) => Ok(symbols),
-            Ok(Response::Error { code, msg }) => {
-                Err(Error::new(format!(
-                    "error from API: {:?} code: {}",
-                    msg, code
-                )))
-            }
+            Ok(Response::Error { code, msg }) => Err(Error::new(format!(
+                "error from API: {:?} code: {}",
+                msg, code
+            ))),
             Err(err) => {
                 println!("could not parse exchange info response: {:?}", err);
                 Err(err)
@@ -508,14 +329,20 @@ impl BinanceFetcher {
         }
     }
 
-    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<BinanceFiatDeposit>> {
+    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatDeposit>> {
+        #[derive(Debug, Serialize, Deserialize, Clone)]
+        #[serde(rename_all = "camelCase")]
+        struct DepositResponse {
+            asset_log_record_list: Vec<FiatDeposit>,
+        }
+
         if let None = self.endpoints.fiat_deposits {
             return Ok(vec![]);
         }
 
         let now = Utc::now();
 
-        let mut deposits: Vec<BinanceFiatDeposit> = Vec::new();
+        let mut deposits: Vec<FiatDeposit> = Vec::new();
         // TODO: devise a better way to fetch all deposits
         for i in 0..5 {
             let start = now - Duration::days(90 * (i + 1));
@@ -526,7 +353,7 @@ impl BinanceFetcher {
             query.add("endTime", end.timestamp_millis());
 
             let result_deposits = self
-                .make_request::<BinanceDepositResponse>(
+                .make_request::<DepositResponse>(
                     self.endpoints.fiat_deposits.as_ref().unwrap(),
                     Some(query),
                     true,
@@ -552,13 +379,19 @@ impl BinanceFetcher {
         Ok(deposits)
     }
 
-    pub async fn fetch_withdraws(&self) -> Result<Vec<BinanceWithdraw>> {
+    pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
+        #[derive(Debug, Serialize, Deserialize, Clone)]
+        #[serde(rename_all = "camelCase")]
+        struct WithdrawResponse {
+            withdraw_list: Vec<Withdraw>,
+        }
+
         if let None = self.endpoints.withdraws {
             return Ok(Vec::new());
         }
 
         let now = Utc::now();
-        let mut withdraws = Vec::<BinanceWithdraw>::new();
+        let mut withdraws = Vec::<Withdraw>::new();
         // TODO: devise a better way to fetch all withdraws
         for i in 0..6 {
             let start = now - Duration::days(90 * (i + 1));
@@ -569,7 +402,7 @@ impl BinanceFetcher {
             query.add("endTime", end.timestamp_millis().to_string());
 
             let resp = self
-                .make_request::<BinanceWithdrawResponse>(
+                .make_request::<WithdrawResponse>(
                     self.endpoints.withdraws.as_ref().unwrap(),
                     Some(query),
                     true,
@@ -582,34 +415,11 @@ impl BinanceFetcher {
         Ok(withdraws)
     }
 
-    pub fn price(&self, symbol: String) -> Result<SymbolPrice> {
-        match self.market_client.get_price(symbol.clone()) {
-            Ok(symbol_price) => Ok(symbol_price),
-            Err(err) => {
-                panic!("could not get price for {}: {}", symbol, err);
-            }
-        }
-    }
-
     pub fn all_prices(&self) -> Result<Vec<SymbolPrice>> {
         match self.market_client.get_all_prices() {
             Ok(Prices::AllPrices(prices)) => Ok(prices),
             Err(err) => {
                 panic!("could not get price for: {}", err);
-            }
-        }
-    }
-
-    async fn asset_usd_price_at_time(&self, asset: &String, time: u64) -> Result<f64> {
-        let (first, second) = match self.region {
-            BinanceRegion::Global => ("USDT", "USD"),
-            BinanceRegion::Us => ("USD", "USDT"),
-        };
-        match self.price_at(&format!("{}{}", asset, first), time).await {
-            Ok(p) => Ok(p),
-            Err(_) => {
-                // retry with the other one
-                self.price_at(&format!("{}{}", asset, second), time).await
             }
         }
     }
@@ -626,7 +436,7 @@ impl BinanceFetcher {
 
         let resp = self
             .make_request::<Response<Vec<Vec<Value>>>>(
-                &self.endpoints.klines,
+                self.endpoints.klines,
                 Some(query),
                 false,
                 false,
@@ -654,21 +464,29 @@ impl BinanceFetcher {
         start_ts: u64,
         end_ts: u64,
     ) -> Result<Vec<(u64, f64)>> {
+        // Fetch the prices' 30m-candles from `start_ts` to `end_ts`.
+        // The API only returns at max 1000 entries per request, thus the full 
+        // range needs to be split into buckets of 1000 30m-candles.
+
+        // Shift the start and end times a bit so both in the first and last buckets.
         let start_time = start_ts - 30 * 60 * 1000 * 2;
         let end_time = end_ts + 30 * 60 * 1000 * 2;
 
-        let limit = 1000;
+        let limit = 1000;  // API response size limit
 
-        // create buckets to fetch the results
+        let divmod = |a: u64, b: u64| (a / b, a % b);
+
         let candle_size_milis: u64 = 30 * 60 * 1000;
+        let num_candles = match divmod(end_time - start_time, candle_size_milis) {
+            (r, 0) => r,
+            (r, _) => r + 1
+        };
+        let num_batches = match divmod(num_candles, limit) {
+            (r, 0) => r,
+            (r, _) => r + 1,
+        };
         let milis_per_batch = candle_size_milis * limit;
-        let num_candles = (end_time - start_time) / candle_size_milis
-            + (if (end_time - start_time) % candle_size_milis > 0 {
-                1
-            } else {
-                0
-            });
-        let num_batches = num_candles / limit + (if num_candles % limit > 0 { 1 } else { 0 });
+        // Generate the set of timestamp ranges to fetch from the API
         let ranges: Vec<(u64, u64)> = (0..num_batches)
             .scan(start_time, |current_ts, _| {
                 let ts = *current_ts;
@@ -690,7 +508,7 @@ impl BinanceFetcher {
             query.add("limit", limit);
 
             handles.push(self.make_request::<Response<Vec<Vec<Value>>>>(
-                &self.endpoints.klines,
+                self.endpoints.klines,
                 Some(query),
                 false,
                 false,
@@ -734,8 +552,8 @@ impl BinanceFetcher {
         end_ts: u64,
     ) -> Result<Vec<(u64, f64)>> {
         let (first, second) = match self.region {
-            BinanceRegion::Global => ("USDT", "USD"),
-            BinanceRegion::Us => ("USD", "USDT"),
+            Region::Global => ("USDT", "USD"),
+            Region::Us => ("USD", "USDT"),
         };
         match self
             .prices_in_range(&format!("{}{}", asset, first), start_ts, end_ts)
@@ -755,8 +573,8 @@ impl BinanceFetcher {
         symbol: &str,
         endpoint: &str,
         extra_params: Option<QueryParams>,
-    ) -> Result<Vec<BinanceTrade>> {
-        let mut trades = Vec::<BinanceTrade>::new();
+    ) -> Result<Vec<Trade>> {
+        let mut trades = Vec::<Trade>::new();
         let mut last_id = 0;
 
         let exchange_symbols = self.exchange_symbols().await?;
@@ -772,13 +590,7 @@ impl BinanceFetcher {
             }
 
             let resp = self
-                .make_request::<Response<Vec<BinanceTrade>>>(
-                    endpoint,
-                    Some(query),
-                    true,
-                    true,
-                    true,
-                )
+                .make_request::<Response<Vec<Trade>>>(endpoint, Some(query), true, true, true)
                 .await;
 
             match resp {
@@ -839,18 +651,18 @@ impl BinanceFetcher {
         Ok(trades)
     }
 
-    pub async fn fetch_trades(&self, symbol: String) -> Result<Vec<BinanceTrade>> {
-        let endpoints: BinanceEndpoints = self.region.into();
+    pub async fn fetch_trades(&self, symbol: String) -> Result<Vec<Trade>> {
+        let endpoints: Endpoints = self.region.into();
         self.fetch_trades_from_endpoint(&symbol, &endpoints.trades, None)
             .await
     }
 
-    async fn fetch_margin_trades(&self, symbol: String) -> Result<Vec<BinanceTrade>> {
+    async fn fetch_margin_trades(&self, symbol: String) -> Result<Vec<Trade>> {
         if let None = self.endpoints.margin_trades {
             return Ok(Vec::new());
         }
 
-        let mut trades = Vec::<BinanceTrade>::new();
+        let mut trades = Vec::<Trade>::new();
 
         for is_isolated in vec!["TRUE", "FALSE"] {
             let mut extra_params = QueryParams::new();
@@ -986,13 +798,13 @@ impl BinanceFetcher {
 
 #[async_trait]
 impl ExchangeClient for BinanceFetcher {
-    type Trade = BinanceTrade;
+    type Trade = Trade;
     type Loan = MarginBorrow;
     type Repay = MarginRepay;
-    type Deposit = BinanceFiatDeposit;
-    type Withdraw = BinanceWithdraw;
+    type Deposit = FiatDeposit;
+    type Withdraw = Withdraw;
 
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
+    async fn trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1008,7 +820,7 @@ impl ExchangeClient for BinanceFetcher {
             }
         }
 
-        let all_trades: Vec<BinanceTrade> = join_all(handles)
+        let all_trades: Vec<Trade> = join_all(handles)
             .await
             .into_iter()
             .filter_map(|r| match r {
@@ -1022,7 +834,7 @@ impl ExchangeClient for BinanceFetcher {
         Ok(all_trades)
     }
 
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<BinanceTrade>> {
+    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .exchange_symbols()
@@ -1093,11 +905,11 @@ impl ExchangeClient for BinanceFetcher {
             .collect())
     }
 
-    async fn deposits(&self, _: &[String]) -> Result<Vec<BinanceFiatDeposit>> {
+    async fn deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
         Ok(Vec::new())
     }
 
-    async fn withdraws(&self, _: &[String]) -> Result<Vec<BinanceWithdraw>> {
+    async fn withdraws(&self, _: &[String]) -> Result<Vec<Withdraw>> {
         self.fetch_withdraws().await
     }
 }
@@ -1125,37 +937,6 @@ fn symbol_into_assets(symbol: &str, exchange_symbols: &Vec<Symbol>) -> (String, 
             }
         } else {
             panic!("could not find a asset for symbol {:?}", symbol);
-        }
-    }
-}
-
-pub(crate) mod string_or_float {
-    use std::fmt;
-
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: fmt::Display,
-        S: Serializer,
-    {
-        serializer.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum StringOrFloat {
-            String(String),
-            Float(f64),
-        }
-
-        match StringOrFloat::deserialize(deserializer)? {
-            StringOrFloat::String(s) => s.parse().map_err(de::Error::custom),
-            StringOrFloat::Float(i) => Ok(i),
         }
     }
 }

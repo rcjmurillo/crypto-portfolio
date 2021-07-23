@@ -9,12 +9,11 @@ mod errors;
 mod result;
 mod sync;
 mod tracker;
-mod utils;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::binance::{BinanceFetcher, BinanceRegion};
+use crate::binance::{BinanceFetcher, Region as BinanceRegion};
 use crate::data_fetch::{Deposit, ExchangeClient, Loan, Repay, Trade, Withdraw};
 use crate::private::all_symbols;
 #[cfg(feature = "private_ops")]
@@ -163,9 +162,6 @@ pub async fn main() -> Result<()> {
         .map(|x| (x.symbol, x.price))
         .collect();
 
-    // println!("coin balances: {:?}", coin_balances);
-
-    // println!("sorting balances...");
     coin_balances.sort_by(|a, b| {
         let price_a = all_prices.get(&(String::from(a.0) + "USDT")).unwrap();
         let price_b = all_prices.get(&(String::from(b.0) + "USDT")).unwrap();
@@ -176,7 +172,6 @@ pub async fn main() -> Result<()> {
         }
     });
 
-    // println!("building table...");
     let mut table = Vec::new();
     for (coin, &amount) in coin_balances {
         let price = all_prices.get(&(coin.clone() + "USDT")).unwrap();

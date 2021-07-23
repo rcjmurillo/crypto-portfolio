@@ -10,6 +10,11 @@ use crate::private::PrivateOps;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+pub enum OperationStatus {
+    Success,
+    Failed,
+}
+
 #[async_trait]
 pub trait DataFetcher {
     async fn symbol_price_at(&self, symbol: &str, time: u64) -> f64;
@@ -66,7 +71,6 @@ pub struct Trade {
     pub side: TradeSide,
 }
 
-#[async_trait]
 impl IntoOperations for Trade {
     fn into_ops(self) -> Vec<Operation> {
         let mut ops = Vec::new();
@@ -108,7 +112,6 @@ pub struct Deposit {
     pub amount: f64,
 }
 
-#[async_trait]
 impl IntoOperations for Deposit {
     fn into_ops(self) -> Vec<Operation> {
         vec![Operation {
@@ -127,7 +130,6 @@ pub struct Withdraw {
     pub fee: f64,
 }
 
-#[async_trait]
 impl IntoOperations for Withdraw {
     fn into_ops(self) -> Vec<Operation> {
         vec![Operation {
@@ -138,11 +140,6 @@ impl IntoOperations for Withdraw {
     }
 }
 
-pub enum OperationStatus {
-    Success,
-    Failed,
-}
-
 pub struct Loan {
     pub asset: String,
     pub amount: f64,
@@ -150,7 +147,6 @@ pub struct Loan {
     pub status: OperationStatus,
 }
 
-#[async_trait]
 impl IntoOperations for Loan {
     fn into_ops(self) -> Vec<Operation> {
         match self.status {
@@ -174,7 +170,6 @@ pub struct Repay {
     pub status: OperationStatus,
 }
 
-#[async_trait]
 impl IntoOperations for Repay {
     fn into_ops(self) -> Vec<Operation> {
         match self.status {
@@ -193,7 +188,7 @@ impl IntoOperations for Repay {
 impl From<&HashMap<String, String>> for Deposit {
     fn from(data: &HashMap<String, String>) -> Self {
         Deposit {
-            asset: String::from("USD"),
+            asset: String::from("USD"), // fixme: get asset from hashmap
             amount: data.get("amount").unwrap().parse::<f64>().unwrap(),
         }
     }
