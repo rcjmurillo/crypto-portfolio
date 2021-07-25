@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::data_fetch::{self, OperationStatus, TradeSide};
+use crate::operations::{self, OperationStatus, TradeSide};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +18,7 @@ pub struct FiatDeposit {
     platform_fee: f64,
 }
 
-impl From<FiatDeposit> for data_fetch::Deposit {
+impl From<FiatDeposit> for operations::Deposit {
     fn from(d: FiatDeposit) -> Self {
         Self {
             asset: "USD".to_string(), // fixme: grab the actual asset from the API
@@ -41,7 +41,7 @@ pub struct Withdraw {
     status: u16,
 }
 
-impl From<Withdraw> for data_fetch::Withdraw {
+impl From<Withdraw> for operations::Withdraw {
     fn from(w: Withdraw) -> Self {
         Self {
             asset: w.asset,
@@ -76,7 +76,7 @@ pub struct Trade {
     pub quote_asset: String,
 }
 
-impl From<Trade> for data_fetch::Trade {
+impl From<Trade> for operations::Trade {
     fn from(t: Trade) -> Self {
         Self {
             symbol: t.symbol,
@@ -108,7 +108,7 @@ pub struct MarginBorrow {
     status: String,
 }
 
-impl From<MarginBorrow> for data_fetch::Loan {
+impl From<MarginBorrow> for operations::Loan {
     fn from(m: MarginBorrow) -> Self {
         Self {
             asset: m.asset,
@@ -138,7 +138,7 @@ pub struct MarginRepay {
     tx_id: u64,
 }
 
-impl From<MarginRepay> for data_fetch::Repay {
+impl From<MarginRepay> for operations::Repay {
     fn from(r: MarginRepay) -> Self {
         Self {
             asset: r.asset,

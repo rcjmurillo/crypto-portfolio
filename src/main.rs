@@ -4,27 +4,28 @@ mod private;
 #[cfg(feature = "private_ops")]
 mod private_ops;
 
-mod data_fetch;
 mod errors;
+mod operations;
 mod result;
 mod sync;
-mod tracker;
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::binance::{BinanceFetcher, Region as BinanceRegion};
-use crate::data_fetch::{Deposit, ExchangeClient, Loan, Repay, Trade, Withdraw};
-use crate::private::all_symbols;
 #[cfg(feature = "private_ops")]
 use crate::private::PrivateOps;
-use crate::result::Result;
-use crate::tracker::Operation;
-use crate::tracker::{CoinTracker, IntoOperations};
+use crate::{
+    binance::{BinanceFetcher, Region as BinanceRegion},
+    operations::{
+        BalanceTracker, CoinBalance, Deposit, ExchangeClient, IntoOperations, Loan, Operation,
+        Repay, Trade, Withdraw,
+    },
+    private::all_symbols,
+    result::Result,
+};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 use tokio::sync::mpsc;
-
 
 async fn ops_from_client<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
 where
@@ -89,51 +90,51 @@ where
 }
 
 pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
-        let (tx, rx) = mpsc::channel(100);
-        let tx1 = tx.clone();
-        let tx2 = tx.clone();
+    let (tx, rx) = mpsc::channel(100);
+    let tx1 = tx.clone();
+    let tx2 = tx.clone();
 
-        tokio::spawn(async move {
-            let binance_client = BinanceFetcher::new(BinanceRegion::Global);
-            for op in ops_from_client("binance", &binance_client, &all_symbols()[..]).await {
-                match tx1.send(op).await {
-                    Ok(()) => (),
-                    Err(err) => panic!("could not send operation: {}", err)
-                }
+    tokio::spawn(async move {
+        let binance_client = BinanceFetcher::new(BinanceRegion::Global);
+        for op in ops_from_client("binance", &binance_client, &all_symbols()[..]).await {
+            match tx1.send(op).await {
+                Ok(()) => (),
+                Err(err) => panic!("could not send operation: {}", err),
             }
-        });
-
-        tokio::spawn(async move {
-            let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
-            for op in ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await {
-                match tx2.send(op).await {
-                    Ok(()) => (),
-                    Err(err) => panic!("could not send operation: {}", err)
-                }
-            }
-        });
-
-        #[cfg(feature="private_ops")]
-        {
-            let tx3 = tx.clone();
-            tokio::spawn(async move {
-                let private_ops = PrivateOps::new();
-                for op in ops_from_client("private ops", &private_ops, &all_symbols()[..]).await {
-                    match tx3.send(op).await {
-                        Ok(()) => (),
-                        Err(err) => panic!("could not send operation: {}", err)
-                    }
-                }
-            });
         }
-        println!("\nDONE getting operations...");
+    });
 
-        rx
+    tokio::spawn(async move {
+        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
+        for op in ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await {
+            match tx2.send(op).await {
+                Ok(()) => (),
+                Err(err) => panic!("could not send operation: {}", err),
+            }
+        }
+    });
+
+    #[cfg(feature = "private_ops")]
+    {
+        let tx3 = tx.clone();
+        tokio::spawn(async move {
+            let private_ops = PrivateOps::new();
+            for op in ops_from_client("private ops", &private_ops, &all_symbols()[..]).await {
+                match tx3.send(op).await {
+                    Ok(()) => (),
+                    Err(err) => panic!("could not send operation: {}", err),
+                }
+            }
+        });
+    }
+    println!("\nDONE getting operations...");
+
+    rx
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let coin_tracker = CoinTracker::new();
+    let mut coin_tracker = BalanceTracker::new();
     let binance_client = BinanceFetcher::new(BinanceRegion::Global);
     let binance_client_us = BinanceFetcher::new(BinanceRegion::Us);
 
@@ -147,8 +148,12 @@ pub async fn main() -> Result<()> {
     let mut coin_balances = HashMap::<String, f64>::new();
 
     // Group coins
-    for (coin, balance) in (&coin_tracker).balances() {
-        *coin_balances.entry(coin.clone()).or_insert(0.0) += balance.amount;
+    for (coin, balance) in (&coin_tracker)
+        .balances()
+        .iter()
+        .filter(|(_, b)| b.amount >= 0.0 && b.cost >= 0.0)
+    {
+        *coin_balances.entry(coin.to_string()).or_insert(0.0) += balance.amount;
     }
 
     let mut coin_balances = coin_balances

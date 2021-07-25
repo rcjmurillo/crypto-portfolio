@@ -22,7 +22,7 @@ use sha2::Sha256;
 use tokio::sync::RwLock;
 
 use crate::{
-    binance::response_model::*, data_fetch::ExchangeClient, errors::Error, result::Result,
+    binance::response_model::*, operations::ExchangeClient, errors::Error, result::Result,
     sync::ValueLock,
 };
 
