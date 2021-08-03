@@ -22,8 +22,8 @@ use sha2::Sha256;
 use tokio::sync::RwLock;
 
 use crate::{
-    binance::response_model::*, operations::ExchangeClient, errors::Error, result::Result,
-    sync::ValueLock,
+    binance::response_model::*, cli::ExchangeConfig, errors::Error,
+    operations::ExchangeDataFetcher, result::Result, sync::ValueLock,
 };
 
 const ENDPOINT_CONCURRENCY: usize = 10;
@@ -140,7 +140,8 @@ impl QueryParams {
     }
 }
 
-pub struct BinanceFetcher {
+pub struct BinanceFetcher<'a> {
+    config: &'a Option<ExchangeConfig>,
     market_client: Market,
     credentials: Credentials,
     region: Region,
@@ -151,10 +152,10 @@ pub struct BinanceFetcher {
     cache: Arc<RwLock<Cache>>,
 }
 
-impl BinanceFetcher {
-    pub fn new(region: Region) -> Self {
+impl<'a> BinanceFetcher<'a> {
+    pub fn new(region: Region, config: &'a Option<ExchangeConfig>) -> Self {
         let credentials: Credentials = region.into();
-        let config = if let Region::Global = region {
+        let client_config = if let Region::Global = region {
             Config::default()
         } else {
             Config {
@@ -171,8 +172,9 @@ impl BinanceFetcher {
             market_client: Binance::new_with_config(
                 Some(credentials.api_key.clone()),
                 Some(credentials.secret_key.clone()),
-                &config,
+                &client_config,
             ),
+            config,
             credentials,
             region,
             endpoints: region.into(),
@@ -429,10 +431,10 @@ impl BinanceFetcher {
         let end_time = time + 30 * 60 * 1000;
 
         let mut query = QueryParams::new();
-        query.add("symbol", symbol.to_string());
-        query.add("interval", "30m".to_string());
-        query.add("startTime", start_time.to_string());
-        query.add("endTime", end_time.to_string());
+        query.add("symbol", symbol);
+        query.add("interval", "30m");
+        query.add("startTime", start_time);
+        query.add("endTime", end_time);
 
         let resp = self
             .make_request::<Response<Vec<Vec<Value>>>>(
@@ -465,21 +467,21 @@ impl BinanceFetcher {
         end_ts: u64,
     ) -> Result<Vec<(u64, f64)>> {
         // Fetch the prices' 30m-candles from `start_ts` to `end_ts`.
-        // The API only returns at max 1000 entries per request, thus the full 
+        // The API only returns at max 1000 entries per request, thus the full
         // range needs to be split into buckets of 1000 30m-candles.
 
         // Shift the start and end times a bit so both in the first and last buckets.
         let start_time = start_ts - 30 * 60 * 1000 * 2;
         let end_time = end_ts + 30 * 60 * 1000 * 2;
 
-        let limit = 1000;  // API response size limit
+        let limit = 1000; // API response size limit
 
         let divmod = |a: u64, b: u64| (a / b, a % b);
 
         let candle_size_milis: u64 = 30 * 60 * 1000;
         let num_candles = match divmod(end_time - start_time, candle_size_milis) {
             (r, 0) => r,
-            (r, _) => r + 1
+            (r, _) => r + 1,
         };
         let num_batches = match divmod(num_candles, limit) {
             (r, 0) => r,
@@ -797,7 +799,7 @@ impl BinanceFetcher {
 }
 
 #[async_trait]
-impl ExchangeClient for BinanceFetcher {
+impl ExchangeDataFetcher for BinanceFetcher<'_> {
     type Trade = Trade;
     type Loan = MarginBorrow;
     type Repay = MarginRepay;
@@ -905,7 +907,7 @@ impl ExchangeClient for BinanceFetcher {
             .collect())
     }
 
-    async fn deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
+    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
         Ok(Vec::new())
     }
 

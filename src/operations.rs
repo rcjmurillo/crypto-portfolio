@@ -5,8 +5,6 @@ use std::vec::Vec;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-#[cfg(feature = "private_ops")]
-use crate::private::PrivateOps;
 use crate::result::Result;
 
 pub enum OperationStatus {
@@ -19,48 +17,70 @@ pub trait IntoOperations {
 }
 
 #[async_trait]
-pub trait ExchangeClient {
+pub trait ExchangeDataFetcher {
     type Trade;
     type Loan;
     type Repay;
     type Deposit;
     type Withdraw;
 
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Self::Trade>>
     where
-        Self::Trade: Into<Trade>;
+        Self::Trade: Into<Trade>,
+    {
+        Ok(Vec::new())
+    }
 
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Self::Trade>>
+    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Self::Trade>>
     where
-        Self::Trade: Into<Trade>;
+        Self::Trade: Into<Trade>,
+    {
+        Ok(Vec::new())
+    }
 
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<Self::Loan>>
+    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Self::Loan>>
     where
-        Self::Loan: Into<Loan>;
+        Self::Loan: Into<Loan>,
+    {
+        Ok(Vec::new())
+    }
 
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<Self::Repay>>
+    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Self::Repay>>
     where
-        Self::Repay: Into<Repay>;
+        Self::Repay: Into<Repay>,
+    {
+        Ok(Vec::new())
+    }
 
-    async fn deposits(&self, symbols: &[String]) -> Result<Vec<Self::Deposit>>
+    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Self::Deposit>>
     where
-        Self::Deposit: Into<Deposit>;
+        Self::Deposit: Into<Deposit>,
+    {
+        Ok(Vec::new())
+    }
 
-    async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Self::Withdraw>>
+    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Self::Withdraw>>
     where
-        Self::Withdraw: Into<Withdraw>;
+        Self::Withdraw: Into<Withdraw>,
+    {
+        Ok(Vec::new())
+    }
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub enum TradeSide {
     Buy,
     Sell,
 }
 
+#[derive(Debug, Deserialize, Clone)]
 pub struct Trade {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
     pub price: f64,
+    #[serde(skip)]
     pub cost: f64,
     pub amount: f64,
     pub fee: f64,
@@ -103,7 +123,7 @@ impl IntoOperations for Trade {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Deposit {
     pub asset: String,
     pub amount: f64,

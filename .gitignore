@@ -1,5 +1,2 @@
 /target
 .envrc
-
-# private operations file
-src/private_ops.rs

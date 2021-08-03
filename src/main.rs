@@ -1,35 +1,31 @@
 mod binance;
-mod private;
-
-#[cfg(feature = "private_ops")]
-mod private_ops;
-
+mod cli;
+mod custom_ops;
 mod errors;
 mod operations;
 mod result;
 mod sync;
 
-use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 
-#[cfg(feature = "private_ops")]
-use crate::private::PrivateOps;
+use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
+use structopt::{self, StructOpt};
+use tokio::sync::mpsc;
+
 use crate::{
     binance::{BinanceFetcher, Region as BinanceRegion},
+    cli::{Args, Config},
+    custom_ops::FileDataFetcher,
     operations::{
-        BalanceTracker, CoinBalance, Deposit, ExchangeClient, IntoOperations, Loan, Operation,
-        Repay, Trade, Withdraw,
+        BalanceTracker, Deposit, ExchangeDataFetcher, IntoOperations, Loan, Operation, Repay,
+        Trade, Withdraw,
     },
-    private::all_symbols,
     result::Result,
 };
 
-use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
-use tokio::sync::mpsc;
-
 async fn ops_from_client<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
 where
-    T: ExchangeClient,
+    T: ExchangeDataFetcher + Sync,
     T::Trade: Into<Trade>,
     T::Loan: Into<Loan>,
     T::Repay: Into<Repay>,
@@ -71,7 +67,7 @@ where
     );
     println!("[{}]> fetching fiat deposits...", prefix);
     all_ops.extend(
-        c.deposits(symbols)
+        c.fiat_deposits(symbols)
             .await
             .unwrap()
             .into_iter()
@@ -89,14 +85,22 @@ where
     all_ops
 }
 
-pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
-    let (tx, rx) = mpsc::channel(100);
+async fn fetch_pipeline<'a>(
+    file_data_fetcher: Option<FileDataFetcher>,
+    config: Arc<Config>,
+) -> mpsc::Receiver<Operation> {
+    let (tx, rx) = mpsc::channel(500);
     let tx1 = tx.clone();
     let tx2 = tx.clone();
+    let tx3 = tx.clone();
 
-    tokio::spawn(async move {
-        let binance_client = BinanceFetcher::new(BinanceRegion::Global);
-        for op in ops_from_client("binance", &binance_client, &all_symbols()[..]).await {
+    let conf1 = config.clone();
+    let conf2 = config.clone();
+    let conf3 = config.clone();
+
+    let _h1 = tokio::spawn(async move {
+        let binance_client = BinanceFetcher::new(BinanceRegion::Global, &conf1.binance);
+        for op in ops_from_client("binance", &binance_client, &conf1.symbols[..]).await {
             match tx1.send(op).await {
                 Ok(()) => (),
                 Err(err) => panic!("could not send operation: {}", err),
@@ -104,9 +108,9 @@ pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
         }
     });
 
-    tokio::spawn(async move {
-        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us);
-        for op in ops_from_client("binance US", &binance_us_client, &all_symbols()[..]).await {
+    let _h2 = tokio::spawn(async move {
+        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us, &conf2.binance_us);
+        for op in ops_from_client("binance US", &binance_us_client, &conf2.symbols[..]).await {
             match tx2.send(op).await {
                 Ok(()) => (),
                 Err(err) => panic!("could not send operation: {}", err),
@@ -114,12 +118,15 @@ pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
         }
     });
 
-    #[cfg(feature = "private_ops")]
-    {
-        let tx3 = tx.clone();
+    if let Some(file_data_fetcher) = file_data_fetcher {
         tokio::spawn(async move {
-            let private_ops = PrivateOps::new();
-            for op in ops_from_client("private ops", &private_ops, &all_symbols()[..]).await {
+            for op in ops_from_client(
+                "custom file operations",
+                &file_data_fetcher,
+                &conf3.symbols[..],
+            )
+            .await
+            {
                 match tx3.send(op).await {
                     Ok(()) => (),
                     Err(err) => panic!("could not send operation: {}", err),
@@ -127,6 +134,7 @@ pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
             }
         });
     }
+
     println!("\nDONE getting operations...");
 
     rx
@@ -134,11 +142,42 @@ pub async fn fetch_pipeline<'a>() -> mpsc::Receiver<Operation> {
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    let mut coin_tracker = BalanceTracker::new();
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global);
-    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us);
+    let args = Args::from_args();
 
-    let mut s = fetch_pipeline().await;
+    let Args::Portfolio {
+        config,
+        action: _,
+        ops_file,
+    } = args;
+
+    let config = Arc::new(config);
+
+    let conf1 = config.clone();
+    let conf2 = config.clone();
+
+    let mut coin_tracker = BalanceTracker::new();
+    let binance_client = BinanceFetcher::new(BinanceRegion::Global, &conf1.binance);
+    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, &conf2.binance_us);
+
+    let file_data_fetcher = match ops_file {
+        Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
+            Ok(fetcher) => Some(fetcher),
+            Err(err) => panic!("could not process file: {}", err),
+        },
+        None => None,
+    };
+
+    let mut usd_investment: f64 = 0.0;
+    if let Some(file_data_fetcher) = file_data_fetcher.as_ref() {
+        usd_investment += file_data_fetcher
+            .fiat_deposits(&config.symbols)
+            .await?
+            .iter()
+            .map(|x| x.amount)
+            .sum::<f64>();
+    }
+
+    let mut s = fetch_pipeline(file_data_fetcher, config).await;
 
     while let Some(op) = s.recv().await {
         coin_tracker.track_operation(op);
@@ -220,19 +259,8 @@ pub async fn main() -> Result<()> {
     let deposits = binance_client.fetch_fiat_deposits().await?;
     let deposits_us = binance_client_us.fetch_fiat_deposits().await?;
 
-    let mut usd_investment = deposits.iter().map(|x| x.amount).sum::<f64>();
+    usd_investment += deposits.iter().map(|x| x.amount).sum::<f64>();
     usd_investment += deposits_us.iter().map(|x| x.amount).sum::<f64>();
-
-    #[cfg(feature = "private_ops")]
-    {
-        let private_ops = PrivateOps::new();
-        usd_investment += private_ops
-            .fetch_fiat_deposits()
-            .await?
-            .iter()
-            .map(|x| x.amount)
-            .sum::<f64>();
-    }
 
     let summary_table = vec![
         vec![
