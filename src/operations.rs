@@ -202,15 +202,6 @@ impl IntoOperations for Repay {
     }
 }
 
-impl From<&HashMap<String, String>> for Deposit {
-    fn from(data: &HashMap<String, String>) -> Self {
-        Deposit {
-            asset: String::from("USD"), // fixme: get asset from hashmap
-            amount: data.get("amount").unwrap().parse::<f64>().unwrap(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoinBalance {
     pub amount: f64,
