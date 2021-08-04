@@ -185,6 +185,14 @@ impl<'a> BinanceFetcher<'a> {
         }
     }
 
+    fn fetch_start_date(&self) -> Result<DateTime<Utc>> {
+        match self.config {
+            Some(config) => Ok(config.start_date()?),
+            // fetch last 6 months
+            None => Ok(Utc::now() - Duration::weeks(24))
+        }
+    }
+
     async fn make_request<T: DeserializeOwned>(
         &self,
         endpoint: &str,
@@ -342,16 +350,17 @@ impl<'a> BinanceFetcher<'a> {
             return Ok(vec![]);
         }
 
-        let now = Utc::now();
-
         let mut deposits: Vec<FiatDeposit> = Vec::new();
-        // TODO: devise a better way to fetch all deposits
-        for i in 0..5 {
-            let start = now - Duration::days(90 * (i + 1));
-            let end = now - Duration::days(90 * i);
+
+        // fetch in batches of 90 days from `start_date` to `now()`
+        let mut curr_start = self.fetch_start_date()?;
+        loop {
+            let now = Utc::now();
+            // the API only allows 90 days between start and end
+            let end = std::cmp::min(curr_start + Duration::days(89), now);
 
             let mut query = QueryParams::new();
-            query.add("startTime", start.timestamp_millis());
+            query.add("startTime", curr_start.timestamp_millis());
             query.add("endTime", end.timestamp_millis());
 
             let result_deposits = self
@@ -376,6 +385,11 @@ impl<'a> BinanceFetcher<'a> {
                         }
                     }),
             );
+
+            curr_start = end + Duration::milliseconds(1);
+            if end == now {
+                break;
+            }
         }
 
         Ok(deposits)
@@ -392,15 +406,17 @@ impl<'a> BinanceFetcher<'a> {
             return Ok(Vec::new());
         }
 
-        let now = Utc::now();
         let mut withdraws = Vec::<Withdraw>::new();
-        // TODO: devise a better way to fetch all withdraws
-        for i in 0..6 {
-            let start = now - Duration::days(90 * (i + 1));
-            let end = now - Duration::days(90 * i);
+
+        // fetch in batches of 90 days from `start_date` to `now()`
+        let mut curr_start = self.fetch_start_date()?;
+        loop {
+            let now = Utc::now();
+            // the API only allows 90 days between start and end
+            let end = std::cmp::min(curr_start + Duration::days(90), now);
 
             let mut query = QueryParams::new();
-            query.add("startTime", start.timestamp_millis().to_string());
+            query.add("startTime", curr_start.timestamp_millis().to_string());
             query.add("endTime", end.timestamp_millis().to_string());
 
             let resp = self
@@ -413,6 +429,11 @@ impl<'a> BinanceFetcher<'a> {
                 )
                 .await?;
             withdraws.extend(resp.withdraw_list.into_iter());
+
+            curr_start = end + Duration::milliseconds(1);
+            if end == now {
+                break;
+            }
         }
         Ok(withdraws)
     }
@@ -538,7 +559,6 @@ impl<'a> BinanceFetcher<'a> {
                     }
                 }
                 Err(err) => {
-                    println!("could not parse klines response {:?}: {:?}", symbol, err);
                     return Err(err.into());
                 }
             }
@@ -695,9 +715,7 @@ impl<'a> BinanceFetcher<'a> {
 
         let mut borrows = Vec::<MarginBorrow>::new();
 
-        let ts = NaiveDate::from_ymd(2018, 1, 1)
-            .and_hms(0, 0, 0)
-            .timestamp_millis() as u64;
+        let ts = self.fetch_start_date()?.timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
@@ -753,9 +771,7 @@ impl<'a> BinanceFetcher<'a> {
 
         let mut repays = Vec::<MarginRepay>::new();
 
-        let ts = NaiveDate::from_ymd(2018, 1, 1)
-            .and_hms(0, 0, 0)
-            .timestamp_millis() as u64;
+        let ts = self.fetch_start_date()?.timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {

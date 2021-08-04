@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
-use tokio::{
-    sync::{Mutex, OwnedSemaphorePermit, Semaphore},
-    time::{sleep, timeout, Duration},
-};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use crate::result::Result;
 
@@ -50,6 +47,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::{sleep, timeout, Duration};
 
     async fn incr_counter(
         counter: &Mutex<u8>,
