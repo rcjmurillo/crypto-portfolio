@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, fmt};
 
 use bytes::Bytes;
 use chrono::{prelude::*, Duration};
@@ -32,8 +32,8 @@ struct Credentials {
     secret_key: String,
 }
 
-impl From<Region> for Credentials {
-    fn from(region: Region) -> Self {
+impl Credentials {
+    fn for_region(region: &Region) -> Self {
         match region {
             Region::Global => Credentials {
                 api_key: env::var("BINANCE_API_KEY").unwrap(),
@@ -59,8 +59,8 @@ struct Endpoints {
     exchange_info: &'static str,
 }
 
-impl From<Region> for Endpoints {
-    fn from(region: Region) -> Self {
+impl Endpoints {
+    fn for_region(region: &Region) -> Self {
         match region {
             Region::Global => Endpoints {
                 fiat_deposits: None,
@@ -88,13 +88,24 @@ impl From<Region> for Endpoints {
     }
 }
 
-type Domain = String;
+enum Domain {
+    Global(&'static str),
+    Us(&'static str)
+}
 
-impl From<Region> for Domain {
-    fn from(region: Region) -> Self {
+impl Domain {
+    fn for_region(region: &Region) -> Self {
         match region {
-            Region::Global => String::from("https://api3.binance.com"),
-            Region::Us => String::from("https://api.binance.us"),
+            Region::Global => Domain::Global("https://api3.binance.com"),
+            Region::Us => Domain::Us("https://api.binance.us"),
+        }
+    }
+}
+
+impl fmt::Display for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global(s) | Self::Us(s) => write!(f, "{}", s)
         }
     }
 }
@@ -114,14 +125,14 @@ pub struct BinanceFetcher<'a> {
 
 impl<'a> BinanceFetcher<'a> {
     pub fn new(region: Region, config: &'a Option<Config>) -> Self {
-        let credentials: Credentials = region.into();
+        let credentials = Credentials::for_region(&region);
         Self {
             api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
             config,
             credentials,
             region,
-            endpoints: region.into(),
-            domain: region.into(),
+            endpoints: Endpoints::for_region(&region),
+            domain: Domain::for_region(&region),
         }
     }
 
@@ -519,7 +530,7 @@ impl<'a> BinanceFetcher<'a> {
     }
 
     pub async fn fetch_trades(&self, symbol: String) -> Result<Vec<Trade>> {
-        let endpoints: Endpoints = self.region.into();
+        let endpoints = Endpoints::for_region(&self.region);
         self.fetch_trades_from_endpoint(&symbol, &endpoints.trades, None)
             .await
     }
