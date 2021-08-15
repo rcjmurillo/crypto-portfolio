@@ -11,8 +11,8 @@ use structopt::{self, StructOpt};
 use toml;
 
 use crate::{
+    errors::{Error, ErrorKind},
     result::Result,
-    errors::Error
 };
 
 pub enum PorfolioAction {
@@ -20,19 +20,19 @@ pub enum PorfolioAction {
 }
 
 impl TryFrom<&str> for PorfolioAction {
-    type Error = &'static str;
+    type Error = Error;
 
     fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
         if s == "balances" {
             Ok(PorfolioAction::Balances)
         } else {
-            Err("Invalid action")
+            Err(Error::new("Invalid action".to_string(), ErrorKind::Cli))
         }
     }
 }
 
 fn validate_porfolio_action(action: &str) -> Result<PorfolioAction> {
-    Ok(action.try_into()?)
+    action.try_into()
 }
 
 fn read_config_file(path: &OsStr) -> std::result::Result<Config, OsString> {
@@ -49,7 +49,7 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ExchangeConfig {
     // How far back to look for transactions
     start_date: toml::Value,
@@ -60,7 +60,10 @@ impl ExchangeConfig {
         if let Some(start_date) = self.start_date.as_datetime() {
             Ok(start_date.to_string().parse::<DateTime<Utc>>().unwrap())
         } else {
-            return Err(Error::new("could not parse date from config".to_string()));
+            return Err(Error::new(
+                "could not parse date from config".to_string(),
+                ErrorKind::Cli,
+            ));
         }
     }
 }
@@ -78,8 +81,10 @@ pub struct Config {
 
 impl Config {
     pub fn from_file_path(file_path: PathBuf) -> Result<Self> {
-        let contents = read_to_string(file_path)?;
-        Ok(toml::from_str(contents.as_str())?)
+        let contents = read_to_string(file_path)
+            .map_err(|e| Error::new(format!("couldn't read config file: {}", e), ErrorKind::Cli))?;
+        toml::from_str(contents.as_str())
+            .map_err(|e| Error::new(format!("couldn't parse config file: {}", e), ErrorKind::Cli))
     }
 }
 

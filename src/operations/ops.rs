@@ -143,7 +143,7 @@ impl IntoOperations for Deposit {
 pub struct Withdraw {
     pub asset: String,
     pub amount: f64,
-    pub time: u64,
+    pub time: String,
     pub fee: f64,
 }
 

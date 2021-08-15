@@ -1,19 +1,17 @@
-mod binance;
 mod cli;
 mod custom_ops;
 mod errors;
 mod operations;
 mod result;
-mod sync;
 
-use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, sync::Arc, convert::TryInto};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
+use binance::{BinanceFetcher, Region as BinanceRegion};
 use crate::{
-    binance::{BinanceFetcher, Region as BinanceRegion},
     cli::{Args, Config},
     custom_ops::FileDataFetcher,
     operations::{
@@ -89,7 +87,7 @@ async fn fetch_pipeline<'a>(
     file_data_fetcher: Option<FileDataFetcher>,
     config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
-    let (tx, rx) = mpsc::channel(500);
+    let (tx, rx) = mpsc::channel(1000);
     let tx1 = tx.clone();
     let tx2 = tx.clone();
     let tx3 = tx.clone();
@@ -99,21 +97,29 @@ async fn fetch_pipeline<'a>(
     let conf3 = config.clone();
 
     let _h1 = tokio::spawn(async move {
-        let binance_client = BinanceFetcher::new(BinanceRegion::Global, &conf1.binance);
+        let config = match &conf1.binance {
+            Some(c) => Some(c.clone().try_into().unwrap()),
+            None => None
+        };
+        let binance_client = BinanceFetcher::new(BinanceRegion::Global, &config);
         for op in ops_from_client("binance", &binance_client, &conf1.symbols[..]).await {
             match tx1.send(op).await {
                 Ok(()) => (),
-                Err(err) => panic!("could not send operation: {}", err),
+                Err(err) => println!("could not send operation: {}", err),
             }
         }
     });
 
     let _h2 = tokio::spawn(async move {
-        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us, &conf2.binance_us);
+        let config = match &conf2.binance {
+            Some(c) => Some(c.clone().try_into().unwrap()),
+            None => None
+        };
+        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us, &config);
         for op in ops_from_client("binance US", &binance_us_client, &conf2.symbols[..]).await {
             match tx2.send(op).await {
                 Ok(()) => (),
-                Err(err) => panic!("could not send operation: {}", err),
+                Err(err) => println!("could not send operation: {}", err),
             }
         }
     });
@@ -129,7 +135,7 @@ async fn fetch_pipeline<'a>(
             {
                 match tx3.send(op).await {
                     Ok(()) => (),
-                    Err(err) => panic!("could not send operation: {}", err),
+                    Err(err) => println!("could not send operation: {}", err),
                 }
             }
         });
@@ -152,17 +158,26 @@ pub async fn main() -> Result<()> {
 
     let config = Arc::new(config);
 
-    let conf1 = config.clone();
-    let conf2 = config.clone();
+    let config_binance = match &config.binance {
+        Some(c) => Some(c.clone().try_into()?),
+        None => None
+    };
+    let config_binance_us = match &config.binance_us {
+        Some(c) => Some(c.clone().try_into()?),
+        None => None
+    };
 
     let mut coin_tracker = BalanceTracker::new();
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global, &conf1.binance);
-    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, &conf2.binance_us);
+    let binance_client = BinanceFetcher::new(BinanceRegion::Global, &config_binance);
+    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, &config_binance_us);
 
     let file_data_fetcher = match ops_file {
         Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
             Ok(fetcher) => Some(fetcher),
-            Err(err) => panic!("could not process file: {}", err),
+            Err(err) => {
+                println!("could not process file: {}", err);
+                None
+            },
         },
         None => None,
     };
@@ -201,7 +216,8 @@ pub async fn main() -> Result<()> {
         .collect::<Vec<(&String, &f64)>>();
 
     let all_prices: HashMap<String, f64> = binance_client
-        .all_prices()?
+        .all_prices()
+        .await?
         .into_iter()
         .map(|x| (x.symbol, x.price))
         .collect();

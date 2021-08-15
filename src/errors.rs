@@ -1,56 +1,35 @@
 use std::fmt;
 
-use reqwest;
-use serde_json;
-use toml;
+#[derive(Debug)]
+pub enum ErrorKind {
+    FetchFailed,
+    Cli,
+    Other
+}
 
 #[derive(Debug)]
 pub struct Error {
     reason: String,
+    kind: ErrorKind
 }
 
 impl Error {
-    pub fn new(reason: String) -> Self {
-        Self { reason }
-    }
-
-    pub fn from_string(reason: String) -> Self {
-        Self { reason }
+    pub fn new(reason: String, kind: ErrorKind) -> Self {
+        Self { reason, kind }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.reason)
+        write!(f, "{:?}: {}", self.kind, self.reason)
     }
 }
 
-impl From<reqwest::Error> for Error {
-    fn from(err: reqwest::Error) -> Self {
-        Self {reason: err.to_string()}
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
-        Self {reason: err.to_string()}
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Self {reason: err.to_string()}
-    }
-}
-
-impl From<toml::de::Error> for Error {
-    fn from(err: toml::de::Error) -> Self {
-        Self {reason: err.to_string()}
-    }
-}
-
-impl From<&str> for Error {
-    fn from(err: &str) -> Self {
-        Self {reason: err.to_string()}
+impl From<binance::Error> for Error {
+    fn from(err: binance::Error) -> Self {
+        match err.kind {
+            binance::ErrorKind::Other => Error::new(err.reason, ErrorKind::Other),
+            _ => Error::new(format!("{}", err), ErrorKind::FetchFailed),
+        }
     }
 }

@@ -2,12 +2,14 @@ use std::fs::File;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use serde_json;
 
 use crate::{
-    binance::{BinanceFetcher, Region as BinanceRegion},
+    errors::{Error, ErrorKind},
     operations::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw},
     result::Result,
 };
+use binance::{BinanceFetcher, Region as BinanceRegion};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
@@ -23,7 +25,12 @@ pub struct FileDataFetcher {
 impl FileDataFetcher {
     pub fn from_file(file: File) -> Result<Self> {
         Ok(Self {
-            data: serde_json::from_reader(file)?,
+            data: serde_json::from_reader(file).map_err(|e| {
+                Error::new(
+                    format!("couldn't parse custom operations file: {}", e),
+                    ErrorKind::Cli,
+                )
+            })?,
         })
     }
 }
@@ -44,9 +51,7 @@ impl ExchangeDataFetcher for FileDataFetcher {
             let usd_price = if t.base_asset.starts_with("USD") {
                 1.0
             } else {
-                c.price_at(&format!("{}USDT", t.base_asset), t.time)
-                    .await
-                    .expect(&format!("could not fetch USD price for {}", t.base_asset))
+                c.price_at(&format!("{}USDT", t.base_asset), t.time).await?
             };
             t.cost = t.amount * usd_price;
         }

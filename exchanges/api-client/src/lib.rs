@@ -1,4 +1,4 @@
-mod response_model;
 mod client;
-
+mod sync;
+pub mod errors;
 pub use client::*;
