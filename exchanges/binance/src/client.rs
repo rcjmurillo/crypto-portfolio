@@ -52,7 +52,7 @@ struct Endpoints {
     withdraws: Option<&'static str>,
     trades: &'static str,
     margin_trades: Option<&'static str>,
-    margin_borrows: Option<&'static str>,
+    margin_loans: Option<&'static str>,
     margin_repays: Option<&'static str>,
     klines: &'static str,
     prices: &'static str,
@@ -70,7 +70,7 @@ impl Endpoints {
                 exchange_info: "/api/v3/exchangeInfo",
                 withdraws: Some("/sapi/v1/capital/withdraw/history"),
                 margin_trades: Some("/sapi/v1/margin/myTrades"),
-                margin_borrows: Some("/sapi/v1/margin/loan"),
+                margin_loans: Some("/sapi/v1/margin/loan"),
                 margin_repays: Some("/sapi/v1/margin/repay"),
             },
             Region::Us => Endpoints {
@@ -81,7 +81,7 @@ impl Endpoints {
                 exchange_info: "/api/v3/exchangeInfo",
                 withdraws: None,
                 margin_trades: None,
-                margin_borrows: None,
+                margin_loans: None,
                 margin_repays: None,
             },
         }
@@ -136,7 +136,7 @@ impl<'a> BinanceFetcher<'a> {
         }
     }
 
-    fn fetch_start_date(&self) -> Result<DateTime<Utc>> {
+    fn data_start_date(&self) -> Result<DateTime<Utc>> {
         match self.config {
             Some(config) => Ok(config.start_datetime),
             // fetch last 6 months
@@ -169,7 +169,7 @@ impl<'a> BinanceFetcher<'a> {
         headers
     }
 
-    pub async fn exchange_symbols(&self) -> Result<Vec<Symbol>> {
+    pub async fn fetch_exchange_symbols(&self) -> Result<Vec<Symbol>> {
         #[derive(Deserialize, Clone)]
         struct EndpointResponse {
             symbols: Vec<Symbol>,
@@ -203,7 +203,7 @@ impl<'a> BinanceFetcher<'a> {
         let mut deposits: Vec<FiatDeposit> = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.fetch_start_date()?;
+        let mut curr_start = self.data_start_date()?;
         loop {
             let now = Utc::now();
             // the API only allows 90 days between start and end
@@ -257,7 +257,7 @@ impl<'a> BinanceFetcher<'a> {
         let mut withdraws = Vec::<Withdraw>::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.fetch_start_date()?;
+        let mut curr_start = self.data_start_date()?;
         loop {
             let now = Utc::now();
             // the API only allows 90 days between start and end
@@ -295,7 +295,7 @@ impl<'a> BinanceFetcher<'a> {
         Ok(withdraws)
     }
 
-    pub async fn all_prices(&self) -> Result<Vec<SymbolPrice>> {
+    pub async fn fetch_all_prices(&self) -> Result<Vec<SymbolPrice>> {
         let resp = self.api_client.make_request(
             &format!("{}{}", self.domain, self.endpoints.prices),
             None, 
@@ -307,7 +307,7 @@ impl<'a> BinanceFetcher<'a> {
          self.as_json(resp.as_ref()).await
     }
 
-    pub async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+    pub async fn fetch_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
         let start_time = time - 30 * 60 * 1000;
         let end_time = time + 30 * 60 * 1000;
 
@@ -333,7 +333,7 @@ impl<'a> BinanceFetcher<'a> {
         Ok((high + low) / 2.0) // avg
     }
 
-    pub async fn prices_in_range(
+    async fn fetch_prices_in_range(
         &self,
         symbol: &str,
         start_ts: u64,
@@ -418,7 +418,7 @@ impl<'a> BinanceFetcher<'a> {
         Ok(all_prices)
     }
 
-    async fn usd_prices_in_range(
+    async fn fetch_usd_prices_in_range(
         &self,
         asset: &str,
         start_ts: u64,
@@ -429,13 +429,13 @@ impl<'a> BinanceFetcher<'a> {
             Region::Us => ("USD", "USDT"),
         };
         match self
-            .prices_in_range(&format!("{}{}", asset, first), start_ts, end_ts)
+            .fetch_prices_in_range(&format!("{}{}", asset, first), start_ts, end_ts)
             .await
         {
             Ok(p) => Ok(p),
             Err(_) => {
                 // retry with the other one
-                self.prices_in_range(&format!("{}{}", asset, second), start_ts, end_ts)
+                self.fetch_prices_in_range(&format!("{}{}", asset, second), start_ts, end_ts)
                     .await
             }
         }
@@ -450,7 +450,7 @@ impl<'a> BinanceFetcher<'a> {
         let mut trades = Vec::<Trade>::new();
         let mut last_id: u64 = 0;
 
-        let exchange_symbols = self.exchange_symbols().await?;
+        let exchange_symbols = self.fetch_exchange_symbols().await?;
 
         loop {
             let mut query = QueryParams::new();
@@ -496,7 +496,7 @@ impl<'a> BinanceFetcher<'a> {
                     match (min, max) {
                         (Some(min), Some(max)) => {
                             let (base_asset, _) = symbol_into_assets(symbol, &exchange_symbols);
-                            let prices = self.usd_prices_in_range(&base_asset, min, max).await?;
+                            let prices = self.fetch_usd_prices_in_range(&base_asset, min, max).await?;
                             for mut t in binance_trades.into_iter() {
                                 let (b, q) = symbol_into_assets(&t.symbol, &exchange_symbols);
                                 t.base_asset = b;
@@ -558,20 +558,20 @@ impl<'a> BinanceFetcher<'a> {
         Ok(trades)
     }
 
-    pub async fn margin_borrows(&self, asset: String, symbol: String) -> Result<Vec<MarginBorrow>> {
-        if let None = self.endpoints.margin_borrows {
+    pub async fn fetch_margin_loans(&self, asset: String, symbol: String) -> Result<Vec<MarginLoan>> {
+        if let None = self.endpoints.margin_loans {
             return Ok(Vec::new());
         }
 
         #[derive(Deserialize)]
         struct EndpointResponse {
-            rows: Vec<MarginBorrow>,
+            rows: Vec<MarginLoan>,
             total: u16,
         }
 
-        let mut borrows = Vec::<MarginBorrow>::new();
+        let mut loans = Vec::<MarginLoan>::new();
 
-        let ts = self.fetch_start_date()?.timestamp_millis() as u64;
+        let ts = self.data_start_date()?.timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
@@ -596,7 +596,7 @@ impl<'a> BinanceFetcher<'a> {
                             &format!(
                                 "{}{}",
                                 self.domain,
-                                self.endpoints.margin_borrows.as_ref().unwrap()
+                                self.endpoints.margin_loans.as_ref().unwrap()
                             ),
                             Some(query),
                             Some(self.default_headers()),
@@ -604,10 +604,10 @@ impl<'a> BinanceFetcher<'a> {
                         )
                         .await?;
 
-                    let borrows_resp = self.as_json::<EndpointResponse>(resp.as_ref()).await?;
+                    let loans_resp = self.as_json::<EndpointResponse>(resp.as_ref()).await?;
 
-                    borrows.extend(borrows_resp.rows);
-                    if borrows_resp.total >= 100 {
+                    loans.extend(loans_resp.rows);
+                    if loans_resp.total >= 100 {
                         current_page += 1;
                     } else {
                         break;
@@ -616,10 +616,10 @@ impl<'a> BinanceFetcher<'a> {
             }
         }
 
-        Ok(borrows)
+        Ok(loans)
     }
 
-    pub async fn margin_repays(&self, asset: String, symbol: String) -> Result<Vec<MarginRepay>> {
+    pub async fn fetch_margin_repays(&self, asset: String, symbol: String) -> Result<Vec<MarginRepay>> {
         if let None = self.endpoints.margin_repays {
             return Ok(Vec::new());
         }
@@ -632,7 +632,7 @@ impl<'a> BinanceFetcher<'a> {
 
         let mut repays = Vec::<MarginRepay>::new();
 
-        let ts = self.fetch_start_date()?.timestamp_millis() as u64;
+        let ts = self.data_start_date()?.timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {

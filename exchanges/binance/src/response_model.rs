@@ -59,7 +59,7 @@ pub struct Trade {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct MarginBorrow {
+pub struct MarginLoan {
     tx_id: u64,
     pub asset: String,
     #[serde(with = "string_or_float")]

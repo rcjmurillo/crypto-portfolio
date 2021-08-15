@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-use binance::{BinanceFetcher, Config, FiatDeposit, MarginBorrow, MarginRepay, Trade, Withdraw};
+use binance::{BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw};
 
 use async_trait::async_trait;
 use futures::future::join_all;
@@ -62,8 +62,8 @@ impl From<Trade> for ops::Trade {
     }
 }
 
-impl From<MarginBorrow> for ops::Loan {
-    fn from(m: MarginBorrow) -> Self {
+impl From<MarginLoan> for ops::Loan {
+    fn from(m: MarginLoan) -> Self {
         Self {
             asset: m.asset,
             amount: m.principal,
@@ -94,7 +94,7 @@ impl From<MarginRepay> for ops::Repay {
 #[async_trait]
 impl ExchangeDataFetcher for BinanceFetcher<'_> {
     type Trade = Trade;
-    type Loan = MarginBorrow;
+    type Loan = MarginLoan;
     type Repay = MarginRepay;
     type Deposit = FiatDeposit;
     type Withdraw = Withdraw;
@@ -102,7 +102,7 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
     async fn trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
-            .exchange_symbols()
+            .fetch_exchange_symbols()
             .await?
             .into_iter()
             .map(|x| x.symbol)
@@ -120,7 +120,7 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
     async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
-            .exchange_symbols()
+            .fetch_exchange_symbols()
             .await?
             .into_iter()
             .map(|x| x.symbol)
@@ -135,14 +135,14 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
         flatten_results(join_all(handles).await)
     }
 
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<MarginBorrow>> {
+    async fn loans(&self, symbols: &[String]) -> Result<Vec<MarginLoan>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.exchange_symbols().await?;
+        let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
         for symbol in symbols.into_iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
-                handles.push(self.margin_borrows(asset, symbol.clone()));
+                handles.push(self.fetch_margin_loans(asset, symbol.clone()));
             }
         }
         flatten_results(join_all(handles).await)
@@ -150,12 +150,12 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
 
     async fn repays(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.exchange_symbols().await?;
+        let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
         for symbol in symbols.into_iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
-                handles.push(self.margin_repays(asset, symbol.clone()));
+                handles.push(self.fetch_margin_repays(asset, symbol.clone()));
             }
         }
         flatten_results(join_all(handles).await)

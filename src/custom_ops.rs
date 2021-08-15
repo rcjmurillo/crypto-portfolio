@@ -51,7 +51,7 @@ impl ExchangeDataFetcher for FileDataFetcher {
             let usd_price = if t.base_asset.starts_with("USD") {
                 1.0
             } else {
-                c.price_at(&format!("{}USDT", t.base_asset), t.time).await?
+                c.fetch_price_at(&format!("{}USDT", t.base_asset), t.time).await?
             };
             t.cost = t.amount * usd_price;
         }

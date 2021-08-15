@@ -216,7 +216,7 @@ pub async fn main() -> Result<()> {
         .collect::<Vec<(&String, &f64)>>();
 
     let all_prices: HashMap<String, f64> = binance_client
-        .all_prices()
+        .fetch_all_prices()
         .await?
         .into_iter()
         .map(|x| (x.symbol, x.price))
