@@ -58,8 +58,8 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(endpoint_concurrency: usize) -> Self {
         Self {
-            endpoint_sem: ValueSemaphore::new(),
-            endpoint_params_sem: ValueSemaphore::with_capacity(endpoint_concurrency),
+            endpoint_sem: ValueSemaphore::with_capacity(endpoint_concurrency),
+            endpoint_params_sem: ValueSemaphore::new(),
             cache: Arc::new(RwLock::new(Cache::new())),
         }
     }
