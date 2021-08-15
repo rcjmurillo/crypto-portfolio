@@ -36,12 +36,12 @@ impl From<Region> for Credentials {
     fn from(region: Region) -> Self {
         match region {
             Region::Global => Credentials {
-                api_key: env::var("API_KEY").unwrap(),
-                secret_key: env::var("API_SECRET").unwrap(),
+                api_key: env::var("BINANCE_API_KEY").unwrap(),
+                secret_key: env::var("BINANCE_API_SECRET").unwrap(),
             },
             Region::Us => Credentials {
-                api_key: env::var("API_KEY_US").unwrap(),
-                secret_key: env::var("API_SECRET_US").unwrap(),
+                api_key: env::var("BINANCE_API_KEY_US").unwrap(),
+                secret_key: env::var("BINANCE_API_SECRET_US").unwrap(),
             },
         }
     }
