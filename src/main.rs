@@ -5,14 +5,16 @@ mod operations;
 mod reports;
 mod result;
 
-use std::sync::Arc;
+use std::{convert::TryInto, sync::Arc};
 
 use structopt::{self, StructOpt};
+
+use binance::{BinanceFetcher, Region as BinanceRegion};
 
 use crate::{
     cli::Args,
     custom_ops::FileDataFetcher,
-    operations::{fetch_pipeline, BalanceTracker},
+    operations::{fetch_ops, BalanceTracker, ExchangeDataFetcher},
     result::Result,
 };
 
@@ -32,7 +34,7 @@ pub async fn main() -> Result<()> {
 
     let file_data_fetcher = match ops_file {
         Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
-            Ok(fetcher) => Some(Arc::new(fetcher)),
+            Ok(fetcher) => Some(fetcher),
             Err(err) => {
                 println!("could not process file: {}", err);
                 None
@@ -41,11 +43,30 @@ pub async fn main() -> Result<()> {
         None => None,
     };
 
-    let mut s = fetch_pipeline(
-        file_data_fetcher.as_ref().and_then(|f| Some(Arc::clone(f))),
-        Arc::clone(&config),
-    )
-    .await;
+    let config_binance = config.binance.as_ref().and_then(|c| Some(c.clone().try_into().unwrap()));
+    let binance_client = BinanceFetcher::new(BinanceRegion::Global, config_binance);
+    let config_binance_us = config.binance_us.as_ref().and_then(|c| Some(c.clone().try_into().unwrap()));
+    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, config_binance_us);
+
+    let mut fetchers = vec![
+        (
+            "Binance Global",
+            Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+        ),
+        (
+            "Binance US",
+            Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+        ),
+    ];
+    
+    if let Some(ff) = file_data_fetcher.clone() {  // fixme: avoid this clone
+        fetchers.push((
+            "Custom Operations",
+            Box::new(ff) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+        ));
+    }
+
+    let mut s = fetch_ops(fetchers, Arc::clone(&config)).await;
 
     while let Some(op) = s.recv().await {
         coin_tracker.track_operation(op);

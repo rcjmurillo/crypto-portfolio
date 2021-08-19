@@ -18,6 +18,7 @@ struct FileData {
     fiat_deposits: Option<Vec<Deposit>>,
 }
 
+#[derive(Clone)]
 pub struct FileDataFetcher {
     data: FileData,
 }
@@ -38,7 +39,7 @@ impl FileDataFetcher {
 #[async_trait]
 impl ExchangeDataFetcher for FileDataFetcher {
     async fn trades(&self, _: &[String]) -> Result<Vec<Trade>> {
-        let c = BinanceFetcher::new(BinanceRegion::Global, &None);
+        let c = BinanceFetcher::new(BinanceRegion::Global, None);
 
         let mut trades = self.data.trades.clone();
         for t in trades.iter_mut() {

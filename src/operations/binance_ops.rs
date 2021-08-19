@@ -92,7 +92,7 @@ impl From<MarginRepay> for ops::Repay {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for BinanceFetcher<'_> {
+impl ExchangeDataFetcher for BinanceFetcher {
     async fn trades(&self, symbols: &[String]) -> Result<Vec<ops::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self

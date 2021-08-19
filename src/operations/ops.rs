@@ -1,15 +1,9 @@
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    convert::{From, TryInto},
-    sync::Arc,
-    vec::Vec,
-};
+use std::{collections::HashMap, convert::From, sync::Arc, vec::Vec};
 use tokio::sync::mpsc;
 
-use crate::{cli::Config, custom_ops::FileDataFetcher, result::Result};
-use binance::{BinanceFetcher, Region as BinanceRegion};
+use crate::{cli::Config, result::Result};
 
 pub enum OperationStatus {
     Success,
@@ -22,29 +16,17 @@ pub trait IntoOperations {
 
 #[async_trait]
 pub trait ExchangeDataFetcher {
-    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Trade>> {
-        Ok(Vec::new())
-    }
+    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Trade>>;
 
-    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Trade>> {
-        Ok(Vec::new())
-    }
+    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Trade>>;
 
-    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Loan>> {
-        Ok(Vec::new())
-    }
+    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Loan>>;
 
-    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Repay>> {
-        Ok(Vec::new())
-    }
+    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Repay>>;
 
-    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Deposit>> {
-        Ok(Vec::new())
-    }
-
-    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Withdraw>> {
-        Ok(Vec::new())
-    }
+    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Deposit>>;
+    
+    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Withdraw>> ;
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -237,10 +219,11 @@ impl BalanceTracker {
     }
 }
 
-async fn ops_from_fetcher<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
-where
-    T: ExchangeDataFetcher + Sync,
-{
+async fn ops_from_fetcher<'a>(
+    prefix: &'a str,
+    c: Box<dyn ExchangeDataFetcher + Send + Sync>,
+    symbols: &'a [String],
+) -> Vec<Operation> {
     let mut all_ops = Vec::new();
     println!("[{}]> fetching trades...", prefix);
     all_ops.extend(
@@ -294,57 +277,18 @@ where
     all_ops
 }
 
-pub async fn fetch_pipeline(
-    file_data_fetcher: Option<Arc<FileDataFetcher>>,
+pub async fn fetch_ops(
+    fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
     config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
     let (tx, rx) = mpsc::channel(1000);
-    let tx1 = tx.clone();
-    let tx2 = tx.clone();
-    let tx3 = tx.clone();
 
-    let conf1 = config.clone();
-    let conf2 = config.clone();
-    let conf3 = config.clone();
-
-    let _h1 = tokio::spawn(async move {
-        let config = match &conf1.binance {
-            Some(c) => Some(c.clone().try_into().unwrap()),
-            None => None,
-        };
-        let binance_client = BinanceFetcher::new(BinanceRegion::Global, &config);
-        for op in ops_from_fetcher("binance", &binance_client, &conf1.symbols[..]).await {
-            match tx1.send(op).await {
-                Ok(()) => (),
-                Err(err) => println!("could not send operation: {}", err),
-            }
-        }
-    });
-
-    let _h2 = tokio::spawn(async move {
-        let config = match &conf2.binance_us {
-            Some(c) => Some(c.clone().try_into().unwrap()),
-            None => None,
-        };
-        let binance_us_client = BinanceFetcher::new(BinanceRegion::Us, &config);
-        for op in ops_from_fetcher("binance US", &binance_us_client, &conf2.symbols[..]).await {
-            match tx2.send(op).await {
-                Ok(()) => (),
-                Err(err) => println!("could not send operation: {}", err),
-            }
-        }
-    });
-
-    if let Some(file_data_fetcher) = file_data_fetcher {
+    for (name, f) in fetchers.into_iter() {
+        let txc = tx.clone();
+        let c = config.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(
-                "custom file operations",
-                &*file_data_fetcher,
-                &conf3.symbols[..],
-            )
-            .await
-            {
-                match tx3.send(op).await {
+            for op in ops_from_fetcher(name, f, &c.symbols[..]).await {
+                match txc.send(op).await {
                     Ok(()) => (),
                     Err(err) => println!("could not send operation: {}", err),
                 }

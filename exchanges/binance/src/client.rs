@@ -114,8 +114,8 @@ pub struct Config {
     pub start_datetime: DateTime<Utc>,
 }
 
-pub struct BinanceFetcher<'a> {
-    config: &'a Option<Config>,
+pub struct BinanceFetcher {
+    config: Option<Config>,
     api_client: ApiClient,
     credentials: Credentials,
     region: Region,
@@ -123,8 +123,8 @@ pub struct BinanceFetcher<'a> {
     endpoints: Endpoints,
 }
 
-impl<'a> BinanceFetcher<'a> {
-    pub fn new(region: Region, config: &'a Option<Config>) -> Self {
+impl BinanceFetcher {
+    pub fn new(region: Region, config: Option<Config>) -> Self {
         let credentials = Credentials::for_region(&region);
         Self {
             api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
@@ -137,7 +137,7 @@ impl<'a> BinanceFetcher<'a> {
     }
 
     fn data_start_date(&self) -> Result<DateTime<Utc>> {
-        match self.config {
+        match self.config.as_ref() {
             Some(config) => Ok(config.start_datetime),
             // fetch last 6 months
             None => Ok(Utc::now() - Duration::weeks(24)),

@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashMap, convert::TryInto, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap, convert::TryInto};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
@@ -11,20 +11,20 @@ use crate::{
 
 pub async fn asset_balances(
     balance_tracker: &BalanceTracker,
-    file_data_fetcher: Option<Arc<FileDataFetcher>>,
+    file_data_fetcher: Option<FileDataFetcher>,
     config: &Config,
 ) -> Result<()> {
-    let config_binance = match &config.binance {
-        Some(c) => Some(c.clone().try_into()?),
-        None => None,
-    };
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global, &config_binance);
+    let config_binance = config
+        .binance
+        .as_ref()
+        .and_then(|c| Some(c.clone().try_into().unwrap()));
+    let binance_client = BinanceFetcher::new(BinanceRegion::Global, config_binance);
 
     let config_binance_us = match &config.binance_us {
         Some(c) => Some(c.clone().try_into()?),
         None => None,
     };
-    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, &config_binance_us);
+    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, config_binance_us);
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
@@ -102,7 +102,7 @@ pub async fn asset_balances(
 
     let mut usd_investment: f64 = 0.0;
     if let Some(file_data_fetcher) = file_data_fetcher.as_ref() {
-        usd_investment += (*file_data_fetcher)
+        usd_investment += file_data_fetcher
             .fiat_deposits(&config.symbols)
             .await?
             .iter()
