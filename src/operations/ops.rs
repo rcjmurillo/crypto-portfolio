@@ -22,51 +22,27 @@ pub trait IntoOperations {
 
 #[async_trait]
 pub trait ExchangeDataFetcher {
-    type Trade;
-    type Loan;
-    type Repay;
-    type Deposit;
-    type Withdraw;
-
-    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Self::Trade>>
-    where
-        Self::Trade: Into<Trade>,
-    {
+    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Trade>> {
         Ok(Vec::new())
     }
 
-    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Self::Trade>>
-    where
-        Self::Trade: Into<Trade>,
-    {
+    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Trade>> {
         Ok(Vec::new())
     }
 
-    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Self::Loan>>
-    where
-        Self::Loan: Into<Loan>,
-    {
+    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Loan>> {
         Ok(Vec::new())
     }
 
-    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Self::Repay>>
-    where
-        Self::Repay: Into<Repay>,
-    {
+    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Repay>> {
         Ok(Vec::new())
     }
 
-    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Self::Deposit>>
-    where
-        Self::Deposit: Into<Deposit>,
-    {
+    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Deposit>> {
         Ok(Vec::new())
     }
 
-    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Self::Withdraw>>
-    where
-        Self::Withdraw: Into<Withdraw>,
-    {
+    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Withdraw>> {
         Ok(Vec::new())
     }
 }
@@ -264,11 +240,6 @@ impl BalanceTracker {
 async fn ops_from_fetcher<'a, T>(prefix: &str, c: &'a T, symbols: &'a [String]) -> Vec<Operation>
 where
     T: ExchangeDataFetcher + Sync,
-    T::Trade: Into<Trade>,
-    T::Loan: Into<Loan>,
-    T::Repay: Into<Repay>,
-    T::Deposit: Into<Deposit>,
-    T::Withdraw: Into<Withdraw>,
 {
     let mut all_ops = Vec::new();
     println!("[{}]> fetching trades...", prefix);
@@ -277,7 +248,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> fetching margin trades...", prefix);
     all_ops.extend(
@@ -285,7 +256,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> fetching loans...", prefix);
     all_ops.extend(
@@ -293,7 +264,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> fetching repays...", prefix);
     all_ops.extend(
@@ -301,7 +272,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> fetching fiat deposits...", prefix);
     all_ops.extend(
@@ -309,7 +280,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> fetching coins withdraws...", prefix);
     all_ops.extend(
@@ -317,7 +288,7 @@ where
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into().into_ops()),
+            .flat_map(|t| t.into_ops()),
     );
     println!("[{}]> ALL DONE!!!", prefix);
     all_ops

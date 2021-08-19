@@ -37,12 +37,6 @@ impl FileDataFetcher {
 
 #[async_trait]
 impl ExchangeDataFetcher for FileDataFetcher {
-    type Trade = Trade;
-    type Loan = Loan;
-    type Repay = Repay;
-    type Deposit = Deposit;
-    type Withdraw = Withdraw;
-
     async fn trades(&self, _: &[String]) -> Result<Vec<Trade>> {
         let c = BinanceFetcher::new(BinanceRegion::Global, &None);
 

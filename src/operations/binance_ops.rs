@@ -93,13 +93,7 @@ impl From<MarginRepay> for ops::Repay {
 
 #[async_trait]
 impl ExchangeDataFetcher for BinanceFetcher<'_> {
-    type Trade = Trade;
-    type Loan = MarginLoan;
-    type Repay = MarginRepay;
-    type Deposit = FiatDeposit;
-    type Withdraw = Withdraw;
-
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
+    async fn trades(&self, symbols: &[String]) -> Result<Vec<ops::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols()
@@ -117,7 +111,7 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
         flatten_results(join_all(handles).await)
     }
 
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>> {
+    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<ops::Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols()
@@ -135,7 +129,7 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
         flatten_results(join_all(handles).await)
     }
 
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<MarginLoan>> {
+    async fn loans(&self, symbols: &[String]) -> Result<Vec<ops::Loan>> {
         let mut handles = Vec::new();
         let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
@@ -148,7 +142,7 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
         flatten_results(join_all(handles).await)
     }
 
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<MarginRepay>> {
+    async fn repays(&self, symbols: &[String]) -> Result<Vec<ops::Repay>> {
         let mut handles = Vec::new();
         let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
@@ -161,21 +155,28 @@ impl ExchangeDataFetcher for BinanceFetcher<'_> {
         flatten_results(join_all(handles).await)
     }
 
-    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
+    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<ops::Deposit>> {
         Ok(Vec::new())
     }
 
-    async fn withdraws(&self, _: &[String]) -> Result<Vec<Withdraw>> {
-        self.fetch_withdraws().await.map_err(|e| e.into())
+    async fn withdraws(&self, _: &[String]) -> Result<Vec<ops::Withdraw>> {
+        match self.fetch_withdraws().await {
+            Ok(w) => Ok(w.into_iter().map(|x| x.into()).collect()),
+            Err(e) => Err(e.into())
+        }
     }
 }
 
-fn flatten_results<T>(results: Vec<binance::Result<Vec<T>>>) -> Result<Vec<T>> {
+fn flatten_results<T, U>(results: Vec<binance::Result<Vec<T>>>) -> Result<Vec<U>>
+where
+    T: Into<U>,
+{
     Ok(results
         .into_iter()
         .map(|r| r.map_err(|e| e.into()))
         .collect::<Result<Vec<Vec<T>>>>()?
         .into_iter()
         .flatten()
+        .map(|x| x.into())
         .collect())
 }
