@@ -97,37 +97,48 @@ pub async fn asset_balances(
     println!();
     assert!(print_stdout(table).is_ok());
 
-    let deposits = binance_client.fetch_fiat_deposits().await?;
-    let deposits_us = binance_client_us.fetch_fiat_deposits().await?;
+    let mut investments: HashMap<String, f64> = HashMap::new();
 
-    let mut usd_investment: f64 = 0.0;
+    binance_client
+        .fetch_fiat_deposits()
+        .await?
+        .into_iter()
+        .for_each(|x| {
+            let b = investments.entry(x.fiat_currency).or_insert(0.0);
+            *b += x.amount;
+        });
+    binance_client_us
+        .fetch_fiat_deposits()
+        .await?
+        .into_iter()
+        .for_each(|x| {
+            let b = investments.entry(x.fiat_currency).or_insert(0.0);
+            *b += x.amount;
+        });
+
     if let Some(file_data_fetcher) = file_data_fetcher.as_ref() {
-        usd_investment += file_data_fetcher
+        file_data_fetcher
             .fiat_deposits(&config.symbols)
             .await?
-            .iter()
-            .map(|x| x.amount)
-            .sum::<f64>();
+            .into_iter()
+            .for_each(|x| {
+                let b = investments.entry(x.asset).or_insert(0.0);
+                *b += x.amount;
+            });
     }
-    usd_investment += deposits.iter().map(|x| x.amount).sum::<f64>();
-    usd_investment += deposits_us.iter().map(|x| x.amount).sum::<f64>();
-
-    let summary_table = vec![
-        vec![
-            "Invested USD".cell(),
-            format!("{:.2}", usd_investment).cell(),
-        ],
-        vec![
-            "Coins value USD".cell(),
-            format!("{:.2}", all_assets_value).cell(),
-        ],
-        vec![
-            "Unrealized profit USD".cell(),
-            format!("{:.2}", (all_assets_value - usd_investment)).cell(),
-        ],
-    ]
-    .table();
-    assert!(print_stdout(summary_table).is_ok());
+    let mut summary_table = vec![];
+    for (asset, inv) in investments.iter() {
+        summary_table.push(vec![
+            format!("Invested {}", asset).cell(),
+            format!("{:.2}", inv).cell(),
+        ]);
+    }
+    summary_table.push(vec![
+        "Coins value USD".cell(),
+        format!("{:.2}", all_assets_value).cell(),
+    ]);
+    // summary_table.table();
+    assert!(print_stdout(summary_table.table()).is_ok());
 
     Ok(())
 }

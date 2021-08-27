@@ -1,19 +1,26 @@
 use serde::{Deserialize, Serialize};
 
+fn default_currency_usd() -> String {
+    "USD".into()
+}
+
+fn default_zero() -> f64 {
+    0.0
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FiatDeposit {
-    order_id: String,
-    offset: Option<u64>,
-    payment_channel: String,
-    payment_method: String,
-    pub order_status: String,
+    #[serde(default = "default_currency_usd")]
+    pub fiat_currency: String,
     #[serde(with = "string_or_float")]
     pub amount: f64,
-    #[serde(with = "string_or_float")]
-    transaction_fee: f64,
-    #[serde(with = "string_or_float")]
-    platform_fee: f64,
+    #[serde(alias = "totalFee", with = "string_or_float")]
+    pub transaction_fee: f64,
+    #[serde(with = "string_or_float", default = "default_zero")]
+    pub platform_fee: f64,
+    #[serde(alias = "orderStatus")]
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -24,7 +24,7 @@ impl TryFrom<ExchangeConfig> for Config {
 impl From<FiatDeposit> for ops::Deposit {
     fn from(d: FiatDeposit) -> Self {
         Self {
-            asset: "USD".to_string(), // fixme: grab the actual asset from the API
+            asset: d.fiat_currency,
             amount: d.amount,
         }
     }
@@ -156,7 +156,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
     }
 
     async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<ops::Deposit>> {
-        Ok(Vec::new())
+        Ok(self.fetch_fiat_deposits().await?.into_iter().map(|x| x.into()).collect())
     }
 
     async fn withdraws(&self, _: &[String]) -> Result<Vec<ops::Withdraw>> {
