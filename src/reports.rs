@@ -122,20 +122,34 @@ pub async fn asset_balances(
             .await?
             .into_iter()
             .for_each(|x| {
-                let b = investments.entry(x.asset).or_insert(0.0);
+                let b = investments.entry(x.asset.to_uppercase()).or_insert(0.0);
                 *b += x.amount;
             });
     }
+
+    let mut invested_usd: f64 = 0.0;
     let mut summary_table = vec![];
     for (asset, inv) in investments.iter() {
         summary_table.push(vec![
             format!("Invested {}", asset).cell(),
             format!("{:.2}", inv).cell(),
         ]);
+        if asset == "USD" {
+            invested_usd += inv;
+        } else {
+            // convert it to USD
+            invested_usd += all_prices.get(&(asset.to_owned() + "USDT")).unwrap();
+        }
     }
-    summary_table.push(vec![
-        "Coins value USD".cell(),
-        format!("{:.2}", all_assets_value).cell(),
+    summary_table.extend(vec![
+        vec![
+            "Coins value USD".cell(),
+            format!("{:.2}", all_assets_value).cell(),
+        ],
+        vec![
+            "Estimated unrealized profit USD".cell(),
+            format!("{:.2}", all_assets_value - invested_usd).cell(),
+        ],
     ]);
     // summary_table.table();
     assert!(print_stdout(summary_table.table()).is_ok());
