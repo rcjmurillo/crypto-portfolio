@@ -10,10 +10,6 @@ pub enum OperationStatus {
     Failed,
 }
 
-pub trait IntoOperations {
-    fn into_ops(self) -> Vec<Operation>;
-}
-
 #[async_trait]
 pub trait ExchangeDataFetcher {
     async fn trades(&self, _symbols: &[String]) -> Result<Vec<Trade>>;
@@ -46,8 +42,8 @@ pub struct Trade {
     pub side: TradeSide,
 }
 
-impl IntoOperations for Trade {
-    fn into_ops(self) -> Vec<Operation> {
+impl Into<Vec<Operation>> for Trade {
+    fn into(self) -> Vec<Operation> {
         let mut ops = Vec::new();
         // determines if the first operation is going to increase or to decrease
         // the balance, then the second operation does the opposit.
@@ -86,8 +82,8 @@ pub struct Deposit {
     pub amount: f64,
 }
 
-impl IntoOperations for Deposit {
-    fn into_ops(self) -> Vec<Operation> {
+impl Into<Vec<Operation>> for Deposit {
+    fn into(self) -> Vec<Operation> {
         vec![Operation {
             asset: self.asset,
             amount: self.amount,
@@ -104,8 +100,8 @@ pub struct Withdraw {
     pub fee: f64,
 }
 
-impl IntoOperations for Withdraw {
-    fn into_ops(self) -> Vec<Operation> {
+impl Into<Vec<Operation>> for Withdraw {
+    fn into(self) -> Vec<Operation> {
         vec![Operation {
             asset: self.asset.clone(),
             amount: -self.fee,
@@ -121,8 +117,8 @@ pub struct Loan {
     pub status: OperationStatus,
 }
 
-impl IntoOperations for Loan {
-    fn into_ops(self) -> Vec<Operation> {
+impl Into<Vec<Operation>> for Loan {
+    fn into(self) -> Vec<Operation> {
         match self.status {
             OperationStatus::Success => {
                 vec![Operation {
@@ -144,8 +140,8 @@ pub struct Repay {
     pub status: OperationStatus,
 }
 
-impl IntoOperations for Repay {
-    fn into_ops(self) -> Vec<Operation> {
+impl Into<Vec<Operation>> for Repay {
+    fn into(self) -> Vec<Operation> {
         match self.status {
             OperationStatus::Success => {
                 vec![Operation {
@@ -219,14 +215,14 @@ async fn ops_from_fetcher<'a>(
     c: Box<dyn ExchangeDataFetcher + Send + Sync>,
     symbols: &'a [String],
 ) -> Vec<Operation> {
-    let mut all_ops = Vec::new();
+    let mut all_ops: Vec<Operation> = Vec::new();
     println!("[{}]> fetching trades...", prefix);
     all_ops.extend(
         c.trades(symbols)
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> fetching margin trades...", prefix);
     all_ops.extend(
@@ -234,7 +230,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> fetching loans...", prefix);
     all_ops.extend(
@@ -242,7 +238,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> fetching repays...", prefix);
     all_ops.extend(
@@ -250,7 +246,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> fetching fiat deposits...", prefix);
     all_ops.extend(
@@ -258,7 +254,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> fetching coins withdraws...", prefix);
     all_ops.extend(
@@ -266,7 +262,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| t.into_ops()),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     println!("[{}]> ALL DONE!!!", prefix);
     all_ops
@@ -301,7 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trade_buy_into_ops() {
+    fn trade_buy_into() {
         let t1 = Trade {
             symbol: "DOTETH".into(),
             base_asset: "DOT".into(),
@@ -315,7 +311,7 @@ mod tests {
             side: TradeSide::Buy,
         };
 
-        let ops = t1.into_ops();
+        let ops: Vec<Operation> = t1.into();
 
         assert_eq!(3, ops.len(), "incorrect number of operations");
 
@@ -346,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_sell_into_ops() {
+    fn trade_sell_into() {
         let t1 = Trade {
             symbol: "DOTETH".into(),
             base_asset: "DOT".into(),
@@ -360,7 +356,7 @@ mod tests {
             side: TradeSide::Sell,
         };
 
-        let ops = t1.into_ops();
+        let ops: Vec<Operation> = t1.into();
 
         assert_eq!(3, ops.len(), "incorrect number of operations");
 
@@ -391,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_into_ops_no_fee() {
+    fn trade_into_no_fee() {
         let fee_cases = vec![(1.0, ""), (0.0, "ETH"), (0.0, "")];
         for (fee_amount, fee_asset) in fee_cases.into_iter() {
             let t = Trade {
@@ -406,7 +402,7 @@ mod tests {
                 time: 0,
                 side: TradeSide::Buy,
             };
-            let ops = t.into_ops();
+            let ops: Vec<Operation> = t.into();
             assert_eq!(2, ops.len(), "incorrect number of operations");
 
             assert_eq!(
