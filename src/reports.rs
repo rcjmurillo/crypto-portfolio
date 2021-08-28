@@ -1,30 +1,27 @@
-use std::{cmp::Ordering, collections::HashMap, convert::TryInto};
+use std::{cmp::Ordering, collections::HashMap, convert::TryInto, sync::Arc};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{BinanceFetcher, Region as BinanceRegion};
 
 use crate::{
-    cli::Config, custom_ops::FileDataFetcher, operations::BalanceTracker,
+    cli::Config, operations::BalanceTracker,
     operations::ExchangeDataFetcher, result::Result,
 };
 
 pub async fn asset_balances(
     balance_tracker: &BalanceTracker,
-    file_data_fetcher: Option<FileDataFetcher>,
-    config: &Config,
+    fetchers: Vec<(
+        &'static str,
+        Arc<Box<dyn ExchangeDataFetcher + Send + Sync>>,
+    )>,
+    config: Arc<Config>,
 ) -> Result<()> {
     let config_binance = config
         .binance
         .as_ref()
         .and_then(|c| Some(c.clone().try_into().unwrap()));
     let binance_client = BinanceFetcher::new(BinanceRegion::Global, config_binance);
-
-    let config_binance_us = match &config.binance_us {
-        Some(c) => Some(c.clone().try_into()?),
-        None => None,
-    };
-    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, config_binance_us);
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
@@ -99,32 +96,11 @@ pub async fn asset_balances(
 
     let mut investments: HashMap<String, f64> = HashMap::new();
 
-    binance_client
-        .fetch_fiat_deposits()
-        .await?
-        .into_iter()
-        .for_each(|x| {
-            let b = investments.entry(x.fiat_currency).or_insert(0.0);
+    for (_, f) in fetchers.iter() {
+        f.fiat_deposits(&config.symbols).await?.into_iter().for_each(|x| {
+            let b = investments.entry(x.asset).or_insert(0.0);
             *b += x.amount;
         });
-    binance_client_us
-        .fetch_fiat_deposits()
-        .await?
-        .into_iter()
-        .for_each(|x| {
-            let b = investments.entry(x.fiat_currency).or_insert(0.0);
-            *b += x.amount;
-        });
-
-    if let Some(file_data_fetcher) = file_data_fetcher.as_ref() {
-        file_data_fetcher
-            .fiat_deposits(&config.symbols)
-            .await?
-            .into_iter()
-            .for_each(|x| {
-                let b = investments.entry(x.asset.to_uppercase()).or_insert(0.0);
-                *b += x.amount;
-            });
     }
 
     let mut invested_usd: f64 = 0.0;
@@ -151,7 +127,6 @@ pub async fn asset_balances(
             format!("{:.2}", all_assets_value - invested_usd).cell(),
         ],
     ]);
-    // summary_table.table();
     assert!(print_stdout(summary_table.table()).is_ok());
 
     Ok(())

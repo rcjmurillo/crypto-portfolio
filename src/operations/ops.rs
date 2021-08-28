@@ -212,7 +212,7 @@ impl BalanceTracker {
 
 async fn ops_from_fetcher<'a>(
     prefix: &'a str,
-    c: Box<dyn ExchangeDataFetcher + Send + Sync>,
+    c: &Box<dyn ExchangeDataFetcher + Send + Sync>,
     symbols: &'a [String],
 ) -> Vec<Operation> {
     let mut all_ops: Vec<Operation> = Vec::new();
@@ -268,17 +268,20 @@ async fn ops_from_fetcher<'a>(
     all_ops
 }
 
-pub async fn fetch_ops(
-    fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
+pub async fn fetch_ops<'a>(
+    fetchers: Vec<(
+        &'static str,
+        Arc<Box<dyn ExchangeDataFetcher + Send + Sync>>,
+    )>,
     config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
     let (tx, rx) = mpsc::channel(1000);
 
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
-        let c = config.clone();
+        let conf = config.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(name, f, &c.symbols[..]).await {
+            for op in ops_from_fetcher(name, f.as_ref(), &conf.symbols[..]).await {
                 match txc.send(op).await {
                     Ok(()) => (),
                     Err(err) => println!("could not send operation: {}", err),
