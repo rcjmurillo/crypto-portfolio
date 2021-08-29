@@ -114,7 +114,7 @@ pub async fn asset_balances(
             invested_usd += inv;
         } else {
             // convert it to USD
-            invested_usd += all_prices.get(&(asset.to_owned() + "USDT")).unwrap();
+            invested_usd += inv * all_prices.get(&(asset.to_owned() + "USDT")).unwrap();
         }
     }
     summary_table.extend(vec![
