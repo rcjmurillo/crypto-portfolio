@@ -5,16 +5,11 @@ use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 use binance::{BinanceFetcher, Region as BinanceRegion};
 
 use crate::{
-    cli::Config, operations::BalanceTracker,
-    operations::ExchangeDataFetcher, result::Result,
+    cli::Config, operations::BalanceTracker, operations::ExchangeDataFetcher, result::Result,
 };
 
 pub async fn asset_balances(
     balance_tracker: &BalanceTracker,
-    fetchers: Vec<(
-        &'static str,
-        Arc<Box<dyn ExchangeDataFetcher + Send + Sync>>,
-    )>,
     config: Arc<Config>,
 ) -> Result<()> {
     let config_binance = config
@@ -56,12 +51,15 @@ pub async fn asset_balances(
         }
     });
 
+    let mut all_assets_cost = 0.0;
+
     let mut table = Vec::new();
     for (coin, &amount) in coin_balances {
         let price = all_prices.get(&(coin.clone() + "USDT")).unwrap();
         let value = price * amount;
         all_assets_value += value;
         let coin_cost = balance_tracker.get_cost(&coin[..]).unwrap_or_default();
+        all_assets_cost += coin_cost;
         let position_pcnt = (value / coin_cost - 1.0) * 100.0;
         let position_usd = value - coin_cost;
         table.push(vec![
@@ -94,37 +92,20 @@ pub async fn asset_balances(
     println!();
     assert!(print_stdout(table).is_ok());
 
-    let mut investments: HashMap<String, f64> = HashMap::new();
-
-    for (_, f) in fetchers.iter() {
-        f.fiat_deposits(&config.symbols).await?.into_iter().for_each(|x| {
-            let b = investments.entry(x.asset).or_insert(0.0);
-            *b += x.amount;
-        });
-    }
-
-    let mut invested_usd: f64 = 0.0;
     let mut summary_table = vec![];
-    for (asset, inv) in investments.iter() {
-        summary_table.push(vec![
-            format!("Invested {}", asset).cell(),
-            format!("{:.2}", inv).cell(),
-        ]);
-        if asset == "USD" {
-            invested_usd += inv;
-        } else {
-            // convert it to USD
-            invested_usd += inv * all_prices.get(&(asset.to_owned() + "USDT")).unwrap();
-        }
-    }
+
     summary_table.extend(vec![
+        vec![
+            "Invested USD".cell(),
+            format!("{:.2}", all_assets_cost).cell(),
+        ],
         vec![
             "Coins value USD".cell(),
             format!("{:.2}", all_assets_value).cell(),
         ],
         vec![
-            "Estimated unrealized profit USD".cell(),
-            format!("{:.2}", all_assets_value - invested_usd).cell(),
+            "Unrealized profit USD".cell(),
+            format!("{:.2}", all_assets_value - all_assets_cost).cell(),
         ],
     ]);
     assert!(print_stdout(summary_table.table()).is_ok());

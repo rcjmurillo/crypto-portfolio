@@ -541,11 +541,11 @@ impl BinanceFetcher {
                 Ok(resp) => {
                     let mut binance_trades = self.as_json::<Vec<Trade>>(resp.as_ref()).await?;
                     binance_trades.sort_by_key(|k| k.time);
-                    let min = match binance_trades.first() {
+                    let min_ts = match binance_trades.first() {
                         Some(t) => Some(t.time),
                         _ => None,
                     };
-                    let max = match binance_trades.last() {
+                    let max_ts = match binance_trades.last() {
                         Some(t) => Some(t.time),
                         _ => None,
                     };
@@ -556,21 +556,30 @@ impl BinanceFetcher {
                         // the last processed id.
                         last_id = binance_trades.iter().last().unwrap().id + 1;
                     };
-                    match (min, max) {
-                        (Some(min), Some(max)) => {
+                    match (min_ts, max_ts) {
+                        (Some(min_ts), Some(max_ts)) => {
                             let (base_asset, _) = symbol_into_assets(symbol, &exchange_symbols);
                             let prices = self
-                                .fetch_usd_prices_in_range(&base_asset, min, max)
+                                .fetch_usd_prices_in_range(&base_asset, min_ts, max_ts)
                                 .await?;
                             for mut t in binance_trades.into_iter() {
                                 let (b, q) = symbol_into_assets(&t.symbol, &exchange_symbols);
                                 t.base_asset = b;
                                 t.quote_asset = q;
-                                let price = match &t.base_asset {
-                                    q if q.starts_with("USD") => 1.0,
-                                    _ => find_price_at(&prices, t.time),
+                                let usd_price = find_price_at(&prices, t.time);
+                                let fee_usd_cost = if t.commission_asset != "" && t.commission > 0.0
+                                {
+                                    let comm_usd_price = match &t.commission_asset {
+                                        a if a.starts_with("USD") => 1.0,
+                                        a if a == &t.base_asset => find_price_at(&prices, t.time),
+                                        // fixme: optimize it to pre-fetch prices for all seen commission assets
+                                        _ => self.fetch_price_at(&(t.commission_asset.clone() + "USDT"), t.time).await?
+                                    };
+                                    t.commission * comm_usd_price
+                                } else {
+                                    0.0
                                 };
-                                t.usd_cost = t.qty * price;
+                                t.usd_cost = t.qty * usd_price + fee_usd_cost;
                                 trades.push(t);
                             }
                         }

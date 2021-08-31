@@ -86,7 +86,7 @@ pub async fn main() -> Result<()> {
         coin_tracker.track_operation(op);
     }
 
-    reports::asset_balances(&coin_tracker, mk_fetchers(&config, file_fetcher), config).await?;
+    reports::asset_balances(&coin_tracker, config).await?;
     println!();
 
     Ok(())
