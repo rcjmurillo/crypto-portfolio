@@ -57,7 +57,7 @@ pub struct Trade {
 
     // computed
     #[serde(skip)]
-    pub cost: f64,
+    pub usd_cost: f64,
     #[serde(skip)]
     pub base_asset: String,
     #[serde(skip)]

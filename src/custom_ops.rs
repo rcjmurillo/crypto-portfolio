@@ -48,7 +48,7 @@ impl ExchangeDataFetcher for FileDataFetcher {
             } else {
                 c.fetch_price_at(&format!("{}USDT", t.base_asset), t.time).await?
             };
-            t.cost = t.amount * usd_price;
+            t.usd_cost = t.amount * usd_price;
         }
 
         Ok(trades)

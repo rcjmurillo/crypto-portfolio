@@ -48,7 +48,7 @@ impl From<Trade> for ops::Trade {
             base_asset: t.base_asset,
             quote_asset: t.quote_asset,
             price: t.price,
-            cost: t.cost,
+            usd_cost: t.usd_cost,
             amount: t.qty,
             fee: t.commission,
             fee_asset: t.commission_asset,

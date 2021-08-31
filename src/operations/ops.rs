@@ -34,7 +34,7 @@ pub struct Trade {
     pub quote_asset: String,
     pub price: f64,
     #[serde(skip)]
-    pub cost: f64,
+    pub usd_cost: f64,
     pub amount: f64,
     pub fee: f64,
     pub fee_asset: String,
@@ -55,13 +55,13 @@ impl Into<Vec<Operation>> for Trade {
         ops.push(Operation {
             asset: self.base_asset.to_string(),
             amount: self.amount * sign,
-            cost: self.cost * sign,
+            cost: self.usd_cost * sign,
         });
         sign *= -1.0; // invert sign
         ops.push(Operation {
             asset: self.quote_asset.to_string(),
             amount: self.price * self.amount * sign,
-            cost: self.cost * sign,
+            cost: self.usd_cost * sign,
         });
 
         if self.fee_asset != "" && self.fee > 0.0 {
@@ -306,7 +306,7 @@ mod tests {
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
             price: 0.5,
-            cost: 2.0,
+            usd_cost: 2.0,
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
@@ -351,7 +351,7 @@ mod tests {
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
             price: 0.5,
-            cost: 2.0,
+            usd_cost: 2.0,
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
@@ -398,7 +398,7 @@ mod tests {
                 base_asset: "DOT".into(),
                 quote_asset: "ETH".into(),
                 price: 0.5,
-                cost: 2.0,
+                usd_cost: 2.0,
                 amount: 3.0,
                 fee: fee_amount,
                 fee_asset: fee_asset.to_string(),

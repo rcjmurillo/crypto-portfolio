@@ -570,7 +570,7 @@ impl BinanceFetcher {
                                     q if q.starts_with("USD") => 1.0,
                                     _ => find_price_at(&prices, t.time),
                                 };
-                                t.cost = t.qty * price;
+                                t.usd_cost = t.qty * price;
                                 trades.push(t);
                             }
                         }
