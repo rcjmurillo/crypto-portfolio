@@ -12,12 +12,12 @@ pub enum OperationStatus {
 
 #[async_trait]
 pub trait ExchangeDataFetcher {
-    async fn trades(&self, _symbols: &[String]) -> Result<Vec<Trade>>;
-    async fn margin_trades(&self, _symbols: &[String]) -> Result<Vec<Trade>>;
-    async fn loans(&self, _symbols: &[String]) -> Result<Vec<Loan>>;
-    async fn repays(&self, _symbols: &[String]) -> Result<Vec<Repay>>;
-    async fn fiat_deposits(&self, _symbols: &[String]) -> Result<Vec<Deposit>>;
-    async fn withdraws(&self, _symbols: &[String]) -> Result<Vec<Withdraw>>;
+    async fn trades(&self, symbols: &[String]) -> Result<Vec<Trade>>;
+    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>>;
+    async fn loans(&self, symbols: &[String]) -> Result<Vec<Loan>>;
+    async fn repays(&self, symbols: &[String]) -> Result<Vec<Repay>>;
+    async fn fiat_deposits(&self, symbols: &[String]) -> Result<Vec<Deposit>>;
+    async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Withdraw>>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
