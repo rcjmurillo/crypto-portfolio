@@ -23,7 +23,7 @@ fn mk_fetchers(
     file_fetcher: Option<FileDataFetcher>,
 ) -> Vec<(
     &'static str,
-    Arc<Box<dyn ExchangeDataFetcher + Send + Sync>>,
+    Box<dyn ExchangeDataFetcher + Send + Sync>,
 )> {
     let config_binance = config
         .binance
@@ -39,18 +39,18 @@ fn mk_fetchers(
     let mut fetchers = vec![
         (
             "Binance Global",
-            Arc::new(Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>),
+            Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ),
         (
             "Binance US",
-            Arc::new(Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>),
+            Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ),
     ];
 
     if let Some(file_fetcher) = file_fetcher {
         fetchers.push((
             "Custom Operations",
-            Arc::new(Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>),
+            Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ));
     }
     fetchers

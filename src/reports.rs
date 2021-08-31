@@ -5,7 +5,7 @@ use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 use binance::{BinanceFetcher, Region as BinanceRegion};
 
 use crate::{
-    cli::Config, operations::BalanceTracker, operations::ExchangeDataFetcher, result::Result,
+    cli::Config, operations::BalanceTracker, result::Result,
 };
 
 pub async fn asset_balances(

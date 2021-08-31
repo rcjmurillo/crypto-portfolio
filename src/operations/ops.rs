@@ -271,7 +271,7 @@ async fn ops_from_fetcher<'a>(
 pub async fn fetch_ops<'a>(
     fetchers: Vec<(
         &'static str,
-        Arc<Box<dyn ExchangeDataFetcher + Send + Sync>>,
+        Box<dyn ExchangeDataFetcher + Send + Sync>,
     )>,
     config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
@@ -281,7 +281,7 @@ pub async fn fetch_ops<'a>(
         let txc = tx.clone();
         let conf = config.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(name, f.as_ref(), &conf.symbols[..]).await {
+            for op in ops_from_fetcher(name, &f, &conf.symbols[..]).await {
                 match txc.send(op).await {
                     Ok(()) => (),
                     Err(err) => println!("could not send operation: {}", err),
