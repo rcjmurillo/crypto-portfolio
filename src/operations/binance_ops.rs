@@ -1,14 +1,15 @@
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 
 use binance::{BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw};
 
 use async_trait::async_trait;
+use chrono::{Utc, TimeZone};
 use futures::future::join_all;
 
 use crate::{
     cli::ExchangeConfig,
-    errors::Error,
-    operations::{self as ops, ExchangeDataFetcher, OperationStatus, TradeSide},
+    errors::{Error, ErrorKind},
+    operations::{self as ops, AssetsInfo, ExchangeDataFetcher, OperationStatus, TradeSide},
     result::Result,
 };
 
@@ -21,23 +22,39 @@ impl TryFrom<ExchangeConfig> for Config {
     }
 }
 
-impl From<FiatDeposit> for ops::Deposit {
+impl From<FiatDeposit> for ops::FiatDeposit {
     fn from(d: FiatDeposit) -> Self {
         Self {
             asset: d.fiat_currency,
             amount: d.amount,
+            fee: d.platform_fee,
+            time: d
+                .update_time
+                .unwrap_or(Utc::now().timestamp_millis().try_into().unwrap()),
         }
     }
 }
 
-impl From<Withdraw> for ops::Withdraw {
-    fn from(w: Withdraw) -> Self {
-        Self {
+impl TryFrom<Withdraw> for ops::Withdraw {
+    type Error = Error;
+    fn try_from(w: Withdraw) -> Result<Self> {
+        Ok(Self {
             asset: w.coin,
             amount: w.amount,
-            time: w.apply_time,
+            time: match Utc.datetime_from_str(&w.apply_time, "%Y-%m-%d %H:%M:%S") {
+                Ok(dt) => dt.timestamp_millis().try_into().unwrap(),
+                Err(err) => {
+                    return Err(Error::new(
+                        format!(
+                            "couldn't parse datetime ({}) for withdraw: {}",
+                            w.apply_time, err
+                        ),
+                        ErrorKind::Other,
+                    ))
+                }
+            },
             fee: w.transaction_fee,
-        }
+        })
     }
 }
 
@@ -48,7 +65,6 @@ impl From<Trade> for ops::Trade {
             base_asset: t.base_asset,
             quote_asset: t.quote_asset,
             price: t.price,
-            usd_cost: t.usd_cost,
             amount: t.qty,
             fee: t.commission,
             fee_asset: t.commission_asset,
@@ -67,7 +83,7 @@ impl From<MarginLoan> for ops::Loan {
         Self {
             asset: m.asset,
             amount: m.principal,
-            timestamp: m.timestamp,
+            time: m.timestamp,
             status: match m.status.as_str() {
                 "CONFIRMED" => OperationStatus::Success,
                 _ => OperationStatus::Failed,
@@ -82,7 +98,7 @@ impl From<MarginRepay> for ops::Repay {
             asset: r.asset,
             amount: r.amount,
             interest: r.interest,
-            timestamp: r.timestamp,
+            time: r.timestamp,
             status: match r.status.as_str() {
                 "CONFIRMED" => OperationStatus::Success,
                 _ => OperationStatus::Failed,
@@ -155,15 +171,29 @@ impl ExchangeDataFetcher for BinanceFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<ops::Deposit>> {
-        Ok(self.fetch_fiat_deposits().await?.into_iter().map(|x| x.into()).collect())
+    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<ops::FiatDeposit>> {
+        Ok(self
+            .fetch_fiat_deposits()
+            .await?
+            .into_iter()
+            .map(|x| x.into())
+            .collect())
     }
 
     async fn withdraws(&self, _: &[String]) -> Result<Vec<ops::Withdraw>> {
         match self.fetch_withdraws().await {
-            Ok(w) => Ok(w.into_iter().map(|x| x.into()).collect()),
-            Err(e) => Err(e.into())
+            Ok(w) => w.into_iter().map(|x| x.try_into()).collect(),
+            Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[async_trait]
+impl AssetsInfo for BinanceFetcher {
+    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+        self.fetch_price_at(symbol, time)
+            .await
+            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed))
     }
 }
 

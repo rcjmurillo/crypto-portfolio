@@ -6,16 +6,15 @@ use serde_json;
 
 use crate::{
     errors::{Error, ErrorKind},
-    operations::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw},
+    operations::{FiatDeposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw},
     result::Result,
 };
-use binance::{BinanceFetcher, Region as BinanceRegion};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
     trades: Vec<Trade>,
     withdraws: Vec<Withdraw>,
-    fiat_deposits: Option<Vec<Deposit>>,
+    fiat_deposits: Option<Vec<FiatDeposit>>,
 }
 
 #[derive(Clone)]
@@ -39,19 +38,7 @@ impl FileDataFetcher {
 #[async_trait]
 impl ExchangeDataFetcher for FileDataFetcher {
     async fn trades(&self, _: &[String]) -> Result<Vec<Trade>> {
-        let c = BinanceFetcher::new(BinanceRegion::Global, None);
-
-        let mut trades = self.data.trades.clone();
-        for t in trades.iter_mut() {
-            let usd_price = if t.base_asset.starts_with("USD") {
-                1.0
-            } else {
-                c.fetch_price_at(&format!("{}USDT", t.base_asset), t.time).await?
-            };
-            t.usd_cost = t.amount * usd_price;
-        }
-
-        Ok(trades)
+        Ok(self.data.trades.clone())
     }
     async fn margin_trades(&self, _: &[String]) -> Result<Vec<Trade>> {
         Ok(Vec::new())
@@ -62,7 +49,7 @@ impl ExchangeDataFetcher for FileDataFetcher {
     async fn repays(&self, _: &[String]) -> Result<Vec<Repay>> {
         Ok(Vec::new())
     }
-    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<Deposit>> {
+    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
         // fixme: don't clone this every time
         Ok(self.data.fiat_deposits.clone().unwrap_or(Vec::new()))
     }

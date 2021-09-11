@@ -21,6 +21,7 @@ pub struct FiatDeposit {
     pub platform_fee: f64,
     #[serde(alias = "orderStatus")]
     pub status: String,
+    pub update_time: Option<u64>
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -56,8 +57,6 @@ pub struct Trade {
     pub is_buyer: bool,
 
     // computed
-    #[serde(skip)]
-    pub usd_cost: f64,
     #[serde(skip)]
     pub base_asset: String,
     #[serde(skip)]

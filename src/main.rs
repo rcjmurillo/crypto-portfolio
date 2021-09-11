@@ -66,7 +66,13 @@ pub async fn main() -> Result<()> {
         ops_file,
     } = args;
 
-    let mut coin_tracker = BalanceTracker::new();
+    let config_binance = config
+        .binance
+        .as_ref()
+        .and_then(|c| Some(c.clone().try_into().unwrap()));
+    let binance_fetcher = BinanceFetcher::new(BinanceRegion::Global, config_binance);
+
+    let mut coin_tracker = BalanceTracker::new(binance_fetcher);
 
     let config = Arc::new(config);
 
@@ -83,7 +89,7 @@ pub async fn main() -> Result<()> {
     let mut s = fetch_ops(mk_fetchers(&config, file_fetcher.clone()), config.clone()).await;
 
     while let Some(op) = s.recv().await {
-        coin_tracker.track_operation(op);
+        coin_tracker.track_operation(op).await?;
     }
 
     reports::asset_balances(&coin_tracker, config).await?;

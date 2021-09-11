@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::{collections::HashMap, convert::From, sync::Arc, vec::Vec};
+use std::{collections::HashMap, sync::Arc, vec::Vec};
 use tokio::sync::mpsc;
 
 use crate::{cli::Config, result::Result};
@@ -23,8 +23,15 @@ pub trait ExchangeDataFetcher {
 
 #[async_trait]
 pub trait AssetsInfo {
-    async fn price_at(&self, asset: &str, time: u64) -> Result<f64>;
+    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64>;
 }
+
+// #[async_trait]
+// impl<T: AssetsInfo + Deref + Send + Sync> AssetsInfo for &T {
+//     async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+//         self.deref().price_at(symbol, time).await
+//     }
+// }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -48,10 +55,10 @@ pub struct Trade {
 
 impl Into<Vec<Operation>> for Trade {
     fn into(self) -> Vec<Operation> {
-        let ops = match self.side {
+        let mut ops = match self.side {
             TradeSide::Buy => vec![
                 Operation::Balance {
-                    asset: self.base_asset,
+                    asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
                 Operation::Cost {
@@ -60,18 +67,18 @@ impl Into<Vec<Operation>> for Trade {
                     time: self.time,
                 },
                 Operation::Balance {
-                    asset: self.quote_asset,
+                    asset: self.quote_asset.clone(),
                     amount: -self.amount * self.price,
                 },
                 Operation::Revenue {
                     asset: self.quote_asset,
-                    amount: self.amount,
+                    amount: self.amount * self.price,
                     time: self.time,
                 },
             ],
             TradeSide::Sell => vec![
                 Operation::Balance {
-                    asset: self.base_asset,
+                    asset: self.base_asset.clone(),
                     amount: -self.amount,
                 },
                 Operation::Revenue {
@@ -80,12 +87,12 @@ impl Into<Vec<Operation>> for Trade {
                     time: self.time,
                 },
                 Operation::Balance {
-                    asset: self.quote_asset,
+                    asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
                 Operation::Cost {
                     asset: self.quote_asset,
-                    amount: self.amount,
+                    amount: self.amount * self.price,
                     time: self.time,
                 },
             ],
@@ -114,7 +121,7 @@ impl Into<Vec<Operation>> for FiatDeposit {
     fn into(self) -> Vec<Operation> {
         vec![
             Operation::Balance {
-                asset: self.asset,
+                asset: self.asset.clone(),
                 amount: self.amount,
             },
             Operation::Cost {
@@ -180,7 +187,7 @@ impl Into<Vec<Operation>> for Repay {
             OperationStatus::Success => {
                 vec![
                     Operation::Balance {
-                        asset: self.asset,
+                        asset: self.asset.clone(),
                         amount: -self.amount,
                     },
                     Operation::Cost {
@@ -210,7 +217,8 @@ impl AssetBalance {
     }
 }
 
-enum Operation {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Operation {
     Balance {
         asset: String,
         amount: f64,
@@ -252,7 +260,13 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 time,
             } => {
                 assert!(time > 0, "cost operation with time zero");
-                let usd_price = self.asset_info.price_at(&asset, time).await?;
+                let usd_price = if asset.starts_with("USD") {
+                    1.0
+                } else {
+                    self.asset_info
+                        .price_at(&format!("{}USDT", asset), time)
+                        .await?
+                };
                 let coin_balance = self.coin_balances.entry(asset).or_default();
                 coin_balance.usd_position += -amount * usd_price;
             }
@@ -262,7 +276,13 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 time,
             } => {
                 assert!(time > 0, "revenue operation with time zero");
-                let usd_price = self.asset_info.price_at(&asset, time).await?;
+                let usd_price = if asset.starts_with("USD") {
+                    1.0
+                } else {
+                    self.asset_info
+                        .price_at(&format!("{}USDT", asset), time)
+                        .await?
+                };
                 let coin_balance = self.coin_balances.entry(asset).or_default();
                 coin_balance.usd_position += amount * usd_price;
             }
@@ -479,7 +499,7 @@ mod tests {
             ops[4],
             Operation::Cost {
                 asset: "ETH".into(),
-                amount: -0.01,
+                amount: 0.01,
                 time: 123,
             }
         );
@@ -497,7 +517,7 @@ mod tests {
                 amount: 3.0,
                 fee: fee_amount,
                 fee_asset: fee_asset.to_string(),
-                time: 0,
+                time: 123,
                 side: TradeSide::Buy,
             };
             let ops: Vec<Operation> = t.into();
@@ -536,15 +556,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn track_operations() {
+    #[tokio::test]
+    async fn track_operations() -> Result<()> {
         struct TestAssetInfo {}
+
+        #[async_trait]
         impl AssetsInfo for TestAssetInfo {
-            fn price_at(asset: &str, time: u64) -> Result<f64> {
-                let prices = vec![
-                    8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0,
-                ];
-                Ok(prices[time as usize])
+            async fn price_at(&self, _symbol: &str, time: u64) -> Result<f64> {
+                let prices = vec![8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0];
+                Ok(prices[(time - 1) as usize])
             }
         }
 
@@ -579,53 +599,53 @@ mod tests {
             },
             Operation::Balance {
                 asset: "ETHUSD".into(),
-                amount: -0.01,
+                amount: 0.01,
             },
-            Operation::Revenue {
+            Operation::Cost {
                 asset: "ETHUSD".into(),
-                amount: -0.01,
+                amount: 0.01,
                 time: 4,
             },
             Operation::Balance {
                 asset: "ETHUSD".into(),
-                amount: 0.2,
+                amount: -0.2,
             },
-            Operation::Cost {
+            Operation::Revenue {
                 asset: "ETHUSD".into(),
                 amount: 0.2,
                 time: 5,
             },
             Operation::Balance {
                 asset: "DOTUSD".into(),
-                amount: 0.4,
+                amount: 0.5,
             },
             Operation::Cost {
                 asset: "DOTUSD".into(),
-                amount: 0.9,
+                amount: 0.5,
                 time: 6,
             },
             Operation::Balance {
                 asset: "DOTUSD".into(),
-                amount: -0.01,
+                amount: -0.1,
             },
             Operation::Revenue {
                 asset: "DOTUSD".into(),
-                amount: 0.01,
+                amount: 0.1,
                 time: 7,
             },
             Operation::Balance {
                 asset: "DOTUSD".into(),
-                amount: -0.6,
+                amount: -0.2,
             },
             Operation::Revenue {
                 asset: "DOTUSD".into(),
-                amount: 0.6,
+                amount: 0.2,
                 time: 8,
             },
         ];
 
         for op in ops {
-            coin_tracker.track_operation(op);
+            coin_tracker.track_operation(op).await?;
         }
 
         let mut expected = vec![
@@ -639,15 +659,15 @@ mod tests {
             (
                 "ETHUSD".to_string(),
                 AssetBalance {
-                    amount: 0.69,
-                    usd_position: -2379.0,
+                    amount: 0.31,
+                    usd_position: 379.0,
                 },
             ),
             (
                 "DOTUSD".to_string(),
                 AssetBalance {
-                    amount: 0.29,
-                    usd_position: 43.75,
+                    amount: 0.2,
+                    usd_position: 14.0,
                 },
             ),
         ];
@@ -661,5 +681,7 @@ mod tests {
             assert_eq!(asset_a, *asset_b);
             assert_eq!(balance_a, *balance_b);
         }
+
+        Ok(())
     }
 }
