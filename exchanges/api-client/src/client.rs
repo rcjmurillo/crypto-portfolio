@@ -132,7 +132,7 @@ impl ApiClient {
             StatusCode::SERVICE_UNAVAILABLE => Err(Error::new(resp.text().await?, ErrorKind::ServiceUnavailable)),
             StatusCode::UNAUTHORIZED => Err(Error::new(resp.text().await?, ErrorKind::Unauthorized)),
             StatusCode::BAD_REQUEST => Err(Error::new(resp.text().await?, ErrorKind::BadRequest)),
-            _ => Err(Error::new(resp.text().await?, ErrorKind::Other)),
+            status => Err(Error::new(format!("text={} status={}", resp.text().await?, status), ErrorKind::Other)),
         }
     }
 }

@@ -23,7 +23,7 @@ impl Error {
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         Self {
-            body: err.to_string(),
+            body: format!("error={}, url={:?} status={:?}", err, err.url(), err.status()),
             kind: ErrorKind::Other,
         }
     }

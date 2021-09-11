@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::{cli::Config, result::Result};
 
+#[derive(Deserialize)]
 pub enum OperationStatus {
     Success,
     Failed,
@@ -16,8 +17,13 @@ pub trait ExchangeDataFetcher {
     async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>>;
     async fn loans(&self, symbols: &[String]) -> Result<Vec<Loan>>;
     async fn repays(&self, symbols: &[String]) -> Result<Vec<Repay>>;
-    async fn fiat_deposits(&self, symbols: &[String]) -> Result<Vec<Deposit>>;
+    async fn fiat_deposits(&self, symbols: &[String]) -> Result<Vec<FiatDeposit>>;
     async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Withdraw>>;
+}
+
+#[async_trait]
+pub trait AssetsInfo {
+    async fn price_at(&self, asset: &str, time: u64) -> Result<f64>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -32,10 +38,8 @@ pub struct Trade {
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
-    pub price: f64,
-    #[serde(skip)]
-    pub usd_cost: f64,
     pub amount: f64,
+    pub price: f64,
     pub fee: f64,
     pub fee_asset: String,
     pub time: u64,
@@ -44,31 +48,53 @@ pub struct Trade {
 
 impl Into<Vec<Operation>> for Trade {
     fn into(self) -> Vec<Operation> {
-        let mut ops = Vec::new();
-        // determines if the first operation is going to increase or to decrease
-        // the balance, then the second operation does the opposit.
-        let mut sign = match self.side {
-            TradeSide::Buy => 1.0,
-            TradeSide::Sell => -1.0,
+        let ops = match self.side {
+            TradeSide::Buy => vec![
+                Operation::Balance {
+                    asset: self.base_asset,
+                    amount: self.amount,
+                },
+                Operation::Cost {
+                    asset: self.base_asset,
+                    amount: self.amount,
+                    time: self.time,
+                },
+                Operation::Balance {
+                    asset: self.quote_asset,
+                    amount: -self.amount * self.price,
+                },
+                Operation::Revenue {
+                    asset: self.quote_asset,
+                    amount: self.amount,
+                    time: self.time,
+                },
+            ],
+            TradeSide::Sell => vec![
+                Operation::Balance {
+                    asset: self.base_asset,
+                    amount: -self.amount,
+                },
+                Operation::Revenue {
+                    asset: self.base_asset,
+                    amount: self.amount,
+                    time: self.time,
+                },
+                Operation::Balance {
+                    asset: self.quote_asset,
+                    amount: self.amount * self.price,
+                },
+                Operation::Cost {
+                    asset: self.quote_asset,
+                    amount: self.amount,
+                    time: self.time,
+                },
+            ],
         };
-
-        ops.push(Operation {
-            asset: self.base_asset.to_string(),
-            amount: self.amount * sign,
-            cost: self.usd_cost * sign,
-        });
-        sign *= -1.0; // invert sign
-        ops.push(Operation {
-            asset: self.quote_asset.to_string(),
-            amount: self.price * self.amount * sign,
-            cost: self.usd_cost * sign,
-        });
-
         if self.fee_asset != "" && self.fee > 0.0 {
-            ops.push(Operation {
-                asset: self.fee_asset.to_string(),
-                amount: -self.fee,
-                cost: 0.0,
+            ops.push(Operation::Cost {
+                asset: self.fee_asset,
+                amount: self.fee,
+                time: self.time,
             });
         }
 
@@ -77,18 +103,26 @@ impl Into<Vec<Operation>> for Trade {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct Deposit {
+pub struct FiatDeposit {
     pub asset: String,
     pub amount: f64,
+    pub fee: f64,
+    pub time: u64,
 }
 
-impl Into<Vec<Operation>> for Deposit {
+impl Into<Vec<Operation>> for FiatDeposit {
     fn into(self) -> Vec<Operation> {
-        vec![Operation {
-            asset: self.asset,
-            amount: self.amount,
-            cost: 0.0,
-        }]
+        vec![
+            Operation::Balance {
+                asset: self.asset,
+                amount: self.amount,
+            },
+            Operation::Cost {
+                asset: self.asset,
+                amount: self.fee,
+                time: self.time,
+            },
+        ]
     }
 }
 
@@ -96,16 +130,16 @@ impl Into<Vec<Operation>> for Deposit {
 pub struct Withdraw {
     pub asset: String,
     pub amount: f64,
-    pub time: String,
+    pub time: u64,
     pub fee: f64,
 }
 
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
-        vec![Operation {
-            asset: self.asset.clone(),
-            amount: -self.fee,
-            cost: 0.0,
+        vec![Operation::Cost {
+            asset: self.asset,
+            amount: self.fee,
+            time: self.time,
         }]
     }
 }
@@ -113,7 +147,7 @@ impl Into<Vec<Operation>> for Withdraw {
 pub struct Loan {
     pub asset: String,
     pub amount: f64,
-    pub timestamp: u64,
+    pub time: u64,
     pub status: OperationStatus,
 }
 
@@ -121,10 +155,9 @@ impl Into<Vec<Operation>> for Loan {
     fn into(self) -> Vec<Operation> {
         match self.status {
             OperationStatus::Success => {
-                vec![Operation {
-                    asset: self.asset.clone(),
+                vec![Operation::Balance {
+                    asset: self.asset,
                     amount: self.amount,
-                    cost: 0.0,
                 }]
             }
             OperationStatus::Failed => vec![],
@@ -132,11 +165,12 @@ impl Into<Vec<Operation>> for Loan {
     }
 }
 
+#[derive(Deserialize)]
 pub struct Repay {
     pub asset: String,
     pub amount: f64,
     pub interest: f64,
-    pub timestamp: u64,
+    pub time: u64,
     pub status: OperationStatus,
 }
 
@@ -144,68 +178,107 @@ impl Into<Vec<Operation>> for Repay {
     fn into(self) -> Vec<Operation> {
         match self.status {
             OperationStatus::Success => {
-                vec![Operation {
-                    asset: self.asset,
-                    amount: -(self.amount + self.interest),
-                    cost: 0.0,
-                }]
+                vec![
+                    Operation::Balance {
+                        asset: self.asset,
+                        amount: -self.amount,
+                    },
+                    Operation::Cost {
+                        asset: self.asset,
+                        amount: self.interest,
+                        time: self.time,
+                    },
+                ]
             }
             OperationStatus::Failed => vec![],
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct CoinBalance {
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AssetBalance {
     pub amount: f64,
-    pub cost: f64,
+    pub usd_position: f64,
 }
 
-impl CoinBalance {
+impl AssetBalance {
     fn new() -> Self {
-        CoinBalance {
+        AssetBalance {
             amount: 0.0,
-            cost: 0.0,
+            usd_position: 0.0,
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Operation {
-    pub asset: String,
-    pub amount: f64,
-    pub cost: f64,
+enum Operation {
+    Balance {
+        asset: String,
+        amount: f64,
+    },
+    Cost {
+        asset: String,
+        amount: f64,
+        time: u64,
+    },
+    Revenue {
+        asset: String,
+        amount: f64,
+        time: u64,
+    },
 }
 
-pub struct BalanceTracker {
-    coin_balances: HashMap<String, CoinBalance>,
+pub struct BalanceTracker<T: AssetsInfo> {
+    coin_balances: HashMap<String, AssetBalance>,
+    asset_info: T,
 }
 
-impl BalanceTracker {
-    pub fn new() -> Self {
+impl<T: AssetsInfo> BalanceTracker<T> {
+    pub fn new(asset_info: T) -> Self {
         BalanceTracker {
             coin_balances: HashMap::new(),
+            asset_info,
         }
     }
 
-    pub fn track_operation(&mut self, op: Operation) {
-        let coin_balance = self
-            .coin_balances
-            .entry(String::from(op.asset))
-            .or_insert(CoinBalance::new());
-        coin_balance.amount += op.amount;
-        coin_balance.cost += op.cost;
+    pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
+        match op {
+            Operation::Balance { asset, amount } => {
+                let coin_balance = self.coin_balances.entry(asset).or_default();
+                coin_balance.amount += amount;
+            }
+            Operation::Cost {
+                asset,
+                amount,
+                time,
+            } => {
+                assert!(time > 0, "cost operation with time zero");
+                let usd_price = self.asset_info.price_at(&asset, time).await?;
+                let coin_balance = self.coin_balances.entry(asset).or_default();
+                coin_balance.usd_position += -amount * usd_price;
+            }
+            Operation::Revenue {
+                asset,
+                amount,
+                time,
+            } => {
+                assert!(time > 0, "revenue operation with time zero");
+                let usd_price = self.asset_info.price_at(&asset, time).await?;
+                let coin_balance = self.coin_balances.entry(asset).or_default();
+                coin_balance.usd_position += amount * usd_price;
+            }
+        }
+        Ok(())
     }
 
-    pub fn get_cost(&self, symbol: &str) -> Option<f64> {
-        if let Some(balance) = self.coin_balances.get(symbol) {
-            Some(balance.cost)
+    pub fn get_balance(&self, asset: &str) -> Option<&AssetBalance> {
+        if let Some(balance) = self.coin_balances.get(asset) {
+            Some(balance)
         } else {
             None
         }
     }
 
-    pub fn balances(&self) -> Vec<(&String, &CoinBalance)> {
+    pub fn balances(&self) -> Vec<(&String, &AssetBalance)> {
         self.coin_balances.iter().collect()
     }
 }
@@ -269,10 +342,7 @@ async fn ops_from_fetcher<'a>(
 }
 
 pub async fn fetch_ops<'a>(
-    fetchers: Vec<(
-        &'static str,
-        Box<dyn ExchangeDataFetcher + Send + Sync>,
-    )>,
+    fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
     config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
     let (tx, rx) = mpsc::channel(1000);
@@ -306,40 +376,53 @@ mod tests {
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
             price: 0.5,
-            usd_cost: 2.0,
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
-            time: 0,
+            time: 123,
             side: TradeSide::Buy,
         };
 
         let ops: Vec<Operation> = t1.into();
 
-        assert_eq!(3, ops.len(), "incorrect number of operations");
+        assert_eq!(5, ops.len(), "incorrect number of operations");
 
         assert_eq!(
             ops[0],
-            Operation {
+            Operation::Balance {
                 asset: "DOT".into(),
-                amount: 3.0,
-                cost: 2.0
+                amount: 3.0
             }
         );
         assert_eq!(
             ops[1],
-            Operation {
-                asset: "ETH".into(),
-                amount: -1.5,
-                cost: -2.0
+            Operation::Cost {
+                asset: "DOT".into(),
+                amount: 3.0,
+                time: 123
             }
         );
         assert_eq!(
             ops[2],
-            Operation {
+            Operation::Balance {
                 asset: "ETH".into(),
-                amount: -0.01,
-                cost: 0.0
+                amount: -1.5,
+            }
+        );
+        assert_eq!(
+            ops[3],
+            Operation::Revenue {
+                asset: "ETH".into(),
+                amount: 1.5,
+                time: 123
+            }
+        );
+        assert_eq!(
+            ops[4],
+            Operation::Cost {
+                asset: "ETH".into(),
+                amount: 0.01,
+                time: 123
             }
         );
     }
@@ -351,40 +434,53 @@ mod tests {
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
             price: 0.5,
-            usd_cost: 2.0,
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
-            time: 0,
+            time: 123,
             side: TradeSide::Sell,
         };
 
         let ops: Vec<Operation> = t1.into();
 
-        assert_eq!(3, ops.len(), "incorrect number of operations");
+        assert_eq!(5, ops.len(), "incorrect number of operations");
 
         assert_eq!(
             ops[0],
-            Operation {
+            Operation::Balance {
                 asset: "DOT".into(),
-                amount: -3.0,
-                cost: -2.0
+                amount: -3.0
             }
         );
         assert_eq!(
             ops[1],
-            Operation {
-                asset: "ETH".into(),
-                amount: 1.5,
-                cost: 2.0
+            Operation::Revenue {
+                asset: "DOT".into(),
+                amount: 3.0,
+                time: 123,
             }
         );
         assert_eq!(
             ops[2],
-            Operation {
+            Operation::Balance {
+                asset: "ETH".into(),
+                amount: 1.5
+            }
+        );
+        assert_eq!(
+            ops[3],
+            Operation::Cost {
+                asset: "ETH".into(),
+                amount: 1.5,
+                time: 123
+            }
+        );
+        assert_eq!(
+            ops[4],
+            Operation::Cost {
                 asset: "ETH".into(),
                 amount: -0.01,
-                cost: 0.0
+                time: 123,
             }
         );
     }
@@ -398,7 +494,6 @@ mod tests {
                 base_asset: "DOT".into(),
                 quote_asset: "ETH".into(),
                 price: 0.5,
-                usd_cost: 2.0,
                 amount: 3.0,
                 fee: fee_amount,
                 fee_asset: fee_asset.to_string(),
@@ -406,22 +501,36 @@ mod tests {
                 side: TradeSide::Buy,
             };
             let ops: Vec<Operation> = t.into();
-            assert_eq!(2, ops.len(), "incorrect number of operations");
+            assert_eq!(4, ops.len(), "incorrect number of operations");
 
             assert_eq!(
                 ops[0],
-                Operation {
+                Operation::Balance {
                     asset: "DOT".into(),
-                    amount: 3.0,
-                    cost: 2.0
+                    amount: 3.0
                 }
             );
             assert_eq!(
                 ops[1],
-                Operation {
+                Operation::Cost {
+                    asset: "DOT".into(),
+                    amount: 3.0,
+                    time: 123
+                }
+            );
+            assert_eq!(
+                ops[2],
+                Operation::Balance {
                     asset: "ETH".into(),
                     amount: -1.5,
-                    cost: -2.0
+                }
+            );
+            assert_eq!(
+                ops[3],
+                Operation::Revenue {
+                    asset: "ETH".into(),
+                    amount: 1.5,
+                    time: 123
                 }
             );
         }
@@ -429,47 +538,89 @@ mod tests {
 
     #[test]
     fn track_operations() {
-        let mut coin_tracker = BalanceTracker::new();
+        struct TestAssetInfo {}
+        impl AssetsInfo for TestAssetInfo {
+            fn price_at(asset: &str, time: u64) -> Result<f64> {
+                let prices = vec![
+                    8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0,
+                ];
+                Ok(prices[time as usize])
+            }
+        }
+
+        let mut coin_tracker = BalanceTracker::new(TestAssetInfo {});
         let ops = vec![
-            Operation {
+            Operation::Balance {
                 asset: "BTCUSD".into(),
                 amount: 0.03,
-                cost: 250.0,
             },
-            Operation {
+            Operation::Cost {
+                asset: "BTCUSD".into(),
+                amount: 0.03,
+                time: 1,
+            },
+            Operation::Balance {
                 asset: "BTCUSD".into(),
                 amount: 0.1,
-                cost: 500.0,
             },
-            Operation {
+            Operation::Cost {
+                asset: "BTCUSD".into(),
+                amount: 0.1,
+                time: 2,
+            },
+            Operation::Balance {
                 asset: "ETHUSD".into(),
                 amount: 0.5,
-                cost: 1500.0,
             },
-            Operation {
+            Operation::Cost {
+                asset: "ETHUSD".into(),
+                amount: 0.5,
+                time: 3,
+            },
+            Operation::Balance {
                 asset: "ETHUSD".into(),
                 amount: -0.01,
-                cost: -300.0,
             },
-            Operation {
+            Operation::Revenue {
+                asset: "ETHUSD".into(),
+                amount: -0.01,
+                time: 4,
+            },
+            Operation::Balance {
                 asset: "ETHUSD".into(),
                 amount: 0.2,
-                cost: 500.0,
             },
-            Operation {
+            Operation::Cost {
+                asset: "ETHUSD".into(),
+                amount: 0.2,
+                time: 5,
+            },
+            Operation::Balance {
                 asset: "DOTUSD".into(),
                 amount: 0.4,
-                cost: 1500.0,
             },
-            Operation {
+            Operation::Cost {
+                asset: "DOTUSD".into(),
+                amount: 0.9,
+                time: 6,
+            },
+            Operation::Balance {
                 asset: "DOTUSD".into(),
                 amount: -0.01,
-                cost: -300.0,
             },
-            Operation {
+            Operation::Revenue {
                 asset: "DOTUSD".into(),
-                amount: -0.9,
-                cost: -2800.0,
+                amount: 0.01,
+                time: 7,
+            },
+            Operation::Balance {
+                asset: "DOTUSD".into(),
+                amount: -0.6,
+            },
+            Operation::Revenue {
+                asset: "DOTUSD".into(),
+                amount: 0.6,
+                time: 8,
             },
         ];
 
@@ -480,23 +631,23 @@ mod tests {
         let mut expected = vec![
             (
                 "BTCUSD".to_string(),
-                CoinBalance {
+                AssetBalance {
                     amount: 0.13,
-                    cost: 750.0,
+                    usd_position: -1145.0,
                 },
             ),
             (
                 "ETHUSD".to_string(),
-                CoinBalance {
+                AssetBalance {
                     amount: 0.69,
-                    cost: 1700.0,
+                    usd_position: -2379.0,
                 },
             ),
             (
                 "DOTUSD".to_string(),
-                CoinBalance {
-                    amount: -0.51,
-                    cost: -1600.0,
+                AssetBalance {
+                    amount: 0.29,
+                    usd_position: 43.75,
                 },
             ),
         ];

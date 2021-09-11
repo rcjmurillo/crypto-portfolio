@@ -29,7 +29,7 @@ impl From<binance::Error> for Error {
     fn from(err: binance::Error) -> Self {
         match err.kind {
             binance::ErrorKind::Other => Error::new(err.reason, ErrorKind::Other),
-            _ => Error::new(format!("{}", err), ErrorKind::FetchFailed),
+            _ => Error::new(format!("({}): {:?}", err, err.kind), ErrorKind::FetchFailed),
         }
     }
 }
