@@ -1,9 +1,15 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc, vec::Vec};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
-use crate::{cli::Config, result::Result};
+use binance::{BinanceFetcher, Region as BinanceRegion};
+
+use crate::{
+    cli::Config,
+    errors::{Error, ErrorKind},
+    result::Result,
+};
 
 #[derive(Deserialize)]
 pub enum OperationStatus {
@@ -25,13 +31,6 @@ pub trait ExchangeDataFetcher {
 pub trait AssetsInfo {
     async fn price_at(&self, symbol: &str, time: u64) -> Result<f64>;
 }
-
-// #[async_trait]
-// impl<T: AssetsInfo + Deref + Send + Sync> AssetsInfo for &T {
-//     async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
-//         self.deref().price_at(symbol, time).await
-//     }
-// }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +97,10 @@ impl Into<Vec<Operation>> for Trade {
             ],
         };
         if self.fee_asset != "" && self.fee > 0.0 {
+            ops.push(Operation::Balance {
+                asset: self.fee_asset.clone(),
+                amount: -self.fee,
+            });
             ops.push(Operation::Cost {
                 asset: self.fee_asset,
                 amount: self.fee,
@@ -249,6 +252,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     }
 
     pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
+        println!("processing: {:?}", op);
         match op {
             Operation::Balance { asset, amount } => {
                 let coin_balance = self.coin_balances.entry(asset).or_default();
@@ -287,6 +291,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 coin_balance.usd_position += amount * usd_price;
             }
         }
+        println!("processing done!");
         Ok(())
     }
 
@@ -300,6 +305,75 @@ impl<T: AssetsInfo> BalanceTracker<T> {
 
     pub fn balances(&self) -> Vec<(&String, &AssetBalance)> {
         self.coin_balances.iter().collect()
+    }
+}
+
+// stores a map of buckets to prices, buckets are periods of time
+// defined by how the key is computed.
+type PricesBucket = HashMap<u16, Vec<(u64, f64)>>;
+
+pub struct AssetPrices {
+    prices: Mutex<HashMap<String, PricesBucket>>,
+    fetcher: BinanceFetcher,
+}
+
+impl AssetPrices {
+    pub fn new() -> Self {
+        Self {
+            prices: Mutex::new(HashMap::new()),
+            fetcher: BinanceFetcher::new(BinanceRegion::Global, None),
+        }
+    }
+
+    async fn asset_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+        let period_days = 180;
+        let bucket_size_millis = 24 * 3600 * 1000 * period_days;
+        let bucket = (time / bucket_size_millis) as u16;
+        let mut prices = self.prices.lock().await;
+        if !prices.contains_key(symbol) {
+            println!("prices not found for {}", symbol);
+            let symbol_prices = self.fetch_prices_for(symbol, time).await?;
+            let mut prices_bucket = PricesBucket::new();
+            prices_bucket.insert(bucket, symbol_prices);
+            prices.insert(symbol.to_string(), prices_bucket);
+        }
+
+        let prices_bucket = prices.get_mut(symbol).unwrap();
+        if !prices_bucket.contains_key(&bucket) {
+            println!("prices not found for {} in bucket {}", symbol, bucket);
+            let symbol_prices = self.fetch_prices_for(symbol, time).await?;
+            prices_bucket.insert(bucket, symbol_prices);
+        }
+
+        Ok(self.find_price_at(prices_bucket.get(&bucket).unwrap(), time))
+    }
+
+    async fn fetch_prices_for(&self, symbol: &str, time: u64) -> Result<Vec<(u64, f64)>> {
+        let period_days = 180;
+        let bucket_size_millis = 24 * 3600 * 1000 * period_days;
+        let start_ts = time - (time % bucket_size_millis);
+        let end_ts = start_ts + bucket_size_millis;
+        self.fetcher
+            .fetch_prices_in_range(symbol, start_ts, end_ts)
+            .await
+            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed))
+    }
+
+    fn find_price_at(&self, prices: &Vec<(u64, f64)>, time: u64) -> f64 {
+        prices
+            .iter()
+            .find_map(|p| match p.0 > time {
+                true => Some(p.1),
+                false => None,
+            })
+            .unwrap_or(0.0)
+    }
+}
+
+#[async_trait]
+impl AssetsInfo for AssetPrices {
+    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+        self.asset_price_at(symbol, time).await
     }
 }
 
@@ -405,7 +479,7 @@ mod tests {
 
         let ops: Vec<Operation> = t1.into();
 
-        assert_eq!(5, ops.len(), "incorrect number of operations");
+        assert_eq!(6, ops.len(), "incorrect number of operations");
 
         assert_eq!(
             ops[0],
@@ -439,6 +513,13 @@ mod tests {
         );
         assert_eq!(
             ops[4],
+            Operation::Balance {
+                asset: "ETH".into(),
+                amount: -0.01,
+            }
+        );
+        assert_eq!(
+            ops[5],
             Operation::Cost {
                 asset: "ETH".into(),
                 amount: 0.01,
@@ -456,14 +537,14 @@ mod tests {
             price: 0.5,
             amount: 3.0,
             fee: 0.01,
-            fee_asset: "ETH".into(),
+            fee_asset: "XCOIN".into(),
             time: 123,
             side: TradeSide::Sell,
         };
 
         let ops: Vec<Operation> = t1.into();
 
-        assert_eq!(5, ops.len(), "incorrect number of operations");
+        assert_eq!(6, ops.len(), "incorrect number of operations");
 
         assert_eq!(
             ops[0],
@@ -497,8 +578,15 @@ mod tests {
         );
         assert_eq!(
             ops[4],
+            Operation::Balance {
+                asset: "XCOIN".into(),
+                amount: -0.01,
+            }
+        );
+        assert_eq!(
+            ops[5],
             Operation::Cost {
-                asset: "ETH".into(),
+                asset: "XCOIN".into(),
                 amount: 0.01,
                 time: 123,
             }

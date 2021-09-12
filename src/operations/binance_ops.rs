@@ -1,10 +1,15 @@
-use std::convert::{TryFrom, TryInto};
+use std::{
+    convert::{TryFrom, TryInto},
+};
 
-use binance::{BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw};
+use binance::{
+    BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw,
+};
 
 use async_trait::async_trait;
-use chrono::{Utc, TimeZone};
+use chrono::{TimeZone, Utc};
 use futures::future::join_all;
+
 
 use crate::{
     cli::ExchangeConfig,

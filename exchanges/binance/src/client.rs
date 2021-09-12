@@ -1,4 +1,4 @@
-use std::{env, fmt, sync::Arc, ops::Deref};
+use std::{env, fmt, sync::Arc, ops::Deref, collections::HashMap};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
@@ -397,7 +397,7 @@ impl BinanceFetcher {
         Ok((high + low) / 2.0) // avg
     }
 
-    async fn fetch_prices_in_range(
+    pub async fn fetch_prices_in_range(
         &self,
         symbol: &str,
         start_ts: u64,

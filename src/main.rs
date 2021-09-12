@@ -14,7 +14,7 @@ use binance::{BinanceFetcher, Region as BinanceRegion};
 use crate::{
     cli::Args,
     custom_ops::FileDataFetcher,
-    operations::{fetch_ops, BalanceTracker, ExchangeDataFetcher},
+    operations::{fetch_ops, BalanceTracker, ExchangeDataFetcher, AssetPrices},
     result::Result,
 };
 
@@ -66,13 +66,8 @@ pub async fn main() -> Result<()> {
         ops_file,
     } = args;
 
-    let config_binance = config
-        .binance
-        .as_ref()
-        .and_then(|c| Some(c.clone().try_into().unwrap()));
-    let binance_fetcher = BinanceFetcher::new(BinanceRegion::Global, config_binance);
 
-    let mut coin_tracker = BalanceTracker::new(binance_fetcher);
+    let mut coin_tracker = BalanceTracker::new(AssetPrices::new());
 
     let config = Arc::new(config);
 
