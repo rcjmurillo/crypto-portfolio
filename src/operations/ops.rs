@@ -221,15 +221,6 @@ pub struct AssetBalance {
     pub usd_position: f64,
 }
 
-impl AssetBalance {
-    fn new() -> Self {
-        AssetBalance {
-            amount: 0.0,
-            usd_position: 0.0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     Balance {

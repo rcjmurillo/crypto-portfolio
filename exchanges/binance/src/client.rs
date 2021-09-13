@@ -1,4 +1,4 @@
-use std::{env, fmt, sync::Arc, ops::Deref, collections::HashMap};
+use std::{env, fmt, sync::Arc};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, Utc};
@@ -14,7 +14,7 @@ use api_client::{ApiClient, QueryParams};
 
 use crate::{
     errors::{ApiErrorKind, Error, ErrorKind},
-    response_model::*,
+    api_model::*,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -726,16 +726,6 @@ impl BinanceFetcher {
 
         Ok(repays)
     }
-}
-
-fn find_price_at(prices: &Vec<(u64, f64)>, time: u64) -> f64 {
-    prices
-        .iter()
-        .find_map(|p| match p.0 > time {
-            true => Some(p.1),
-            false => None,
-        })
-        .unwrap_or(0.0)
 }
 
 pub fn symbol_into_assets(symbol: &str, exchange_symbols: &Vec<Symbol>) -> (String, String) {
