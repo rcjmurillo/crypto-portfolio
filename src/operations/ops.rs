@@ -323,11 +323,17 @@ impl AssetPrices {
     }
 
     async fn asset_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+        // create buckets of `period_days` size for time, a list of klines 
+        // will be fetch for the bucket where the time falls into if it doesn't
+        // exists already in the map.
+        // Once made sure the data for the bucket is in the map use it to 
+        // determine the price of the symbol at `time`.
         let period_days = 180;
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size_millis) as u16;
+        // fixme: use different locks for checking and updating the map.
         let mut prices = self.prices.lock().await;
-        if !prices.contains_key(symbol) {
+        if !prices.contains_key(symbol) { 
             let symbol_prices = self.fetch_prices_for(symbol, time).await?;
             let mut prices_bucket = PricesBucket::new();
             prices_bucket.insert(bucket, symbol_prices);
@@ -344,6 +350,9 @@ impl AssetPrices {
     }
 
     async fn fetch_prices_for(&self, symbol: &str, time: u64) -> Result<Vec<(u64, f64)>> {
+        // fetch prices from the start time of the bucket not `time` so other calls
+        // can reuse the data for transactions that fall into the same bucket. Also this 
+        // way it's assured fetched data won't overlap.
         let period_days = 180;
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let start_ts = time - (time % bucket_size_millis);
@@ -355,6 +364,10 @@ impl AssetPrices {
     }
 
     fn find_price_at(&self, prices: &Vec<(u64, f64)>, time: u64) -> f64 {
+        // find the price at `time` in the vector of candles, it's assumed
+        // that the time is the close time of the candle and the data is sorted.
+        // With those invariants then the first candle which time is greater than
+        // the provided `time` is the one that holds the most accurate price.
         prices
             .iter()
             .find_map(|p| match p.0 > time {
