@@ -146,11 +146,17 @@ pub struct Withdraw {
 
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
-        vec![Operation::Cost {
-            asset: self.asset,
-            amount: self.fee,
-            time: self.time,
-        }]
+        vec![
+            Operation::Balance {
+                asset: self.asset.clone(),
+                amount: -self.fee,
+            },
+            Operation::Cost {
+                asset: self.asset,
+                amount: self.fee,
+                time: self.time,
+            },
+        ]
     }
 }
 
@@ -192,6 +198,10 @@ impl Into<Vec<Operation>> for Repay {
                     Operation::Balance {
                         asset: self.asset.clone(),
                         amount: -self.amount,
+                    },
+                    Operation::Balance {
+                        asset: self.asset.clone(),
+                        amount: -self.interest,
                     },
                     Operation::Cost {
                         asset: self.asset,
@@ -252,7 +262,6 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     }
 
     pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
-        println!("processing: {:?}", op);
         match op {
             Operation::Balance { asset, amount } => {
                 let coin_balance = self.coin_balances.entry(asset).or_default();
@@ -263,7 +272,6 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 amount,
                 time,
             } => {
-                assert!(time > 0, "cost operation with time zero");
                 let usd_price = if asset.starts_with("USD") {
                     1.0
                 } else {
@@ -279,7 +287,6 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 amount,
                 time,
             } => {
-                assert!(time > 0, "revenue operation with time zero");
                 let usd_price = if asset.starts_with("USD") {
                     1.0
                 } else {
@@ -291,7 +298,6 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 coin_balance.usd_position += amount * usd_price;
             }
         }
-        println!("processing done!");
         Ok(())
     }
 
@@ -331,7 +337,6 @@ impl AssetPrices {
         let bucket = (time / bucket_size_millis) as u16;
         let mut prices = self.prices.lock().await;
         if !prices.contains_key(symbol) {
-            println!("prices not found for {}", symbol);
             let symbol_prices = self.fetch_prices_for(symbol, time).await?;
             let mut prices_bucket = PricesBucket::new();
             prices_bucket.insert(bucket, symbol_prices);
@@ -340,7 +345,6 @@ impl AssetPrices {
 
         let prices_bucket = prices.get_mut(symbol).unwrap();
         if !prices_bucket.contains_key(&bucket) {
-            println!("prices not found for {} in bucket {}", symbol, bucket);
             let symbol_prices = self.fetch_prices_for(symbol, time).await?;
             prices_bucket.insert(bucket, symbol_prices);
         }

@@ -79,7 +79,7 @@ pub struct MarginLoan {
 pub struct MarginRepay {
     tx_id: u64,
     #[serde(with = "string_or_float")]
-    principal: f64,
+    pub principal: f64,
     #[serde(with = "string_or_float")]
     pub amount: f64,
     pub asset: String,

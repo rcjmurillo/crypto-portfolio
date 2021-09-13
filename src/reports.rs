@@ -22,16 +22,10 @@ pub async fn asset_balances<T: AssetsInfo>(
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
-    let mut all_assets_cost = 0.0;
+    let mut all_assets_usd_unrealized_position = 0.0;
 
     for (coin, balance) in balance_tracker.balances().iter() {
-        // if balance.amount >= 0.0 && balance.cost >= 0.0 {
         *coin_balances.entry(coin.to_string()).or_insert(0.0) += balance.amount;
-        // }
-        // if balance.cost > 0.0 {
-        all_assets_cost += balance.usd_position;
-        // }
-        println!("balance: {:?} -> {:?}", coin, balance);
     }
 
     let mut coin_balances = coin_balances
@@ -63,19 +57,19 @@ pub async fn asset_balances<T: AssetsInfo>(
         all_assets_value += value;
 
         if let Some(balance) = balance_tracker.get_balance(&coin[..]) {
-            let coin_cost = balance.usd_position;
-            let position_pcnt = (value / coin_cost - 1.0) * 100.0;
-            let position_usd = value - coin_cost;
+            all_assets_usd_unrealized_position += balance.amount * price + balance.usd_position;
+            let usd_unrealized_position = balance.amount * price + balance.usd_position;
+            let usd_unrealized_position_pcnt = (value / balance.usd_position.abs() - 1.0) * 100.0;
             table.push(vec![
                 coin.cell(),
                 format!("{:.6}", amount).cell().justify(Justify::Right),
                 format!("{:.4}", price).cell().justify(Justify::Right),
-                format!("{:.2}", coin_cost).cell().justify(Justify::Right),
+                // format!("{:.2}", coin_cost).cell().justify(Justify::Right),
                 format!("{:.2}", value).cell().justify(Justify::Right),
-                format!("{:.2}%", position_pcnt)
+                format!("{:.2}%", usd_unrealized_position_pcnt)
                     .cell()
                     .justify(Justify::Right),
-                format!("{:.2}", position_usd)
+                format!("{:.2}", usd_unrealized_position)
                     .cell()
                     .justify(Justify::Right),
             ]);
@@ -88,7 +82,7 @@ pub async fn asset_balances<T: AssetsInfo>(
             "Coin".cell().bold(true),
             "Amount".cell().justify(Justify::Right).bold(true),
             "Price USD".cell().justify(Justify::Right).bold(true),
-            "Cost USD".cell().justify(Justify::Right).bold(true),
+            // "Cost USD".cell().justify(Justify::Right).bold(true),
             "Value USD".cell().justify(Justify::Right).bold(true),
             "Position %".cell().justify(Justify::Right).bold(true),
             "Position USD".cell().justify(Justify::Right).bold(true),
@@ -101,16 +95,20 @@ pub async fn asset_balances<T: AssetsInfo>(
 
     summary_table.extend(vec![
         vec![
-            "Invested USD".cell(),
-            format!("{:.2}", all_assets_cost).cell(),
+            "Global USD position".cell(),
+            format!("{:.2}", all_assets_usd_unrealized_position).cell(),
         ],
         vec![
             "Coins value USD".cell(),
             format!("{:.2}", all_assets_value).cell(),
         ],
         vec![
-            "Unrealized profit USD".cell(),
-            format!("{:.2}", all_assets_value - all_assets_cost).cell(),
+            "Unrealized USD profit".cell(),
+            format!(
+                "{:.2}",
+                all_assets_value - all_assets_usd_unrealized_position
+            )
+            .cell(),
         ],
     ]);
     assert!(print_stdout(summary_table.table()).is_ok());

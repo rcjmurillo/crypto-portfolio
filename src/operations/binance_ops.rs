@@ -101,7 +101,7 @@ impl From<MarginRepay> for ops::Repay {
     fn from(r: MarginRepay) -> Self {
         Self {
             asset: r.asset,
-            amount: r.amount,
+            amount: r.principal,
             interest: r.interest,
             time: r.timestamp,
             status: match r.status.as_str() {
