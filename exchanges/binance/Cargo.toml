@@ -10,7 +10,6 @@ edition = "2018"
 api-client = { path = "../api-client" }
 
 async-trait = "0.1.50"
-binance = { git = "https://github.com/wisespace-io/binance-rs.git" }
 bytes = "1.0.1"
 chrono = "0.4"
 hmac = "0.11.0"

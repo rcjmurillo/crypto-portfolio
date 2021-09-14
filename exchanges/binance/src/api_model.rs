@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 fn default_currency_usd() -> String {
     "USD".into()
@@ -8,7 +8,7 @@ fn default_zero() -> f64 {
     0.0
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FiatDeposit {
     #[serde(default = "default_currency_usd")]
@@ -21,10 +21,10 @@ pub struct FiatDeposit {
     pub platform_fee: f64,
     #[serde(alias = "orderStatus")]
     pub status: String,
-    pub update_time: Option<u64>
+    pub update_time: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Withdraw {
     id: String,
@@ -40,7 +40,7 @@ pub struct Withdraw {
     pub apply_time: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Trade {
     order_id: i64,
@@ -63,7 +63,7 @@ pub struct Trade {
     pub quote_asset: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginLoan {
     tx_id: u64,
@@ -74,7 +74,7 @@ pub struct MarginLoan {
     pub status: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginRepay {
     tx_id: u64,
@@ -105,17 +105,7 @@ pub struct SymbolPrice {
 }
 
 pub(crate) mod string_or_float {
-    use std::fmt;
-
-    use serde::{de, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: fmt::Display,
-        S: Serializer,
-    {
-        serializer.collect_str(value)
-    }
+    use serde::{de, Deserialize, Deserializer};
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
     where

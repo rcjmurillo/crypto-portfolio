@@ -144,7 +144,7 @@ impl BinanceFetcher {
         }
     }
 
-    async fn as_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
+    async fn from_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
         match serde_json::from_slice(resp_bytes) {
             Ok(val) => Ok(val),
             Err(err) => Err(Error::new(err.to_string(), ErrorKind::Parse)),
@@ -185,7 +185,7 @@ impl BinanceFetcher {
             )
             .await?;
 
-        let EndpointResponse { symbols } = self.as_json::<EndpointResponse>(resp.as_ref()).await?;
+        let EndpointResponse { symbols } = self.from_json::<EndpointResponse>(resp.as_ref()).await?;
         Ok(symbols)
     }
 
@@ -232,7 +232,7 @@ impl BinanceFetcher {
 
             let DepositResponse {
                 asset_log_record_list,
-            } = self.as_json::<DepositResponse>(&resp.as_ref()).await?;
+            } = self.from_json::<DepositResponse>(&resp.as_ref()).await?;
             deposits.extend(asset_log_record_list.into_iter().filter_map(|x| {
                 if x.status == "Successful" {
                     Some(x)
@@ -288,7 +288,7 @@ impl BinanceFetcher {
                     .await?;
 
                 let DepositResponse { data } =
-                    self.as_json::<DepositResponse>(&resp.as_ref()).await?;
+                    self.from_json::<DepositResponse>(&resp.as_ref()).await?;
                 if data.len() > 0 {
                     deposits.extend(data.into_iter().filter_map(|x| {
                         if x.status == "Successful" {
@@ -346,7 +346,7 @@ impl BinanceFetcher {
                 )
                 .await?;
 
-            let withdraw_list: Vec<Withdraw> = self.as_json(resp.as_ref()).await?;
+            let withdraw_list: Vec<Withdraw> = self.from_json(resp.as_ref()).await?;
             withdraws.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -368,7 +368,7 @@ impl BinanceFetcher {
             )
             .await?;
 
-        self.as_json(resp.as_ref()).await
+        self.from_json(resp.as_ref()).await
     }
 
     pub async fn fetch_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
@@ -390,7 +390,7 @@ impl BinanceFetcher {
                 true,
             )
             .await?;
-        let klines: Vec<Vec<Value>> = self.as_json(resp.as_ref()).await?;
+        let klines: Vec<Vec<Value>> = self.from_json(resp.as_ref()).await?;
         let s = &klines[0];
         let high = s[2].as_str().unwrap().parse::<f64>().unwrap();
         let low = s[3].as_str().unwrap().parse::<f64>().unwrap();
@@ -457,7 +457,7 @@ impl BinanceFetcher {
         for resp in join_all(handles).await {
             match resp {
                 Ok(resp) => {
-                    let klines = self.as_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
+                    let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
                     all_prices.extend(klines.iter().map(|x| {
                         let high = x[2].as_str().unwrap().parse::<f64>().unwrap();
                         let low = x[3].as_str().unwrap().parse::<f64>().unwrap();
@@ -539,7 +539,7 @@ impl BinanceFetcher {
 
             match resp {
                 Ok(resp) => {
-                    let mut binance_trades = self.as_json::<Vec<Trade>>(resp.as_ref()).await?;
+                    let mut binance_trades = self.from_json::<Vec<Trade>>(resp.as_ref()).await?;
                     binance_trades.sort_by_key(|k| k.time);
                     let fetch_more = binance_trades.len() >= 1000;
                     if fetch_more {
@@ -650,7 +650,7 @@ impl BinanceFetcher {
                         )
                         .await?;
 
-                    let loans_resp = self.as_json::<EndpointResponse>(resp.as_ref()).await?;
+                    let loans_resp = self.from_json::<EndpointResponse>(resp.as_ref()).await?;
 
                     loans.extend(loans_resp.rows);
                     if loans_resp.total >= 100 {
@@ -713,7 +713,7 @@ impl BinanceFetcher {
                             true,
                         )
                         .await?;
-                    let repays_resp = self.as_json::<EndpointResponse>(resp.as_ref()).await?;
+                    let repays_resp = self.from_json::<EndpointResponse>(resp.as_ref()).await?;
                     repays.extend(repays_resp.rows);
                     if repays_resp.total >= 100 {
                         current_page += 1;
