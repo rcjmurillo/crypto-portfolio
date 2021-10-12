@@ -1,6 +1,6 @@
 # Crypto portfolio command line program
 
-A simple personal crypto portfolio to learn more rust.
+A simple personal WIP crypto portfolio to learn more rust.
 
 It can fetch operations from multiple exchanges to create a single report of the current balance of each crypto asset and also unrealized profits/losses.
 
