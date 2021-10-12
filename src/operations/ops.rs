@@ -1,14 +1,14 @@
+use anyhow::{Error as AnyhowError, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc, vec::Vec};
 use tokio::sync::{mpsc, Mutex};
 
-use binance::{BinanceFetcher, Region as BinanceRegion};
+use binance::{BinanceFetcher, Config as BinanceConfig, Region as BinanceRegion};
 
 use crate::{
     cli::Config,
     errors::{Error, ErrorKind},
-    result::Result,
 };
 
 #[derive(Deserialize)]
@@ -18,13 +18,21 @@ pub enum OperationStatus {
 }
 
 #[async_trait]
+/// Layer of abstraction on how to fetch data from exchanges.
+/// This allow to handle any incoming transactions/operations and convert them
+/// into known structs that can be correctly translated into operations.
 pub trait ExchangeDataFetcher {
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<Trade>>;
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<Trade>>;
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<Loan>>;
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<Repay>>;
-    async fn fiat_deposits(&self, symbols: &[String]) -> Result<Vec<FiatDeposit>>;
-    async fn withdraws(&self, symbols: &[String]) -> Result<Vec<Withdraw>>;
+    // Allows to express any transactions as a list of operations, this gives
+    // more freedom at the cost of trusting exchange client will correctly
+    // translate its data/transactions into operations that will keep the correct
+    // balance.
+    async fn operations(&self) -> Result<Vec<Operation>>;
+    async fn trades(&self) -> Result<Vec<Trade>>;
+    async fn margin_trades(&self) -> Result<Vec<Trade>>;
+    async fn loans(&self) -> Result<Vec<Loan>>;
+    async fn repays(&self) -> Result<Vec<Repay>>;
+    async fn fiat_deposits(&self) -> Result<Vec<FiatDeposit>>;
+    async fn withdraws(&self) -> Result<Vec<Withdraw>>;
 }
 
 #[async_trait]
@@ -318,22 +326,22 @@ impl AssetPrices {
     pub fn new() -> Self {
         Self {
             prices: Mutex::new(HashMap::new()),
-            fetcher: BinanceFetcher::new(BinanceRegion::Global, None),
+            fetcher: BinanceFetcher::new(BinanceRegion::Global),
         }
     }
 
     async fn asset_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
-        // create buckets of `period_days` size for time, a list of klines 
+        // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
-        // Once made sure the data for the bucket is in the map use it to 
+        // Once made sure the data for the bucket is in the map use it to
         // determine the price of the symbol at `time`.
         let period_days = 180;
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size_millis) as u16;
         // fixme: use different locks for checking and updating the map.
         let mut prices = self.prices.lock().await;
-        if !prices.contains_key(symbol) { 
+        if !prices.contains_key(symbol) {
             let symbol_prices = self.fetch_prices_for(symbol, time).await?;
             let mut prices_bucket = PricesBucket::new();
             prices_bucket.insert(bucket, symbol_prices);
@@ -351,7 +359,7 @@ impl AssetPrices {
 
     async fn fetch_prices_for(&self, symbol: &str, time: u64) -> Result<Vec<(u64, f64)>> {
         // fetch prices from the start time of the bucket not `time` so other calls
-        // can reuse the data for transactions that fall into the same bucket. Also this 
+        // can reuse the data for transactions that fall into the same bucket. Also this
         // way it's assured fetched data won't overlap.
         let period_days = 180;
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
@@ -360,7 +368,7 @@ impl AssetPrices {
         self.fetcher
             .fetch_prices_in_range(symbol, start_ts, end_ts)
             .await
-            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed))
+            .map_err(|err| AnyhowError::new(Error::new(err.to_string(), ErrorKind::FetchFailed)))
     }
 
     fn find_price_at(&self, prices: &Vec<(u64, f64)>, time: u64) -> f64 {
@@ -388,12 +396,11 @@ impl AssetsInfo for AssetPrices {
 async fn ops_from_fetcher<'a>(
     prefix: &'a str,
     c: &Box<dyn ExchangeDataFetcher + Send + Sync>,
-    symbols: &'a [String],
 ) -> Vec<Operation> {
     let mut all_ops: Vec<Operation> = Vec::new();
     println!("[{}]> fetching trades...", prefix);
     all_ops.extend(
-        c.trades(symbols)
+        c.trades()
             .await
             .unwrap()
             .into_iter()
@@ -401,7 +408,7 @@ async fn ops_from_fetcher<'a>(
     );
     println!("[{}]> fetching margin trades...", prefix);
     all_ops.extend(
-        c.margin_trades(symbols)
+        c.margin_trades()
             .await
             .unwrap()
             .into_iter()
@@ -409,7 +416,7 @@ async fn ops_from_fetcher<'a>(
     );
     println!("[{}]> fetching loans...", prefix);
     all_ops.extend(
-        c.loans(symbols)
+        c.loans()
             .await
             .unwrap()
             .into_iter()
@@ -417,7 +424,7 @@ async fn ops_from_fetcher<'a>(
     );
     println!("[{}]> fetching repays...", prefix);
     all_ops.extend(
-        c.repays(symbols)
+        c.repays()
             .await
             .unwrap()
             .into_iter()
@@ -425,19 +432,25 @@ async fn ops_from_fetcher<'a>(
     );
     println!("[{}]> fetching fiat deposits...", prefix);
     all_ops.extend(
-        c.fiat_deposits(symbols)
+        c.fiat_deposits()
             .await
             .unwrap()
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching coins withdraws...", prefix);
+    println!("[{}]> fetching withdraws...", prefix);
     all_ops.extend(
-        c.withdraws(symbols)
+        c.withdraws()
             .await
             .unwrap()
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    println!("[{}]> fetching operations...", prefix);
+    all_ops.extend(
+        c.operations()
+            .await
+            .unwrap(),
     );
     println!("[{}]> ALL DONE!!!", prefix);
     all_ops
@@ -445,15 +458,13 @@ async fn ops_from_fetcher<'a>(
 
 pub async fn fetch_ops<'a>(
     fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
-    config: Arc<Config>,
 ) -> mpsc::Receiver<Operation> {
     let (tx, rx) = mpsc::channel(1000);
 
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
-        let conf = config.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(name, &f, &conf.symbols[..]).await {
+            for op in ops_from_fetcher(name, &f).await {
                 match txc.send(op).await {
                     Ok(()) => (),
                     Err(err) => println!("could not send operation: {}", err),

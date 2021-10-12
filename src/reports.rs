@@ -1,24 +1,16 @@
-use std::{cmp::Ordering, collections::HashMap, convert::TryInto, sync::Arc};
+use std::{cmp::Ordering, collections::HashMap};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{BinanceFetcher, Region as BinanceRegion};
 
 use crate::{
-    cli::Config,
     operations::{AssetsInfo, BalanceTracker},
     result::Result,
 };
 
-pub async fn asset_balances<T: AssetsInfo>(
-    balance_tracker: &BalanceTracker<T>,
-    config: Arc<Config>,
-) -> Result<()> {
-    let config_binance = config
-        .binance
-        .as_ref()
-        .and_then(|c| Some(c.clone().try_into().unwrap()));
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global, config_binance);
+pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
+    let binance_client = BinanceFetcher::new(BinanceRegion::Global);
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
@@ -53,23 +45,26 @@ pub async fn asset_balances<T: AssetsInfo>(
     let mut table = Vec::new();
     for (coin, &amount) in coin_balances {
         let price = all_prices.get(&(coin.clone() + "USDT")).unwrap();
-        let value = price * amount;
+        // only compute a the current value for balances > 0
+        let value = price * if amount > 0.0 { amount } else { 0.0 };
         all_assets_value += value;
 
         if let Some(balance) = balance_tracker.get_balance(&coin[..]) {
-            all_assets_usd_unrealized_position += balance.amount * price + balance.usd_position;
-            let usd_unrealized_position = balance.amount * price + balance.usd_position;
+            let usd_unrealized_position = value + balance.usd_position;
             let usd_unrealized_position_pcnt = (value / balance.usd_position.abs() - 1.0) * 100.0;
+            all_assets_usd_unrealized_position += usd_unrealized_position;
             table.push(vec![
                 coin.cell(),
                 format!("{:.6}", amount).cell().justify(Justify::Right),
                 format!("{:.4}", price).cell().justify(Justify::Right),
-                // format!("{:.2}", coin_cost).cell().justify(Justify::Right),
-                format!("{:.2}", value).cell().justify(Justify::Right),
-                format!("{:.2}%", usd_unrealized_position_pcnt)
+                format!("{:.2}", balance.usd_position)
                     .cell()
                     .justify(Justify::Right),
+                format!("{:.2}", value).cell().justify(Justify::Right),
                 format!("{:.2}", usd_unrealized_position)
+                    .cell()
+                    .justify(Justify::Right),
+                format!("{:.2}%", usd_unrealized_position_pcnt)
                     .cell()
                     .justify(Justify::Right),
             ]);
@@ -82,10 +77,16 @@ pub async fn asset_balances<T: AssetsInfo>(
             "Coin".cell().bold(true),
             "Amount".cell().justify(Justify::Right).bold(true),
             "Price USD".cell().justify(Justify::Right).bold(true),
-            // "Cost USD".cell().justify(Justify::Right).bold(true),
-            "Value USD".cell().justify(Justify::Right).bold(true),
-            "Position %".cell().justify(Justify::Right).bold(true),
             "Position USD".cell().justify(Justify::Right).bold(true),
+            "Value USD".cell().justify(Justify::Right).bold(true),
+            "Unrealized Position USD"
+                .cell()
+                .justify(Justify::Right)
+                .bold(true),
+            "Unrealized Position %"
+                .cell()
+                .justify(Justify::Right)
+                .bold(true),
         ])
         .bold(true);
     println!();

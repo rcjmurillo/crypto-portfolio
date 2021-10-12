@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, error};
 
 use api_client::errors::ErrorKind as ApiClientErrorKind;
 
@@ -29,6 +29,7 @@ impl From<Option<i16>> for ApiErrorKind {
     }
 }
 
+#[derive(Debug)]
 pub struct Error {
     pub reason: String,
     pub kind: ErrorKind,
@@ -66,6 +67,7 @@ impl From<api_client::errors::Error> for Error {
                     err @ ApiClientErrorKind::Internal
                     | err @ ApiClientErrorKind::ServiceUnavailable
                     | err @ ApiClientErrorKind::Unauthorized
+                    | err @ ApiClientErrorKind::NotFound
                     | err @ ApiClientErrorKind::BadRequest => ErrorKind::ApiClient(err),
                     ApiClientErrorKind::Other => ErrorKind::Other,
                 };
@@ -83,3 +85,5 @@ impl fmt::Display for Error {
         write!(f, "{:?}: {}", self.kind, self.reason)
     }
 }
+
+impl error::Error for Error {}

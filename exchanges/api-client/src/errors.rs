@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::{Debug, Display, Formatter, Result}, error::Error as StdError};
 
 #[derive(Debug)]
 pub enum ErrorKind {
@@ -6,9 +6,11 @@ pub enum ErrorKind {
     ServiceUnavailable,
     Unauthorized,
     BadRequest,
+    NotFound,
     Other,
 }
 
+#[derive(Debug)]
 pub struct Error {
     pub body: String,
     pub kind: ErrorKind,
@@ -26,5 +28,17 @@ impl From<reqwest::Error> for Error {
             body: format!("error={}, url={:?} status={:?}", err, err.url(), err.status()),
             kind: ErrorKind::Other,
         }
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "body={} kind={:?}", self.body, self.kind)
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        None
     }
 }

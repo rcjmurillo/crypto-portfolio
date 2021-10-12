@@ -7,52 +7,78 @@ mod result;
 
 use std::{convert::TryInto, sync::Arc};
 
+use anyhow::Result;
 use structopt::{self, StructOpt};
 
 use binance::{BinanceFetcher, Region as BinanceRegion};
+use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use crate::{
     cli::Args,
     custom_ops::FileDataFetcher,
-    operations::{fetch_ops, BalanceTracker, ExchangeDataFetcher, AssetPrices},
-    result::Result,
+    operations::{fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher},
 };
 
 fn mk_fetchers(
     config: &cli::Config,
     file_fetcher: Option<FileDataFetcher>,
-) -> Vec<(
-    &'static str,
-    Box<dyn ExchangeDataFetcher + Send + Sync>,
-)> {
-    let config_binance = config
-        .binance
-        .as_ref()
-        .and_then(|c| Some(c.clone().try_into().unwrap()));
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global, config_binance);
-    let config_binance_us = config
-        .binance_us
-        .as_ref()
-        .and_then(|c| Some(c.clone().try_into().unwrap()));
-    let binance_client_us = BinanceFetcher::new(BinanceRegion::Us, config_binance_us);
+) -> Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> {
+    let mut fetchers = Vec::new();
 
-    let mut fetchers = vec![
-        (
-            "Binance Global",
-            Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-        ),
-        (
-            "Binance US",
-            Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-        ),
-    ];
-
-    if let Some(file_fetcher) = file_fetcher {
+    let coinbase_config: Option<CoinbaseConfig> = config
+        .coinbase
+        .as_ref()
+        .and_then(|c| Some(c.try_into().unwrap()));
+    if let Some(config) = coinbase_config {
+        let coinbase_fetcher = CoinbaseFetcher::<Std>::new(config.clone());
         fetchers.push((
-            "Custom Operations",
-            Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            "Coinbase",
+            Box::new(coinbase_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ));
     }
+
+    // let coinbase_config: Option<CoinbaseConfig> = config
+    //     .coinbase_pro
+    //     .as_ref()
+    //     .and_then(|c| Some(c.try_into().unwrap()));
+    // if let Some(config) = coinbase_config {
+    //     let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(config);
+    //     fetchers.push((
+    //         "Coinbase Pro",
+    //         Box::new(coinbase_fetcher_pro) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+    //     ));
+    // }
+
+    // let config_binance = config
+    //     .binance
+    //     .as_ref()
+    //     .and_then(|c| Some(c.try_into().unwrap()));
+    // if let Some(config) = config_binance {
+    //     let binance_client = BinanceFetcher::with_config(BinanceRegion::Global, config);
+    //     fetchers.push((
+    //         "Binance Global",
+    //         Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+    //     ));
+    // }
+
+    // let config_binance_us = config
+    //     .binance_us
+    //     .as_ref()
+    //     .and_then(|c| Some(c.try_into().unwrap()));
+    // if let Some(config) = config_binance_us {
+    //     let binance_client_us = BinanceFetcher::with_config(BinanceRegion::Us, config);
+    //     fetchers.push((
+    //         "Binance US",
+    //         Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+    //     ));
+    // }
+
+    // if let Some(file_fetcher) = file_fetcher {
+    //     fetchers.push((
+    //         "Custom Operations",
+    //         Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+    //     ));
+    // }
     fetchers
 }
 
@@ -65,12 +91,23 @@ pub async fn main() -> Result<()> {
         action: _,
         ops_file,
     } = args;
-
-
     let mut coin_tracker = BalanceTracker::new(AssetPrices::new());
 
+    // let coinbase_config = config.coinbase.as_ref().unwrap().try_into().unwrap();
+    // let coinbase_fetcher = CoinbaseFetcher::<Std>::new(&coinbase_config);
+    // let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(&coinbase_config);
+    // println!("fiat buys: {:?}", coinbase_fetcher.fetch_buys().await);
+    // println!();
+    // println!("fiat sells: {:?}", coinbase_fetcher.fetch_sells().await);
+    // println!();
+    // println!("transactions: {:?}", coinbase_fetcher.fetch_transactions().await);
+    // println!();
+    //println!("products: {:?}", coinbase_fetcher_pro.fetch_products().await);
+    // println!(
+    //     "fills: {:?}",
+    //     coinbase_fetcher_pro.fetch_fills("COMP-BTC").await
+    // );
     let config = Arc::new(config);
-
     let file_fetcher = match ops_file {
         Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
             Ok(fetcher) => Some(fetcher),
@@ -81,13 +118,13 @@ pub async fn main() -> Result<()> {
         None => None,
     };
 
-    let mut s = fetch_ops(mk_fetchers(&config, file_fetcher.clone()), config.clone()).await;
+    let mut s = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
 
     while let Some(op) = s.recv().await {
         coin_tracker.track_operation(op).await?;
     }
 
-    reports::asset_balances(&coin_tracker, config).await?;
+    reports::asset_balances(&coin_tracker).await?;
     println!();
 
     Ok(())

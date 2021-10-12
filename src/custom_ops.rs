@@ -1,13 +1,13 @@
 use std::fs::File;
 
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json;
 
 use crate::{
     errors::{Error, ErrorKind},
-    operations::{FiatDeposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw},
-    result::Result,
+    operations::{FiatDeposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw, Operation},
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -37,23 +37,26 @@ impl FileDataFetcher {
 
 #[async_trait]
 impl ExchangeDataFetcher for FileDataFetcher {
-    async fn trades(&self, _: &[String]) -> Result<Vec<Trade>> {
+    async fn operations(&self) -> Result<Vec<Operation>> {
+        Ok(Vec::new())
+    }
+    async fn trades(&self) -> Result<Vec<Trade>> {
         Ok(self.data.trades.clone())
     }
-    async fn margin_trades(&self, _: &[String]) -> Result<Vec<Trade>> {
+    async fn margin_trades(&self) -> Result<Vec<Trade>> {
         Ok(Vec::new())
     }
-    async fn loans(&self, _: &[String]) -> Result<Vec<Loan>> {
+    async fn loans(&self) -> Result<Vec<Loan>> {
         Ok(Vec::new())
     }
-    async fn repays(&self, _: &[String]) -> Result<Vec<Repay>> {
+    async fn repays(&self) -> Result<Vec<Repay>> {
         Ok(Vec::new())
     }
-    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<FiatDeposit>> {
+    async fn fiat_deposits(&self) -> Result<Vec<FiatDeposit>> {
         // fixme: don't clone this every time
         Ok(self.data.fiat_deposits.clone().unwrap_or(Vec::new()))
     }
-    async fn withdraws(&self, _: &[String]) -> Result<Vec<Withdraw>> {
+    async fn withdraws(&self) -> Result<Vec<Withdraw>> {
         Ok(self.data.withdraws.clone())
     }
 }

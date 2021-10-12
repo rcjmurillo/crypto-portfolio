@@ -5,7 +5,9 @@ authors = ["Ricardo Murillo <rcjmurillo@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+anyhow = "1.0.44"
 binance = { path = "exchanges/binance" }
+coinbase = { path = "exchanges/coinbase" }
 tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 cli-table = "0.4"

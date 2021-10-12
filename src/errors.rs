@@ -1,4 +1,5 @@
 use std::fmt;
+use std::error::Error as StdError;
 
 #[derive(Debug)]
 pub enum ErrorKind {
@@ -32,4 +33,7 @@ impl From<binance::Error> for Error {
             _ => Error::new(format!("({}): {:?}", err, err.kind), ErrorKind::FetchFailed),
         }
     }
+}
+
+impl StdError for Error {
 }

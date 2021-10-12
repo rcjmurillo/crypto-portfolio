@@ -1,28 +1,26 @@
-use std::{
-    convert::{TryFrom, TryInto},
-};
+use std::convert::{TryFrom, TryInto};
 
-use binance::{
-    BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw,
-};
+use binance::{BinanceFetcher, Config, FiatDeposit, MarginLoan, MarginRepay, Trade, Withdraw};
 
+use anyhow::{Error as AnyhowError, Result};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use futures::future::join_all;
 
-
 use crate::{
     cli::ExchangeConfig,
     errors::{Error, ErrorKind},
-    operations::{self as ops, AssetsInfo, ExchangeDataFetcher, OperationStatus, TradeSide},
-    result::Result,
+    operations::{
+        self as ops, AssetsInfo, ExchangeDataFetcher, Operation, OperationStatus, TradeSide,
+    },
 };
 
-impl TryFrom<ExchangeConfig> for Config {
-    type Error = Error;
-    fn try_from(c: ExchangeConfig) -> Result<Self> {
+impl TryFrom<&ExchangeConfig> for Config {
+    type Error = AnyhowError;
+    fn try_from(c: &ExchangeConfig) -> Result<Self> {
         Ok(Self {
-            start_datetime: c.start_date()?,
+            start_date: c.start_date()?,
+            symbols: c.symbols.clone(),
         })
     }
 }
@@ -41,7 +39,7 @@ impl From<FiatDeposit> for ops::FiatDeposit {
 }
 
 impl TryFrom<Withdraw> for ops::Withdraw {
-    type Error = Error;
+    type Error = AnyhowError;
     fn try_from(w: Withdraw) -> Result<Self> {
         Ok(Self {
             asset: w.coin,
@@ -55,7 +53,7 @@ impl TryFrom<Withdraw> for ops::Withdraw {
                             w.apply_time, err
                         ),
                         ErrorKind::Other,
-                    ))
+                    ).into())
                 }
             },
             fee: w.transaction_fee,
@@ -114,7 +112,11 @@ impl From<MarginRepay> for ops::Repay {
 
 #[async_trait]
 impl ExchangeDataFetcher for BinanceFetcher {
-    async fn trades(&self, symbols: &[String]) -> Result<Vec<ops::Trade>> {
+    async fn operations(&self) -> Result<Vec<Operation>> {
+        Ok(Vec::new())
+    }
+
+    async fn trades(&self) -> Result<Vec<ops::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols()
@@ -124,7 +126,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
             .collect();
 
         let mut handles = Vec::new();
-        for symbol in symbols.iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 handles.push(self.fetch_trades(symbol.clone()));
             }
@@ -132,7 +134,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn margin_trades(&self, symbols: &[String]) -> Result<Vec<ops::Trade>> {
+    async fn margin_trades(&self) -> Result<Vec<ops::Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols()
@@ -142,7 +144,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
             .collect();
 
         let mut handles = Vec::new();
-        for symbol in symbols.iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 handles.push(self.fetch_margin_trades(symbol.clone()));
             }
@@ -150,11 +152,11 @@ impl ExchangeDataFetcher for BinanceFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn loans(&self, symbols: &[String]) -> Result<Vec<ops::Loan>> {
+    async fn loans(&self) -> Result<Vec<ops::Loan>> {
         let mut handles = Vec::new();
         let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
-        for symbol in symbols.into_iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
                 handles.push(self.fetch_margin_loans(asset, symbol.clone()));
@@ -163,11 +165,11 @@ impl ExchangeDataFetcher for BinanceFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn repays(&self, symbols: &[String]) -> Result<Vec<ops::Repay>> {
+    async fn repays(&self) -> Result<Vec<ops::Repay>> {
         let mut handles = Vec::new();
         let exchange_symbols = self.fetch_exchange_symbols().await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
-        for symbol in symbols.into_iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
                 handles.push(self.fetch_margin_repays(asset, symbol.clone()));
@@ -176,7 +178,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn fiat_deposits(&self, _: &[String]) -> Result<Vec<ops::FiatDeposit>> {
+    async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
         Ok(self
             .fetch_fiat_deposits()
             .await?
@@ -185,7 +187,7 @@ impl ExchangeDataFetcher for BinanceFetcher {
             .collect())
     }
 
-    async fn withdraws(&self, _: &[String]) -> Result<Vec<ops::Withdraw>> {
+    async fn withdraws(&self,) -> Result<Vec<ops::Withdraw>> {
         match self.fetch_withdraws().await {
             Ok(w) => w.into_iter().map(|x| x.try_into()).collect(),
             Err(e) => Err(e.into()),
@@ -198,7 +200,7 @@ impl AssetsInfo for BinanceFetcher {
     async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
         self.fetch_price_at(symbol, time)
             .await
-            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed))
+            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed).into())
     }
 }
 

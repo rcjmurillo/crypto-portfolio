@@ -5,28 +5,26 @@ use std::{
     path::PathBuf,
 };
 
-use chrono::{DateTime, Utc};
+use anyhow::Result;
+use chrono::{NaiveDate, Utc};
 use serde::Deserialize;
 use structopt::{self, StructOpt};
 use toml;
 
-use crate::{
-    errors::{Error, ErrorKind},
-    result::Result,
-};
+use crate::errors::{Error, ErrorKind};
 
 pub enum PorfolioAction {
     Balances,
 }
 
 impl TryFrom<&str> for PorfolioAction {
-    type Error = Error;
+    type Error = anyhow::Error;
 
-    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+    fn try_from(s: &str) -> Result<PorfolioAction> {
         if s == "balances" {
             Ok(PorfolioAction::Balances)
         } else {
-            Err(Error::new("Invalid action".to_string(), ErrorKind::Cli))
+            Err(Error::new("Invalid action".to_string(), ErrorKind::Cli).into())
         }
     }
 }
@@ -51,40 +49,43 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
 
 #[derive(Clone, Deserialize)]
 pub struct ExchangeConfig {
+    // all the symbols to work with, only symbols included here will
+    // appear in the report.
+    pub symbols: Vec<String>,
     // How far back to look for transactions
     start_date: toml::Value,
 }
 
 impl ExchangeConfig {
-    pub fn start_date(&self) -> Result<DateTime<Utc>> {
+    pub fn start_date(&self) -> Result<NaiveDate> {
         if let Some(start_date) = self.start_date.as_datetime() {
-            Ok(start_date.to_string().parse::<DateTime<Utc>>().unwrap())
+            Ok(start_date.to_string().parse::<NaiveDate>().unwrap())
         } else {
             return Err(Error::new(
                 "could not parse date from config".to_string(),
                 ErrorKind::Cli,
-            ));
+            )
+            .into());
         }
     }
 }
 
 #[derive(Deserialize)]
 pub struct Config {
-    // all the symbols to work with, only symbols included here will
-    // appear in the report.
-    pub symbols: Vec<String>,
-
     // allow to specify a configuration per exchange
     pub binance: Option<ExchangeConfig>,
     pub binance_us: Option<ExchangeConfig>,
+    pub coinbase: Option<ExchangeConfig>,
+    pub coinbase_pro: Option<ExchangeConfig>,
 }
 
 impl Config {
     pub fn from_file_path(file_path: PathBuf) -> Result<Self> {
         let contents = read_to_string(file_path)
             .map_err(|e| Error::new(format!("couldn't read config file: {}", e), ErrorKind::Cli))?;
-        toml::from_str(contents.as_str())
-            .map_err(|e| Error::new(format!("couldn't parse config file: {}", e), ErrorKind::Cli))
+        toml::from_str(contents.as_str()).map_err(|e| {
+            Error::new(format!("couldn't parse config file: {}", e), ErrorKind::Cli).into()
+        })
     }
 }
 

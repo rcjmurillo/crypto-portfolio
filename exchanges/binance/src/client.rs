@@ -1,7 +1,7 @@
 use std::{env, fmt, sync::Arc};
 
 use bytes::Bytes;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use futures::future::join_all;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
@@ -13,8 +13,8 @@ use sha2::Sha256;
 use api_client::{ApiClient, QueryParams};
 
 use crate::{
-    errors::{ApiErrorKind, Error, ErrorKind},
     api_model::*,
+    errors::{ApiErrorKind, Error, ErrorKind},
 };
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -111,11 +111,21 @@ impl fmt::Display for Domain {
 }
 
 pub struct Config {
-    pub start_datetime: DateTime<Utc>,
+    pub start_date: NaiveDate,
+    pub symbols: Vec<String>,
+}
+
+impl Config {
+    pub fn empty() -> Self {
+        Self {
+            start_date: Utc::now().naive_utc().date(),
+            symbols: Vec::new()
+        }
+    }
 }
 
 pub struct BinanceFetcher {
-    config: Option<Config>,
+    pub config: Option<Config>,
     api_client: ApiClient,
     credentials: Credentials,
     region: Region,
@@ -124,11 +134,11 @@ pub struct BinanceFetcher {
 }
 
 impl BinanceFetcher {
-    pub fn new(region: Region, config: Option<Config>) -> Self {
+    pub fn new(region: Region) -> Self {
         let credentials = Credentials::for_region(&region);
         Self {
             api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
-            config,
+            config: None,
             credentials,
             region,
             endpoints: Endpoints::for_region(&region),
@@ -136,12 +146,24 @@ impl BinanceFetcher {
         }
     }
 
-    fn data_start_date(&self) -> Result<DateTime<Utc>> {
-        match self.config.as_ref() {
-            Some(config) => Ok(config.start_datetime),
-            // fetch last 6 months
-            None => Ok(Utc::now() - Duration::weeks(24)),
+    pub fn with_config(region: Region, config: Config) -> Self {
+        let credentials = Credentials::for_region(&region);
+        Self {
+            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            config: Some(config),
+            credentials,
+            region,
+            endpoints: Endpoints::for_region(&region),
+            domain: Domain::for_region(&region),
         }
+    }
+
+    fn data_start_date(&self) -> &NaiveDate {
+        &self.config.as_ref().expect("missing config in BinanceFetcher").start_date
+    }
+
+    pub fn symbols(&self) -> &Vec<String> {
+        &self.config.as_ref().expect("missing config in BinanceFetcher").symbols
     }
 
     async fn from_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
@@ -185,7 +207,8 @@ impl BinanceFetcher {
             )
             .await?;
 
-        let EndpointResponse { symbols } = self.from_json::<EndpointResponse>(resp.as_ref()).await?;
+        let EndpointResponse { symbols } =
+            self.from_json::<EndpointResponse>(resp.as_ref()).await?;
         Ok(symbols)
     }
 
@@ -206,9 +229,9 @@ impl BinanceFetcher {
         let mut deposits: Vec<FiatDeposit> = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date()?;
+        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
-            let now = Utc::now();
+            let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
@@ -259,9 +282,9 @@ impl BinanceFetcher {
         let mut deposits: Vec<FiatDeposit> = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date()?;
+        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
-            let now = Utc::now();
+            let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
@@ -319,9 +342,9 @@ impl BinanceFetcher {
         let mut withdraws = Vec::<Withdraw>::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date()?;
+        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
-            let now = Utc::now();
+            let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
@@ -617,7 +640,7 @@ impl BinanceFetcher {
 
         let mut loans = Vec::<MarginLoan>::new();
 
-        let ts = self.data_start_date()?.timestamp_millis() as u64;
+        let ts = self.data_start_date().and_hms(0, 0, 0).timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
@@ -682,7 +705,7 @@ impl BinanceFetcher {
 
         let mut repays = Vec::<MarginRepay>::new();
 
-        let ts = self.data_start_date()?.timestamp_millis() as u64;
+        let ts = self.data_start_date().and_hms(0, 0, 0).timestamp_millis() as u64;
 
         for isolated_symbol in &[Some(&symbol), None] {
             for archived in &["true", "false"] {
