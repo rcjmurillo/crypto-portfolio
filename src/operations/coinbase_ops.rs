@@ -159,13 +159,18 @@ struct Operations(Vec<ops::Operation>);
 
 impl Into<Operations> for Transaction {
     fn into(self) -> Operations {
-        let amount = self.amount.amount.parse::<f64>().expect(&format!(
-            "couldn't parse amount '{}' into f64",
-            self.amount.amount
-        ));
+        let amount = self
+            .amount
+            .amount
+            .parse::<f64>()
+            .expect(&format!(
+                "couldn't parse amount '{}' into f64",
+                self.amount.amount
+            ))
+            .abs();
         Operations(if amount > 0.0 {
             vec![
-                ops::Operation::Balance {
+                ops::Operation::BalanceIncrease {
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
@@ -177,13 +182,13 @@ impl Into<Operations> for Transaction {
             ]
         } else {
             vec![
-                ops::Operation::Balance {
+                ops::Operation::BalanceDecrease {
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
                 ops::Operation::Revenue {
                     asset: self.amount.currency.clone(),
-                    amount: amount.abs(),
+                    amount: amount,
                     time: self.update_time().timestamp_millis().try_into().unwrap(),
                 },
             ]

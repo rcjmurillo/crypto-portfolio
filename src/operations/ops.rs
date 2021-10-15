@@ -64,7 +64,7 @@ impl Into<Vec<Operation>> for Trade {
     fn into(self) -> Vec<Operation> {
         let mut ops = match self.side {
             TradeSide::Buy => vec![
-                Operation::Balance {
+                Operation::BalanceIncrease {
                     asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
@@ -73,9 +73,9 @@ impl Into<Vec<Operation>> for Trade {
                     amount: self.amount,
                     time: self.time,
                 },
-                Operation::Balance {
+                Operation::BalanceDecrease {
                     asset: self.quote_asset.clone(),
-                    amount: -self.amount * self.price,
+                    amount: self.amount * self.price,
                 },
                 Operation::Revenue {
                     asset: self.quote_asset,
@@ -84,16 +84,16 @@ impl Into<Vec<Operation>> for Trade {
                 },
             ],
             TradeSide::Sell => vec![
-                Operation::Balance {
+                Operation::BalanceDecrease {
                     asset: self.base_asset.clone(),
-                    amount: -self.amount,
+                    amount: self.amount,
                 },
                 Operation::Revenue {
                     asset: self.base_asset,
                     amount: self.amount,
                     time: self.time,
                 },
-                Operation::Balance {
+                Operation::BalanceIncrease {
                     asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
@@ -105,9 +105,9 @@ impl Into<Vec<Operation>> for Trade {
             ],
         };
         if self.fee_asset != "" && self.fee > 0.0 {
-            ops.push(Operation::Balance {
+            ops.push(Operation::BalanceDecrease {
                 asset: self.fee_asset.clone(),
-                amount: -self.fee,
+                amount: self.fee,
             });
             ops.push(Operation::Cost {
                 asset: self.fee_asset,
@@ -131,7 +131,7 @@ pub struct FiatDeposit {
 impl Into<Vec<Operation>> for FiatDeposit {
     fn into(self) -> Vec<Operation> {
         vec![
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: self.asset.clone(),
                 amount: self.amount,
             },
@@ -155,9 +155,9 @@ pub struct Withdraw {
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
         vec![
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: self.asset.clone(),
-                amount: -self.fee,
+                amount: self.fee,
             },
             Operation::Cost {
                 asset: self.asset,
@@ -179,7 +179,7 @@ impl Into<Vec<Operation>> for Loan {
     fn into(self) -> Vec<Operation> {
         match self.status {
             OperationStatus::Success => {
-                vec![Operation::Balance {
+                vec![Operation::BalanceIncrease {
                     asset: self.asset,
                     amount: self.amount,
                 }]
@@ -203,13 +203,13 @@ impl Into<Vec<Operation>> for Repay {
         match self.status {
             OperationStatus::Success => {
                 vec![
-                    Operation::Balance {
+                    Operation::BalanceDecrease {
                         asset: self.asset.clone(),
-                        amount: -self.amount,
+                        amount: self.amount,
                     },
-                    Operation::Balance {
+                    Operation::BalanceDecrease {
                         asset: self.asset.clone(),
-                        amount: -self.interest,
+                        amount: self.interest,
                     },
                     Operation::Cost {
                         asset: self.asset,
@@ -231,7 +231,11 @@ pub struct AssetBalance {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
-    Balance {
+    BalanceIncrease {
+        asset: String,
+        amount: f64,
+    },
+    BalanceDecrease {
         asset: String,
         amount: f64,
     },
@@ -262,9 +266,15 @@ impl<T: AssetsInfo> BalanceTracker<T> {
 
     pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
         match op {
-            Operation::Balance { asset, amount } => {
+            Operation::BalanceIncrease { asset, amount } => {
+                assert!(amount >= 0.0, "balance increase operation amount can't be negative");
                 let coin_balance = self.coin_balances.entry(asset).or_default();
                 coin_balance.amount += amount;
+            }
+            Operation::BalanceDecrease { asset, amount } => {
+                assert!(amount >= 0.0, "balance decrease operation amount can't be negative");
+                let coin_balance = self.coin_balances.entry(asset).or_default();
+                coin_balance.amount -= amount;
             }
             Operation::Cost {
                 asset,
@@ -502,7 +512,7 @@ mod tests {
 
         assert_eq!(
             ops[0],
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "DOT".into(),
                 amount: 3.0
             }
@@ -517,9 +527,9 @@ mod tests {
         );
         assert_eq!(
             ops[2],
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "ETH".into(),
-                amount: -1.5,
+                amount: 1.5,
             }
         );
         assert_eq!(
@@ -532,9 +542,9 @@ mod tests {
         );
         assert_eq!(
             ops[4],
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "ETH".into(),
-                amount: -0.01,
+                amount: 0.01,
             }
         );
         assert_eq!(
@@ -567,9 +577,9 @@ mod tests {
 
         assert_eq!(
             ops[0],
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "DOT".into(),
-                amount: -3.0
+                amount: 3.0
             }
         );
         assert_eq!(
@@ -582,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             ops[2],
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "ETH".into(),
                 amount: 1.5
             }
@@ -597,9 +607,9 @@ mod tests {
         );
         assert_eq!(
             ops[4],
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "XCOIN".into(),
-                amount: -0.01,
+                amount: 0.01,
             }
         );
         assert_eq!(
@@ -632,7 +642,7 @@ mod tests {
 
             assert_eq!(
                 ops[0],
-                Operation::Balance {
+                Operation::BalanceIncrease {
                     asset: "DOT".into(),
                     amount: 3.0
                 }
@@ -647,9 +657,9 @@ mod tests {
             );
             assert_eq!(
                 ops[2],
-                Operation::Balance {
+                Operation::BalanceDecrease {
                     asset: "ETH".into(),
-                    amount: -1.5,
+                    amount: 1.5,
                 }
             );
             assert_eq!(
@@ -677,7 +687,7 @@ mod tests {
 
         let mut coin_tracker = BalanceTracker::new(TestAssetInfo {});
         let ops = vec![
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "BTCUSD".into(),
                 amount: 0.03,
             },
@@ -686,7 +696,7 @@ mod tests {
                 amount: 0.03,
                 time: 1,
             },
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "BTCUSD".into(),
                 amount: 0.1,
             },
@@ -695,7 +705,7 @@ mod tests {
                 amount: 0.1,
                 time: 2,
             },
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "ETHUSD".into(),
                 amount: 0.5,
             },
@@ -704,7 +714,7 @@ mod tests {
                 amount: 0.5,
                 time: 3,
             },
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "ETHUSD".into(),
                 amount: 0.01,
             },
@@ -713,16 +723,16 @@ mod tests {
                 amount: 0.01,
                 time: 4,
             },
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "ETHUSD".into(),
-                amount: -0.2,
+                amount: 0.2,
             },
             Operation::Revenue {
                 asset: "ETHUSD".into(),
                 amount: 0.2,
                 time: 5,
             },
-            Operation::Balance {
+            Operation::BalanceIncrease {
                 asset: "DOTUSD".into(),
                 amount: 0.5,
             },
@@ -731,18 +741,18 @@ mod tests {
                 amount: 0.5,
                 time: 6,
             },
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "DOTUSD".into(),
-                amount: -0.1,
+                amount: 0.1,
             },
             Operation::Revenue {
                 asset: "DOTUSD".into(),
                 amount: 0.1,
                 time: 7,
             },
-            Operation::Balance {
+            Operation::BalanceDecrease {
                 asset: "DOTUSD".into(),
-                amount: -0.2,
+                amount: 0.2,
             },
             Operation::Revenue {
                 asset: "DOTUSD".into(),
