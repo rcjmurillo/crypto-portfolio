@@ -1,3 +1,4 @@
+use chrono::Utc;
 use serde::Deserialize;
 
 fn default_currency_usd() -> String {
@@ -13,15 +14,27 @@ fn default_zero() -> f64 {
 pub struct FiatDeposit {
     #[serde(default = "default_currency_usd")]
     pub fiat_currency: String,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub amount: f64,
-    #[serde(alias = "totalFee", with = "string_or_float")]
+    #[serde(alias = "totalFee", with = "float_from_str")]
     pub transaction_fee: f64,
-    #[serde(with = "string_or_float", default = "default_zero")]
+    #[serde(with = "float_from_str", default = "default_zero")]
     pub platform_fee: f64,
     #[serde(alias = "orderStatus")]
     pub status: String,
     pub update_time: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Deposit {
+    #[serde(with = "float_from_str")]
+    pub amount: f64,
+    #[serde(alias = "asset")]
+    pub coin: String,
+    pub status: u8,
+    #[serde(with = "datetime_from_str")]
+    pub insert_time: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -32,12 +45,14 @@ pub struct Withdraw {
     tx_id: String,
     address: String,
     status: u16,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub amount: f64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub transaction_fee: f64,
+    #[serde(alias = "asset")]
     pub coin: String,
-    pub apply_time: String,
+    #[serde(with = "datetime_from_str", alias = "apply_time")]
+    pub apply_time: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -46,11 +61,11 @@ pub struct Trade {
     order_id: i64,
     pub symbol: String,
     pub id: u64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub price: f64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub qty: f64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub commission: f64,
     pub commission_asset: String,
     pub time: u64,
@@ -68,7 +83,7 @@ pub struct Trade {
 pub struct MarginLoan {
     tx_id: u64,
     pub asset: String,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub principal: f64,
     pub timestamp: u64,
     pub status: String,
@@ -78,12 +93,12 @@ pub struct MarginLoan {
 #[serde(rename_all = "camelCase")]
 pub struct MarginRepay {
     tx_id: u64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub principal: f64,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub amount: f64,
     pub asset: String,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub interest: f64,
     pub status: String,
     pub timestamp: u64,
@@ -100,11 +115,11 @@ pub struct Symbol {
 #[derive(Debug, Deserialize, Clone)]
 pub struct SymbolPrice {
     pub symbol: String,
-    #[serde(with = "string_or_float")]
+    #[serde(with = "float_from_str")]
     pub price: f64,
 }
 
-pub(crate) mod string_or_float {
+pub(crate) mod float_from_str {
     use serde::{de, Deserialize, Deserializer};
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -121,6 +136,34 @@ pub(crate) mod string_or_float {
         match StringOrFloat::deserialize(deserializer)? {
             StringOrFloat::String(s) => s.parse().map_err(de::Error::custom),
             StringOrFloat::Float(i) => Ok(i),
+        }
+    }
+}
+
+pub(crate) mod datetime_from_str {
+    use chrono::{TimeZone, Utc};
+    use serde::{de, Deserialize, Deserializer};
+    use std::convert::TryInto;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum TimestampOrString {
+            Timestamp(u64),
+            String(String),
+        }
+
+        match TimestampOrString::deserialize(deserializer)? {
+            TimestampOrString::Timestamp(ts) => Ok(ts),
+            TimestampOrString::String(s) => {
+                match Utc.datetime_from_str(&s, "%Y-%m-%d %H:%M:%S") {
+                    Ok(dt) => dt.timestamp_millis().try_into().map_err(de::Error::custom),
+                    Err(err) => Err(de::Error::custom(err)),
+                }
+            }
         }
     }
 }

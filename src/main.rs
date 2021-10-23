@@ -10,7 +10,7 @@ use std::{convert::TryInto, sync::Arc};
 use anyhow::Result;
 use structopt::{self, StructOpt};
 
-use binance::{BinanceFetcher, Region as BinanceRegion};
+use binance::{BinanceGlobalFetcher, BinanceUsFetcher};
 use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use crate::{
@@ -25,7 +25,7 @@ fn mk_fetchers(
 ) -> Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> {
     let mut fetchers = Vec::new();
 
-    // coinbase exchange disabled because it doesn't provide the full set of 
+    // coinbase exchange disabled because it doesn't provide the full set of
     // operations and fees when converting coins.
 
     // let coinbase_config: Option<CoinbaseConfig> = config
@@ -57,7 +57,7 @@ fn mk_fetchers(
         .as_ref()
         .and_then(|c| Some(c.try_into().unwrap()));
     if let Some(config) = config_binance {
-        let binance_client = BinanceFetcher::with_config(BinanceRegion::Global, config);
+        let binance_client = BinanceGlobalFetcher::with_config(config);
         fetchers.push((
             "Binance Global",
             Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
@@ -69,7 +69,7 @@ fn mk_fetchers(
         .as_ref()
         .and_then(|c| Some(c.try_into().unwrap()));
     if let Some(config) = config_binance_us {
-        let binance_client_us = BinanceFetcher::with_config(BinanceRegion::Us, config);
+        let binance_client_us = BinanceUsFetcher::with_config(config);
         fetchers.push((
             "Binance US",
             Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,

@@ -2,7 +2,7 @@ use std::{cmp::Ordering, collections::HashMap};
 
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
-use binance::{BinanceFetcher, Region as BinanceRegion};
+use binance::{BinanceGlobalFetcher, Region as BinanceRegion};
 
 use crate::{
     operations::{AssetsInfo, BalanceTracker},
@@ -10,7 +10,7 @@ use crate::{
 };
 
 pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
-    let binance_client = BinanceFetcher::new(BinanceRegion::Global);
+    let binance_client = BinanceGlobalFetcher::new();
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
@@ -27,6 +27,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
     let mut all_assets_value = 0f64;
 
     let all_prices: HashMap<String, f64> = binance_client
+        .base_fetcher
         .fetch_all_prices()
         .await?
         .into_iter()

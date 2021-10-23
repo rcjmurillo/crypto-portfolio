@@ -1,15 +1,12 @@
 use anyhow::{Error as AnyhowError, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::{collections::HashMap, sync::Arc, vec::Vec};
+use std::{collections::HashMap, vec::Vec};
 use tokio::sync::{mpsc, Mutex};
 
-use binance::{BinanceFetcher, Config as BinanceConfig, Region as BinanceRegion};
+use binance::BinanceGlobalFetcher;
 
-use crate::{
-    cli::Config,
-    errors::{Error, ErrorKind},
-};
+use crate::errors::{Error, ErrorKind};
 
 #[derive(Deserialize)]
 pub enum OperationStatus {
@@ -32,6 +29,7 @@ pub trait ExchangeDataFetcher {
     async fn loans(&self) -> Result<Vec<Loan>>;
     async fn repays(&self) -> Result<Vec<Repay>>;
     async fn fiat_deposits(&self) -> Result<Vec<FiatDeposit>>;
+    async fn deposits(&self) -> Result<Vec<Deposit>>;
     async fn withdraws(&self) -> Result<Vec<Withdraw>>;
 }
 
@@ -145,6 +143,38 @@ impl Into<Vec<Operation>> for FiatDeposit {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+pub struct Deposit {
+    pub asset: String,
+    pub amount: f64,
+    pub time: u64,
+    pub fee: Option<f64>,
+    pub is_fiat: bool,
+}
+
+impl Into<Vec<Operation>> for Deposit {
+    fn into(self) -> Vec<Operation> {
+        let mut ops = vec![Operation::BalanceIncrease {
+            asset: self.asset.clone(),
+            amount: self.amount,
+        }];
+        if let Some(fee) = self.fee {
+            ops.extend(vec![
+                Operation::BalanceDecrease {
+                    asset: self.asset.clone(),
+                    amount: fee,
+                },
+                Operation::Cost {
+                    asset: self.asset,
+                    amount: fee,
+                    time: self.time,
+                },
+            ]);
+        }
+        ops
+    }
+}
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct Withdraw {
     pub asset: String,
     pub amount: f64,
@@ -155,6 +185,10 @@ pub struct Withdraw {
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
         vec![
+            Operation::BalanceDecrease {
+                asset: self.asset.clone(),
+                amount: self.amount,
+            },
             Operation::BalanceDecrease {
                 asset: self.asset.clone(),
                 amount: self.fee,
@@ -205,11 +239,7 @@ impl Into<Vec<Operation>> for Repay {
                 vec![
                     Operation::BalanceDecrease {
                         asset: self.asset.clone(),
-                        amount: self.amount,
-                    },
-                    Operation::BalanceDecrease {
-                        asset: self.asset.clone(),
-                        amount: self.interest,
+                        amount: self.amount + self.interest,
                     },
                     Operation::Cost {
                         asset: self.asset,
@@ -267,12 +297,18 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
         match op {
             Operation::BalanceIncrease { asset, amount } => {
-                assert!(amount >= 0.0, "balance increase operation amount can't be negative");
+                assert!(
+                    amount >= 0.0,
+                    "balance increase operation amount can't be negative"
+                );
                 let coin_balance = self.coin_balances.entry(asset).or_default();
                 coin_balance.amount += amount;
             }
             Operation::BalanceDecrease { asset, amount } => {
-                assert!(amount >= 0.0, "balance decrease operation amount can't be negative");
+                assert!(
+                    amount >= 0.0,
+                    "balance decrease operation amount can't be negative"
+                );
                 let coin_balance = self.coin_balances.entry(asset).or_default();
                 coin_balance.amount -= amount;
             }
@@ -329,14 +365,14 @@ type PricesBucket = HashMap<u16, Vec<(u64, f64)>>;
 
 pub struct AssetPrices {
     prices: Mutex<HashMap<String, PricesBucket>>,
-    fetcher: BinanceFetcher,
+    fetcher: BinanceGlobalFetcher,
 }
 
 impl AssetPrices {
     pub fn new() -> Self {
         Self {
             prices: Mutex::new(HashMap::new()),
-            fetcher: BinanceFetcher::new(BinanceRegion::Global),
+            fetcher: BinanceGlobalFetcher::new(),
         }
     }
 
@@ -376,6 +412,7 @@ impl AssetPrices {
         let start_ts = time - (time % bucket_size_millis);
         let end_ts = start_ts + bucket_size_millis;
         self.fetcher
+            .base_fetcher
             .fetch_prices_in_range(symbol, start_ts, end_ts)
             .await
             .map_err(|err| AnyhowError::new(Error::new(err.to_string(), ErrorKind::FetchFailed)))
@@ -448,6 +485,15 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
+    println!("[{}]> fetching deposits...", prefix);
+    all_ops.extend(
+        c.deposits()
+            .await
+            .unwrap()
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    println!("[{}] DEPOSITS: {:?}", prefix, c.deposits().await.unwrap());
     println!("[{}]> fetching withdraws...", prefix);
     all_ops.extend(
         c.withdraws()
@@ -456,12 +502,9 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
+    println!("[{}] WITHDRAWS: {:?}", prefix, c.withdraws().await.unwrap());
     println!("[{}]> fetching operations...", prefix);
-    all_ops.extend(
-        c.operations()
-            .await
-            .unwrap(),
-    );
+    all_ops.extend(c.operations().await.unwrap());
     println!("[{}]> ALL DONE!!!", prefix);
     all_ops
 }

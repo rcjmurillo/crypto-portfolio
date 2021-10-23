@@ -240,6 +240,9 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
             .map(|d| d.into())
             .collect())
     }
+    async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
+        Ok(Vec::new())
+    }
     async fn withdraws(&self) -> Result<Vec<ops::Withdraw>> {
         Ok(self
             .fetch_withdraws()
@@ -280,6 +283,9 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
         Ok(Vec::new())
     }
     async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
+        Ok(Vec::new())
+    }
+    async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
         Ok(Vec::new())
     }
     async fn withdraws(&self) -> Result<Vec<ops::Withdraw>> {

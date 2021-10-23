@@ -7,13 +7,16 @@ use serde_json;
 
 use crate::{
     errors::{Error, ErrorKind},
-    operations::{FiatDeposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw, Operation},
+    operations::{
+        Deposit, ExchangeDataFetcher, FiatDeposit, Loan, Operation, Repay, Trade, Withdraw,
+    },
 };
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
     trades: Vec<Trade>,
-    withdraws: Vec<Withdraw>,
+    deposits: Option<Vec<Deposit>>,
+    withdraws: Option<Vec<Withdraw>>,
     fiat_deposits: Option<Vec<FiatDeposit>>,
 }
 
@@ -56,7 +59,10 @@ impl ExchangeDataFetcher for FileDataFetcher {
         // fixme: don't clone this every time
         Ok(self.data.fiat_deposits.clone().unwrap_or(Vec::new()))
     }
+    async fn deposits(&self) -> Result<Vec<Deposit>> {
+        Ok(self.data.deposits.clone().unwrap_or(Vec::new()))
+    }
     async fn withdraws(&self) -> Result<Vec<Withdraw>> {
-        Ok(self.data.withdraws.clone())
+        Ok(self.data.withdraws.clone().unwrap_or(Vec::new()))
     }
 }
