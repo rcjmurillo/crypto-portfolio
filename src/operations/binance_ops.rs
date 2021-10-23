@@ -28,15 +28,16 @@ impl TryFrom<&ExchangeConfig> for Config {
     }
 }
 
-impl From<FiatDeposit> for ops::FiatDeposit {
+impl From<FiatDeposit> for ops::Deposit {
     fn from(d: FiatDeposit) -> Self {
         Self {
             asset: d.fiat_currency,
             amount: d.amount,
-            fee: d.platform_fee,
+            fee: Some(d.platform_fee),
             time: d
                 .update_time
                 .unwrap_or(Utc::now().timestamp_millis().try_into().unwrap()),
+            is_fiat: true,
         }
     }
 }
@@ -183,20 +184,25 @@ impl ExchangeDataFetcher for BinanceGlobalFetcher {
         flatten_results(join_all(handles).await)
     }
 
-    async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
-        Ok(self
-            .fetch_fiat_deposits()
-            .await?
-            .into_iter()
-            .map(|x| x.into())
-            .collect())
-    }
-
     async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
-        match self.fetch_deposits().await {
-            Ok(w) => Ok(w.into_iter().map(|x| x.into()).collect()),
-            Err(e) => Err(e.into()),
-        }
+        let mut deposits = Vec::new();
+
+        deposits.extend(
+            self.fetch_fiat_deposits()
+                .await?
+                .into_iter()
+                .map(|x| x.into())
+                .collect::<Vec<ops::Deposit>>(),
+        );
+        deposits.extend(
+            self.fetch_deposits()
+                .await?
+                .into_iter()
+                .map(|x| x.into())
+                .collect::<Vec<ops::Deposit>>(),
+        );
+
+        Ok(deposits)
     }
 
     async fn withdraws(&self) -> Result<Vec<ops::Withdraw>> {
@@ -244,20 +250,25 @@ impl ExchangeDataFetcher for BinanceUsFetcher {
         Ok(Vec::new())
     }
 
-    async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
-        Ok(self
-            .fetch_fiat_deposits()
-            .await?
-            .into_iter()
-            .map(|x| x.into())
-            .collect())
-    }
-
     async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
-        match self.fetch_deposits().await {
-            Ok(w) => Ok(w.into_iter().map(|x| x.into()).collect()),
-            Err(e) => Err(e.into()),
-        }
+        let mut deposits = Vec::new();
+
+        deposits.extend(
+            self.fetch_fiat_deposits()
+                .await?
+                .into_iter()
+                .map(|x| x.into())
+                .collect::<Vec<ops::Deposit>>(),
+        );
+        deposits.extend(
+            self.fetch_deposits()
+                .await?
+                .into_iter()
+                .map(|x| x.into())
+                .collect::<Vec<ops::Deposit>>(),
+        );
+
+        Ok(deposits)
     }
 
     async fn withdraws(&self) -> Result<Vec<ops::Withdraw>> {

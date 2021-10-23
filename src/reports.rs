@@ -22,7 +22,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut coin_balances = coin_balances
         .iter()
-        .filter(|b| *b.1 != 0.0 && !b.0.starts_with("USD") && !b.0.starts_with("EUR"))
+        .filter(|b| *b.1 > 0.0 && !b.0.starts_with("USD") && !b.0.starts_with("EUR"))
         .collect::<Vec<(&String, &f64)>>();
     let mut all_assets_value = 0f64;
 

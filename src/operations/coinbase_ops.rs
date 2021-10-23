@@ -62,27 +62,29 @@ impl Into<ops::Trade> for Fill {
     }
 }
 
-impl Into<ops::FiatDeposit> for Transaction {
-    fn into(self) -> ops::FiatDeposit {
+impl Into<ops::Deposit> for Transaction {
+    fn into(self) -> ops::Deposit {
         let subtotal: Amount = self.subtotal.expect("missing subtotal in transaction");
         let fee: Amount = self.fee.expect("missing fee in transaction");
         let payout_at = self.payout_at.expect("missing payout_at in transaction");
-        ops::FiatDeposit {
+        ops::Deposit {
             asset: subtotal.currency,
             amount: subtotal.amount.parse::<f64>().expect(&format!(
                 "couldn't parse amount '{}' into f64",
                 subtotal.amount
             )),
-            fee: fee
-                .amount
-                .parse::<f64>()
-                .expect(&format!("couldn't parse amount '{}' into f64", fee.amount)),
+            fee: Some(
+                fee.amount
+                    .parse::<f64>()
+                    .expect(&format!("couldn't parse amount '{}' into f64", fee.amount)),
+            ),
             time: payout_at
                 .parse::<DateTime<Utc>>()
                 .expect(&format!("couldn't parse time '{}'", payout_at))
                 .timestamp_millis()
                 .try_into()
                 .unwrap(),
+            is_fiat: true,
         }
     }
 }
@@ -232,16 +234,13 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
     async fn repays(&self) -> Result<Vec<ops::Repay>> {
         Ok(Vec::new())
     }
-    async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
+    async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
         Ok(self
             .fetch_fiat_deposits()
             .await?
             .into_iter()
             .map(|d| d.into())
             .collect())
-    }
-    async fn deposits(&self) -> Result<Vec<ops::Deposit>> {
-        Ok(Vec::new())
     }
     async fn withdraws(&self) -> Result<Vec<ops::Withdraw>> {
         Ok(self
@@ -280,9 +279,6 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
         Ok(Vec::new())
     }
     async fn repays(&self) -> Result<Vec<ops::Repay>> {
-        Ok(Vec::new())
-    }
-    async fn fiat_deposits(&self) -> Result<Vec<ops::FiatDeposit>> {
         Ok(Vec::new())
     }
     async fn deposits(&self) -> Result<Vec<ops::Deposit>> {

@@ -28,7 +28,6 @@ pub trait ExchangeDataFetcher {
     async fn margin_trades(&self) -> Result<Vec<Trade>>;
     async fn loans(&self) -> Result<Vec<Loan>>;
     async fn repays(&self) -> Result<Vec<Repay>>;
-    async fn fiat_deposits(&self) -> Result<Vec<FiatDeposit>>;
     async fn deposits(&self) -> Result<Vec<Deposit>>;
     async fn withdraws(&self) -> Result<Vec<Withdraw>>;
 }
@@ -115,30 +114,6 @@ impl Into<Vec<Operation>> for Trade {
         }
 
         ops
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct FiatDeposit {
-    pub asset: String,
-    pub amount: f64,
-    pub fee: f64,
-    pub time: u64,
-}
-
-impl Into<Vec<Operation>> for FiatDeposit {
-    fn into(self) -> Vec<Operation> {
-        vec![
-            Operation::BalanceIncrease {
-                asset: self.asset.clone(),
-                amount: self.amount,
-            },
-            Operation::Cost {
-                asset: self.asset,
-                amount: self.fee,
-                time: self.time,
-            },
-        ]
     }
 }
 
@@ -347,11 +322,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     }
 
     pub fn get_balance(&self, asset: &str) -> Option<&AssetBalance> {
-        if let Some(balance) = self.coin_balances.get(asset) {
-            Some(balance)
-        } else {
-            None
-        }
+        self.coin_balances.get(asset)
     }
 
     pub fn balances(&self) -> Vec<(&String, &AssetBalance)> {
@@ -477,14 +448,6 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching fiat deposits...", prefix);
-    all_ops.extend(
-        c.fiat_deposits()
-            .await
-            .unwrap()
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
     println!("[{}]> fetching deposits...", prefix);
     all_ops.extend(
         c.deposits()
@@ -523,8 +486,6 @@ pub async fn fetch_ops<'a>(
             }
         });
     }
-
-    println!("\nDONE getting operations...");
 
     rx
 }
