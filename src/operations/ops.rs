@@ -493,7 +493,6 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}] DEPOSITS: {:?}", prefix, c.deposits().await.unwrap());
     println!("[{}]> fetching withdraws...", prefix);
     all_ops.extend(
         c.withdraws()
@@ -502,7 +501,6 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}] WITHDRAWS: {:?}", prefix, c.withdraws().await.unwrap());
     println!("[{}]> fetching operations...", prefix);
     all_ops.extend(c.operations().await.unwrap());
     println!("[{}]> ALL DONE!!!", prefix);
