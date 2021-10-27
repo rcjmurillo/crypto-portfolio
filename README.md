@@ -35,21 +35,21 @@ start_date = 2020-01-01
 ```
 
 ## Custom ops file format
-An JSON object with the following optional fields:
-- trades (see ops::api_model::Trade for the expected fields)
-- deposits (see ops::api_model::Deposit for the expected fields)
-- withdraws (see ops::api_model::Withdraw for the expected fields)
+An JSON object with the following optional fields, each field must contain a list of objects:
+- trades: (see `ops::Trade` for the expected fields on each object).
+- deposits: (see `ops::Deposit` for the expected fields on each object)
+- withdraws: (see `ops::Withdraw` for the expected fields on each object)
 
 ```json
 {
     "trades": [
-        ...
+        // list of trade objects
     ],
     "deposits": [
-        ...
+        // list of deposit objects
     ],
     "withdraws": [
-        ...
+        // list of withdraws objects
     ],
 }
 ```
