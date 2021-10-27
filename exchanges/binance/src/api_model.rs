@@ -1,4 +1,3 @@
-use chrono::Utc;
 use serde::Deserialize;
 
 fn default_currency_usd() -> String {
@@ -11,7 +10,7 @@ fn default_zero() -> f64 {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct FiatDeposit {
+pub struct FiatOrder {
     #[serde(default = "default_currency_usd")]
     pub fiat_currency: String,
     #[serde(with = "float_from_str")]
@@ -81,7 +80,7 @@ pub struct Trade {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginLoan {
-    tx_id: u64,
+    pub tx_id: u64,
     pub asset: String,
     #[serde(with = "float_from_str")]
     pub principal: f64,
@@ -92,7 +91,7 @@ pub struct MarginLoan {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginRepay {
-    tx_id: u64,
+    pub tx_id: u64,
     #[serde(with = "float_from_str")]
     pub principal: f64,
     #[serde(with = "float_from_str")]

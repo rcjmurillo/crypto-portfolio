@@ -1,7 +1,7 @@
 use std::{env, fmt, sync::Arc};
 
 use bytes::Bytes;
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use futures::future::join_all;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
@@ -48,13 +48,15 @@ impl Credentials {
 }
 
 pub struct Endpoints {
-    fiat_deposits: &'static str,
     deposits: &'static str,
     withdraws: &'static str,
     trades: &'static str,
     klines: &'static str,
     prices: &'static str,
     exchange_info: &'static str,
+    fiat_orders: Option<&'static str>,
+    fiat_deposits: Option<&'static str>,
+    fiat_withdraws: Option<&'static str>,
     margin_trades: Option<&'static str>,
     margin_loans: Option<&'static str>,
     margin_repays: Option<&'static str>,
@@ -64,25 +66,29 @@ impl Endpoints {
     fn for_region(region: &Region) -> Self {
         match region {
             Region::Global => Endpoints {
-                fiat_deposits: "/sapi/v1/fiat/orders",
                 trades: "/api/v3/myTrades",
                 klines: "/api/v3/klines",
                 prices: "/api/v3/ticker/price",
                 exchange_info: "/api/v3/exchangeInfo",
                 deposits: "/sapi/v1/capital/deposit/hisrec",
                 withdraws: "/sapi/v1/capital/withdraw/history",
+                fiat_orders: Some("/sapi/v1/fiat/orders"),
+                fiat_deposits: None,
+                fiat_withdraws: None,
                 margin_trades: Some("/sapi/v1/margin/myTrades"),
                 margin_loans: Some("/sapi/v1/margin/loan"),
                 margin_repays: Some("/sapi/v1/margin/repay"),
             },
             Region::Us => Endpoints {
-                fiat_deposits: "/sapi/v1/fiatpayment/query/deposit/history",
                 trades: "/api/v3/myTrades",
                 klines: "/api/v3/klines",
                 prices: "/api/v3/ticker/price",
                 exchange_info: "/api/v3/exchangeInfo",
                 deposits: "/wapi/v3/depositHistory.html",
                 withdraws: "/wapi/v3/withdrawHistory.html",
+                fiat_orders: None,
+                fiat_deposits: Some("/sapi/v1/fiatpayment/query/deposit/history"),
+                fiat_withdraws: Some("/sapi/v1/fiatpayment/query/withdraw/history"),
                 margin_trades: None,
                 margin_loans: None,
                 margin_repays: None,
@@ -127,6 +133,10 @@ impl Config {
     }
 }
 
+// fixme: unify the fetchers structs by using a generic type to represent the region
+//        and make methods only available on certain types like the in coinbase client,
+//        for some reason the #[sync_trait] macro causes a weird stack overflow error
+//        at runtime.
 pub struct BinanceBaseFetcher {
     pub config: Option<Config>,
     pub api_client: ApiClient,
@@ -445,14 +455,14 @@ impl BinanceGlobalFetcher {
         }
     }
 
-    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatDeposit>> {
+    pub async fn fetch_fiat_orders(&self, tx_type: &str) -> Result<Vec<FiatOrder>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct DepositResponse {
-            data: Vec<FiatDeposit>,
+        struct Response {
+            data: Vec<FiatOrder>,
         }
 
-        let mut deposits: Vec<FiatDeposit> = Vec::new();
+        let mut orders: Vec<FiatOrder> = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.base_fetcher.data_start_date().and_hms(0, 0, 0);
@@ -464,7 +474,7 @@ impl BinanceGlobalFetcher {
             let mut current_page = 1usize;
             loop {
                 let mut query = QueryParams::new();
-                query.add("transactionType", "0", true);
+                query.add("transactionType", tx_type, true);
                 query.add("page", current_page, true);
                 query.add("beginTime", curr_start.timestamp_millis(), true);
                 query.add("endTime", end.timestamp_millis(), true);
@@ -479,7 +489,8 @@ impl BinanceGlobalFetcher {
                     .make_request(
                         &format!(
                             "{}{}",
-                            self.base_fetcher.domain, self.base_fetcher.endpoints.fiat_deposits
+                            self.base_fetcher.domain,
+                            self.base_fetcher.endpoints.fiat_orders.unwrap()
                         ),
                         Some(query),
                         Some(self.base_fetcher.default_headers()),
@@ -487,12 +498,9 @@ impl BinanceGlobalFetcher {
                     )
                     .await?;
 
-                let DepositResponse { data } = self
-                    .base_fetcher
-                    .from_json::<DepositResponse>(&resp.as_ref())
-                    .await?;
+                let Response { data } = self.base_fetcher.from_json(&resp.as_ref()).await?;
                 if data.len() > 0 {
-                    deposits.extend(data.into_iter().filter_map(|x| {
+                    orders.extend(data.into_iter().filter_map(|x| {
                         if x.status == "Successful" {
                             Some(x)
                         } else {
@@ -510,7 +518,15 @@ impl BinanceGlobalFetcher {
             }
         }
 
-        Ok(deposits)
+        Ok(orders)
+    }
+
+    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
+        self.fetch_fiat_orders("0").await
+    }
+
+    pub async fn fetch_fiat_withdraws(&self) -> Result<Vec<FiatOrder>> {
+        self.fetch_fiat_orders("1").await
     }
 
     pub async fn fetch_margin_trades(&self, symbol: String) -> Result<Vec<Trade>> {
@@ -540,41 +556,38 @@ impl BinanceGlobalFetcher {
     pub async fn fetch_margin_loans(
         &self,
         asset: String,
-        symbol: String,
+        isolated_symbol: Option<&String>,
     ) -> Result<Vec<MarginLoan>> {
-        if let None = self.base_fetcher.endpoints.margin_loans {
-            return Ok(Vec::new());
-        }
-
         #[derive(Deserialize)]
-        struct EndpointResponse {
+        struct Response {
             rows: Vec<MarginLoan>,
             total: u16,
         }
 
         let mut loans = Vec::<MarginLoan>::new();
 
-        let ts = self
-            .base_fetcher
-            .data_start_date()
-            .and_hms(0, 0, 0)
-            .timestamp_millis() as u64;
-
-        for isolated_symbol in &[Some(&symbol), None] {
-            for archived in &["true", "false"] {
+        // does archived = true fetches records from the last 6 months?
+        for archived in &["true"] {
+            // fetch in batches of 90 days from `start_date` to `now()`
+            let mut curr_start = self.base_fetcher.data_start_date().and_hms(0, 0, 0);
+            let now = Utc::now().naive_utc();
+            loop {
+                // the API only allows 90 days between start and end
+                let end = std::cmp::min(curr_start + Duration::days(89), now);
                 let mut current_page: usize = 1;
                 loop {
                     let mut query = QueryParams::new();
                     query.add("asset", &asset, true);
-                    query.add("startTime", ts, true);
+                    if let Some(s) = isolated_symbol {
+                        query.add("isolatedSymbol", s, true);
+                    }
+                    query.add("startTime", curr_start.timestamp_millis(), true);
+                    query.add("endTime", end.timestamp_millis(), true);
                     query.add("size", 100, true);
                     query.add("archived", archived, true);
                     query.add("current", current_page, true);
                     query.add("recvWindow", 60000, true);
                     query.add("timestamp", Utc::now().timestamp_millis(), false);
-                    if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s, true);
-                    }
                     query = self.base_fetcher.sign_request(query);
 
                     let resp = self
@@ -594,7 +607,7 @@ impl BinanceGlobalFetcher {
 
                     let loans_resp = self
                         .base_fetcher
-                        .from_json::<EndpointResponse>(resp.as_ref())
+                        .from_json::<Response>(resp.as_ref())
                         .await?;
 
                     loans.extend(loans_resp.rows);
@@ -603,6 +616,10 @@ impl BinanceGlobalFetcher {
                     } else {
                         break;
                     }
+                }
+                curr_start = end + Duration::milliseconds(1);
+                if end == now {
+                    break;
                 }
             }
         }
@@ -613,41 +630,38 @@ impl BinanceGlobalFetcher {
     pub async fn fetch_margin_repays(
         &self,
         asset: String,
-        symbol: String,
+        isolated_symbol: Option<&String>,
     ) -> Result<Vec<MarginRepay>> {
-        if let None = self.base_fetcher.endpoints.margin_repays {
-            return Ok(Vec::new());
-        }
-
         #[derive(Deserialize)]
-        struct EndpointResponse {
+        struct Response {
             rows: Vec<MarginRepay>,
             total: u16,
         }
 
         let mut repays = Vec::<MarginRepay>::new();
 
-        let ts = self
-            .base_fetcher
-            .data_start_date()
-            .and_hms(0, 0, 0)
-            .timestamp_millis() as u64;
-
-        for isolated_symbol in &[Some(&symbol), None] {
-            for archived in &["true", "false"] {
+        // does archived = true fetches records from the last 6 months?
+        for archived in &["true"] {
+            // fetch in batches of 90 days from `start_date` to `now()`
+            let mut curr_start = self.base_fetcher.data_start_date().and_hms(0, 0, 0);
+            let now = Utc::now().naive_utc();
+            loop {
+                // the API only allows 90 days between start and end
+                let end = std::cmp::min(curr_start + Duration::days(89), now);
                 let mut current_page: usize = 1;
                 loop {
                     let mut query = QueryParams::new();
                     query.add("asset", &asset, true);
-                    query.add("startTime", ts, true);
+                    if let Some(s) = isolated_symbol {
+                        query.add("isolatedSymbol", s, true);
+                    }
+                    query.add("startTime", curr_start.timestamp_millis(), true);
+                    query.add("endTime", end.timestamp_millis(), true);
                     query.add("size", 100, true);
                     query.add("archived", archived, true);
                     query.add("current", current_page, true);
                     query.add("recvWindow", 60000, true);
                     query.add("timestamp", Utc::now().timestamp_millis(), false);
-                    if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s, true);
-                    }
                     query = self.base_fetcher.sign_request(query);
                     let resp = self
                         .base_fetcher
@@ -665,14 +679,19 @@ impl BinanceGlobalFetcher {
                         .await?;
                     let repays_resp = self
                         .base_fetcher
-                        .from_json::<EndpointResponse>(resp.as_ref())
+                        .from_json::<Response>(resp.as_ref())
                         .await?;
+
                     repays.extend(repays_resp.rows);
                     if repays_resp.total >= 100 {
                         current_page += 1;
                     } else {
                         break;
                     }
+                }
+                curr_start = end + Duration::milliseconds(1);
+                if end == now {
+                    break;
                 }
             }
         }
@@ -795,14 +814,14 @@ impl BinanceUsFetcher {
         }
     }
 
-    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatDeposit>> {
+    pub async fn fetch_fiat_orders(&self, endpoint: &str) -> Result<Vec<FiatOrder>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct DepositResponse {
-            asset_log_record_list: Vec<FiatDeposit>,
+        struct Response {
+            asset_log_record_list: Vec<FiatOrder>,
         }
 
-        let mut deposits: Vec<FiatDeposit> = Vec::new();
+        let mut orders: Vec<FiatOrder> = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.base_fetcher.data_start_date().and_hms(0, 0, 0);
@@ -823,23 +842,17 @@ impl BinanceUsFetcher {
                 .base_fetcher
                 .api_client
                 .make_request(
-                    &format!(
-                        "{}{}",
-                        self.base_fetcher.domain, self.base_fetcher.endpoints.fiat_deposits
-                    ),
+                    &format!("{}{}", self.base_fetcher.domain, endpoint),
                     Some(query),
                     Some(self.base_fetcher.default_headers()),
                     true,
                 )
                 .await?;
 
-            let DepositResponse {
+            let Response {
                 asset_log_record_list,
-            } = self
-                .base_fetcher
-                .from_json::<DepositResponse>(&resp.as_ref())
-                .await?;
-            deposits.extend(asset_log_record_list.into_iter().filter_map(|x| {
+            } = self.base_fetcher.from_json(&resp.as_ref()).await?;
+            orders.extend(asset_log_record_list.into_iter().filter_map(|x| {
                 if x.status == "Successful" {
                     Some(x)
                 } else {
@@ -852,7 +865,17 @@ impl BinanceUsFetcher {
             }
         }
 
-        Ok(deposits)
+        Ok(orders)
+    }
+
+    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
+        self.fetch_fiat_orders(self.base_fetcher.endpoints.fiat_deposits.unwrap())
+            .await
+    }
+
+    pub async fn fetch_fiat_withdraws(&self) -> Result<Vec<FiatOrder>> {
+        self.fetch_fiat_orders(self.base_fetcher.endpoints.fiat_withdraws.unwrap())
+            .await
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {

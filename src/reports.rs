@@ -22,7 +22,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut coin_balances = coin_balances
         .iter()
-        .filter(|b| *b.1 > 0.0 && !b.0.starts_with("USD") && !b.0.starts_with("EUR"))
+        .filter(|b| *b.1 > 0.0)
         .collect::<Vec<(&String, &f64)>>();
     let mut all_assets_value = 0f64;
 
@@ -58,10 +58,10 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
                 coin.cell(),
                 format!("{:.6}", amount).cell().justify(Justify::Right),
                 format!("{:.4}", price).cell().justify(Justify::Right),
+                format!("{:.2}", value).cell().justify(Justify::Right),
                 format!("{:.2}", balance.usd_position)
                     .cell()
                     .justify(Justify::Right),
-                format!("{:.2}", value).cell().justify(Justify::Right),
                 format!("{:.2}", usd_unrealized_position)
                     .cell()
                     .justify(Justify::Right),
@@ -78,8 +78,8 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
             "Coin".cell().bold(true),
             "Amount".cell().justify(Justify::Right).bold(true),
             "Price USD".cell().justify(Justify::Right).bold(true),
-            "Position USD".cell().justify(Justify::Right).bold(true),
             "Value USD".cell().justify(Justify::Right).bold(true),
+            "Position USD".cell().justify(Justify::Right).bold(true),
             "Unrealized Position USD"
                 .cell()
                 .justify(Justify::Right)

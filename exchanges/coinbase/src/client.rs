@@ -157,7 +157,7 @@ pub struct Config {
     pub symbols: Vec<String>,
 }
 
-pub struct CoinbaseFetcher<Api = Std> {
+pub struct CoinbaseFetcher<Api> {
     api_client: ApiClient,
     credentials: Credentials<Api>,
     api: PhantomData<Api>,

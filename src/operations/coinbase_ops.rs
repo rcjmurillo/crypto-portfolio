@@ -206,7 +206,6 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
             .await?
             .into_iter()
             .filter_map(|t| -> Option<Operations> {
-                println!("trans: {:?}", t);
                 match t.tx_type.as_ref().expect("missing type in transaction") == "trade"
                     && t.status == "completed"
                 {
