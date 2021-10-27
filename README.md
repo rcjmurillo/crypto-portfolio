@@ -43,13 +43,13 @@ An JSON object with the following optional fields, each field must contain a lis
 ```json
 {
     "trades": [
-        // list of trade objects
+        {"symbol": "ETHBTC", "base_asset": "ETH", "quote_asset": "BTC", "price": 0.03128, "amount": 1.5, "time": 1603562874572, "fee": 0.001, "fee_asset": "BTC", "side": "sell"}
     ],
     "deposits": [
-        // list of deposit objects
+        {"asset": "BTC", "amount": 0.04, "time": 1619053678020, "fee": 0.0, "is_fiat": false}
     ],
     "withdraws": [
-        // list of withdraws objects
+        {"asset": "ETH", "amount": 3.1, "fee": 0.005, "time": 163532453209}
     ],
 }
 ```
