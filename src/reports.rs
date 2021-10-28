@@ -75,7 +75,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
     let table = table
         .table()
         .title(vec![
-            "Coin".cell().bold(true),
+            "Asset".cell().bold(true),
             "Amount".cell().justify(Justify::Right).bold(true),
             "Price USD".cell().justify(Justify::Right).bold(true),
             "Value USD".cell().justify(Justify::Right).bold(true),
@@ -95,22 +95,26 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut summary_table = vec![];
 
+    let unrealized_usd_profit_loss = all_assets_value - all_assets_usd_unrealized_position;
     summary_table.extend(vec![
         vec![
-            "Global USD position".cell(),
+            "Unrealized USD position".cell(),
             format!("{:.2}", all_assets_usd_unrealized_position).cell(),
         ],
         vec![
-            "Coins value USD".cell(),
+            "Assets USD value".cell(),
             format!("{:.2}", all_assets_value).cell(),
         ],
         vec![
-            "Unrealized USD profit".cell(),
             format!(
-                "{:.2}",
-                all_assets_value - all_assets_usd_unrealized_position
+                "Unrealized USD {}",
+                match unrealized_usd_profit_loss > 0.0 {
+                    true => "profit",
+                    false => "loss",
+                }
             )
             .cell(),
+            format!("{:.2}", unrealized_usd_profit_loss).cell(),
         ],
     ]);
     assert!(print_stdout(summary_table.table()).is_ok());
