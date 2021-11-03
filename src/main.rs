@@ -3,7 +3,6 @@ mod custom_ops;
 mod errors;
 mod operations;
 mod reports;
-mod result;
 
 use std::{convert::TryInto, sync::Arc};
 

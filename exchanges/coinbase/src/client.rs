@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use sha2::Sha256;
 
 use api_client::{
-    errors::{Error as ApiError, ErrorKind as ApiErrorKind},
+    errors::{Error as ApiError},
     ApiClient, QueryParams,
 };
 
@@ -298,12 +298,9 @@ impl CoinbaseFetcher<Std> {
                 Ok(x) => all_trans.extend(x),
                 Err(err) => match err.downcast_ref::<ApiError>() {
                     // ignore resources not found
-                    Some(ApiError {
-                        body: _,
-                        kind: ApiErrorKind::NotFound,
-                    }) => (),
+                    Some(ApiError::NotFound) => (),
                     // any other error just pass it through
-                    Some(_) => return Err(err.into()),
+                    Some(_) => return Err(err),
                     None => (),
                 },
             }

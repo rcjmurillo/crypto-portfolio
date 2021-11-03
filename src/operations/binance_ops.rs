@@ -3,6 +3,8 @@ use std::{
     convert::{TryFrom, TryInto},
 };
 
+use anyhow::anyhow;
+
 use binance::{
     BinanceGlobalFetcher, BinanceUsFetcher, Config, Deposit, FiatOrder, MarginLoan, MarginRepay,
     Trade, Withdraw,
@@ -15,7 +17,7 @@ use futures::future::join_all;
 
 use crate::{
     cli::ExchangeConfig,
-    errors::{Error, ErrorKind},
+    errors::Error,
     operations::{
         self as ops, AssetsInfo, ExchangeDataFetcher, Operation, OperationStatus, TradeSide,
     },
@@ -346,11 +348,11 @@ impl AssetsInfo for BinanceGlobalFetcher {
         self.base_fetcher
             .fetch_price_at(symbol, time)
             .await
-            .map_err(|err| Error::new(err.to_string(), ErrorKind::FetchFailed).into())
+            //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))
     }
 }
 
-fn flatten_results<T, U>(results: Vec<binance::Result<Vec<T>>>) -> Result<Vec<U>>
+fn flatten_results<T, U>(results: Vec<Result<Vec<T>>>) -> Result<Vec<U>>
 where
     T: Into<U>,
 {

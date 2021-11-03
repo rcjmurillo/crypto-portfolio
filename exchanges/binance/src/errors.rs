@@ -1,16 +1,13 @@
-use std::{fmt, error};
+use std::fmt;
 
-use api_client::errors::ErrorKind as ApiClientErrorKind;
+use api_client::errors::Error as ApiError;
 
 use serde::Deserialize;
-use serde_json;
 
 #[derive(Debug)]
-pub enum ErrorKind {
-    ApiClient(ApiClientErrorKind),
+pub enum Error {
     Api(ApiErrorKind),
-    Parse,
-    Other,
+    Other(String),
 }
 
 #[derive(Debug)]
@@ -29,61 +26,26 @@ impl From<Option<i16>> for ApiErrorKind {
     }
 }
 
-#[derive(Debug)]
-pub struct Error {
-    pub reason: String,
-    pub kind: ErrorKind,
-}
-
-impl Error {
-    pub(crate) fn new(reason: String, kind: ErrorKind) -> Self {
-        Self { reason, kind }
-    }
-}
-
-impl From<api_client::errors::Error> for Error {
-    fn from(err: api_client::errors::Error) -> Self {
-        match err.kind {
-            ApiClientErrorKind::BadRequest => {
+impl From<ApiError> for Error {
+    fn from(api_error: ApiError) -> Self {
+        match api_error {
+            ApiError::BadRequest { body } => {
                 #[derive(Deserialize)]
                 struct ErrorResponse {
                     code: Option<i16>,
-                    msg: String,
                 }
-
-                match serde_json::from_slice::<ErrorResponse>(err.body.as_ref()) {
-                    Ok(ErrorResponse { code, msg }) => Self {
-                        reason: msg,
-                        kind: ErrorKind::Api(code.into()),
-                    },
-                    Err(err) => Error::new(
-                        format!("could not parse error response: {}", err),
-                        ErrorKind::Parse,
-                    ),
+                match serde_json::from_str::<ErrorResponse>(&body) {
+                    Ok(ErrorResponse { code, .. }) => Error::Api(code.into()),
+                    Err(_) => Error::Other(format!("couldn't parse error response: {}", body)),
                 }
             }
-            _ => {
-                let kind = match err.kind {
-                    err @ ApiClientErrorKind::Internal
-                    | err @ ApiClientErrorKind::ServiceUnavailable
-                    | err @ ApiClientErrorKind::Unauthorized
-                    | err @ ApiClientErrorKind::NotFound
-                    | err @ ApiClientErrorKind::BadRequest => ErrorKind::ApiClient(err),
-                    ApiClientErrorKind::Other => ErrorKind::Other,
-                };
-                Self {
-                    reason: err.body,
-                    kind,
-                }
-            }
+            e => Error::Other(e.to_string()),
         }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.reason)
+        write!(f, "{:?}", self)
     }
 }
-
-impl error::Error for Error {}

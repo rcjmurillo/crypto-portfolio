@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 api-client = { path = "../api-client" }
 
+anyhow = "1.0.44"
 async-trait = "0.1.50"
 bytes = "1.0.1"
 chrono = "0.4"

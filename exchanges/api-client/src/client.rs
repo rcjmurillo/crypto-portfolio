@@ -1,17 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use anyhow::{anyhow, Error, Result};
 use bytes::Bytes;
 use reqwest::{header::HeaderMap, StatusCode};
 use tokio::sync::RwLock;
 
-use crate::{
-    sync::ValueSemaphore,
-    errors::{Error, ErrorKind},
-};
+use crate::{errors::Error as ApiError, sync::ValueSemaphore};
 
 type Cache = HashMap<String, Arc<Bytes>>;
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone)]
 pub struct QueryParams(Vec<(&'static str, String, bool)>);
@@ -82,10 +79,7 @@ impl ApiClient {
                     None => endpoint.to_string(),
                 };
                 // Block this endpoint + cacheable params until the response is added to the cache
-                _endpoint_params_perm = self
-                    .endpoint_params_sem
-                    .acquire_for(key.clone())
-                    .await?;
+                _endpoint_params_perm = self.endpoint_params_sem.acquire_for(key.clone()).await?;
                 match Arc::clone(&self.cache).read().await.get(&key) {
                     Some(v) => {
                         return Ok(Arc::clone(v));
@@ -94,7 +88,7 @@ impl ApiClient {
                 }
                 Some(key)
             }
-            false => None
+            false => None,
         };
 
         // Restrict concurrency for each API endpoint, this allows `endpoint_concurrency`
@@ -117,8 +111,11 @@ impl ApiClient {
                 let resp_bytes = Arc::new(resp.bytes().await?);
                 if let Some(cache_key) = cache_key {
                     let cache = Arc::clone(&self.cache);
-                    cache.write().await.insert(cache_key, Arc::clone(&resp_bytes));
-                } 
+                    cache
+                        .write()
+                        .await
+                        .insert(cache_key, Arc::clone(&resp_bytes));
+                }
                 Ok(resp_bytes)
             }
             Err(err) => Err(err.into()),
@@ -128,12 +125,22 @@ impl ApiClient {
     async fn validate_response(&self, resp: reqwest::Response) -> Result<reqwest::Response> {
         match resp.status() {
             StatusCode::OK => Ok(resp),
-            StatusCode::INTERNAL_SERVER_ERROR => Err(Error::new(resp.text().await?, ErrorKind::Internal)),
-            StatusCode::SERVICE_UNAVAILABLE => Err(Error::new(resp.text().await?, ErrorKind::ServiceUnavailable)),
-            StatusCode::UNAUTHORIZED => Err(Error::new(resp.text().await?, ErrorKind::Unauthorized)),
-            StatusCode::BAD_REQUEST => Err(Error::new(resp.text().await?, ErrorKind::BadRequest)),
-            StatusCode::NOT_FOUND => Err(Error::new(resp.text().await?, ErrorKind::NotFound)),
-            status => Err(Error::new(format!("text:{} status:{}", resp.text().await?, status), ErrorKind::Other)),
+            StatusCode::INTERNAL_SERVER_ERROR => {
+                Err(anyhow!(resp.text().await?).context(ApiError::Internal))
+            }
+            StatusCode::SERVICE_UNAVAILABLE => {
+                Err(anyhow!(resp.text().await?).context(ApiError::ServiceUnavailable))
+            }
+            StatusCode::UNAUTHORIZED => {
+                Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
+            }
+            StatusCode::BAD_REQUEST => {
+                Err(anyhow!("bad request").context(ApiError::BadRequest { body: resp.text().await? }))
+            }
+            StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
+            status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
+                status: status.into(),
+            })),
         }
     }
 }

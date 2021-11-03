@@ -4,9 +4,11 @@ use serde::Deserialize;
 use std::{collections::HashMap, vec::Vec};
 use tokio::sync::{mpsc, Mutex};
 
+use anyhow::anyhow;
+
 use binance::BinanceGlobalFetcher;
 
-use crate::errors::{Error, ErrorKind};
+use crate::errors::{Error};
 
 #[derive(Deserialize)]
 pub enum OperationStatus {
@@ -386,7 +388,6 @@ impl AssetPrices {
             .base_fetcher
             .fetch_prices_in_range(symbol, start_ts, end_ts)
             .await
-            .map_err(|err| AnyhowError::new(Error::new(err.to_string(), ErrorKind::FetchFailed)))
     }
 
     fn find_price_at(&self, prices: &Vec<(u64, f64)>, time: u64) -> f64 {

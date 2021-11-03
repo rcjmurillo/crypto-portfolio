@@ -73,6 +73,4 @@ An JSON object with the following optional fields, each field must contain a lis
 +-------------------------+----------+
 | Assets USD value        | 66746.75 |
 +-------------------------+----------+
-| Unrealized USD profit   | 27909.11 |
-+-------------------------+----------+
 ```

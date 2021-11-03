@@ -1,5 +1,7 @@
 use std::{env, fmt, sync::Arc};
 
+use anyhow::{anyhow, Error, Result};
+
 use bytes::Bytes;
 use chrono::{Duration, NaiveDate, Utc};
 use futures::future::join_all;
@@ -10,14 +12,12 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
 
-use api_client::{ApiClient, QueryParams};
+use api_client::{errors::Error as ClientError, ApiClient, QueryParams};
 
 use crate::{
     api_model::*,
-    errors::{ApiErrorKind, Error, ErrorKind},
+    errors::{ApiErrorKind, Error as ApiError},
 };
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 const ENDPOINT_CONCURRENCY: usize = 10;
 
@@ -165,7 +165,9 @@ impl BinanceBaseFetcher {
     async fn from_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
         match serde_json::from_slice(resp_bytes) {
             Ok(val) => Ok(val),
-            Err(err) => Err(Error::new(err.to_string(), ErrorKind::Parse)),
+            Err(err) => {
+                Err(anyhow!(err.to_string()).context(format!("couldn't parse: {:?}", resp_bytes)))
+            }
         }
     }
 
@@ -319,12 +321,20 @@ impl BinanceBaseFetcher {
                     }));
                 }
                 Err(err) => {
-                    let err: Error = err.into();
-                    match err.kind {
-                        // ApiErrorType::UnavailableSymbol means the symbol is not
-                        // available in the exchange, so we can just ignore it.
-                        ErrorKind::Api(ApiErrorKind::UnavailableSymbol) => continue,
-                        _ => return Err(err),
+                    match err.downcast::<ClientError>() {
+                        Ok(client_error) => {
+                            match client_error.into() {
+                                // ApiErrorType::UnavailableSymbol means the symbol is not
+                                // available in the exchange, so we can just ignore it.
+                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => continue,
+                                err => {
+                                    return Err(
+                                        anyhow::Error::msg("couldn't fetch prices").context(err)
+                                    )
+                                }
+                            }
+                        }
+                        Err(err) => return Err(err),
                     }
                 }
             }
@@ -406,12 +416,20 @@ impl BinanceBaseFetcher {
                     }
                 }
                 Err(err) => {
-                    let err: Error = err.into();
-                    match err.kind {
-                        // if ApiErrorType::UnavailableSymbol means the symbol is not
-                        // available in the exchange, so we can just ignore it.
-                        ErrorKind::Api(ApiErrorKind::UnavailableSymbol) => break,
-                        _ => return Err(err),
+                    match err.downcast::<ClientError>() {
+                        Ok(client_error) => {
+                            match client_error.into() {
+                                // ApiErrorType::UnavailableSymbol means the symbol is not
+                                // available in the exchange, so we can just skip it.
+                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => break,
+                                err => {
+                                    return Err(
+                                        anyhow::Error::msg("couldn't fetch trades").context(err)
+                                    )
+                                }
+                            }
+                        }
+                        Err(err) => return Err(err),
                     }
                 }
             }

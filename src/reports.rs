@@ -1,13 +1,11 @@
 use std::{cmp::Ordering, collections::HashMap};
 
+use anyhow::Result;
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
-use binance::{BinanceGlobalFetcher, Region as BinanceRegion};
+use binance::BinanceGlobalFetcher;
 
-use crate::{
-    operations::{AssetsInfo, BalanceTracker},
-    result::Result,
-};
+use crate::operations::{AssetsInfo, BalanceTracker};
 
 pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
     let binance_client = BinanceGlobalFetcher::new();
@@ -95,7 +93,6 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut summary_table = vec![];
 
-    let unrealized_usd_profit_loss = all_assets_value - all_assets_usd_unrealized_position;
     summary_table.extend(vec![
         vec![
             "Unrealized USD position".cell(),
@@ -104,17 +101,6 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
         vec![
             "Assets USD value".cell(),
             format!("{:.2}", all_assets_value).cell(),
-        ],
-        vec![
-            format!(
-                "Unrealized USD {}",
-                match unrealized_usd_profit_loss > 0.0 {
-                    true => "profit",
-                    false => "loss",
-                }
-            )
-            .cell(),
-            format!("{:.2}", unrealized_usd_profit_loss).cell(),
         ],
     ]);
     assert!(print_stdout(summary_table.table()).is_ok());
