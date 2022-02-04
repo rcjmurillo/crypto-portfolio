@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use reqwest::{header::HeaderMap, StatusCode};
 use tokio::sync::RwLock;
@@ -118,12 +118,13 @@ impl ApiClient {
                 }
                 Ok(resp_bytes)
             }
-            Err(err) => Err(err.into()),
+            Err(err) => Err(err),
         }
     }
 
     async fn validate_response(&self, resp: reqwest::Response) -> Result<reqwest::Response> {
-        match resp.status() {
+        let status = resp.status();
+        match status {
             StatusCode::OK => Ok(resp),
             StatusCode::INTERNAL_SERVER_ERROR => {
                 Err(anyhow!(resp.text().await?).context(ApiError::Internal))
@@ -134,9 +135,9 @@ impl ApiClient {
             StatusCode::UNAUTHORIZED => {
                 Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
             }
-            StatusCode::BAD_REQUEST => {
-                Err(anyhow!("bad request").context(ApiError::BadRequest { body: resp.text().await? }))
-            }
+            StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(ApiError::BadRequest {
+                body: resp.text().await?,
+            })),
             StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
             status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
                 status: status.into(),

@@ -1,6 +1,5 @@
-use std::{
-    fmt::{Debug, Display, Formatter, Result},
-};
+use std::fmt::{Debug, Display, Formatter, Result};
+use std::error::Error as StdError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -14,6 +13,6 @@ pub enum Error {
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{}", self)
+        write!(f, "{:?}", self)
     }
 }

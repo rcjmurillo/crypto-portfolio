@@ -41,7 +41,7 @@ pub struct Deposit {
 pub struct Withdraw {
     id: String,
     withdraw_order_id: Option<String>,
-    tx_id: String,
+    tx_id: Option<String>,
     address: String,
     status: u16,
     #[serde(with = "float_from_str")]

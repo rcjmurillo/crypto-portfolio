@@ -13,9 +13,9 @@ use crate::{
     ExchangeDataFetcher,
 };
 
-impl TryFrom<&ExchangeConfig> for Config {
+impl TryFrom<ExchangeConfig> for Config {
     type Error = Error;
-    fn try_from(c: &ExchangeConfig) -> Result<Self> {
+    fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
             start_date: c.start_date()?,
             symbols: c.symbols.clone(),
@@ -264,7 +264,7 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
         Ok(join_all(handles)
             .await
             .into_iter()
-            .map(|r| r.map_err(|e| e.into()))
+            .map(|r| r.map_err(|e| e))
             .collect::<Result<Vec<Vec<Fill>>>>()?
             .into_iter()
             .flatten()

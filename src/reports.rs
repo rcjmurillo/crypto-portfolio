@@ -3,12 +3,12 @@ use std::{cmp::Ordering, collections::HashMap};
 use anyhow::Result;
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
-use binance::BinanceGlobalFetcher;
+use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 use crate::operations::{AssetsInfo, BalanceTracker};
 
 pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
-    let binance_client = BinanceGlobalFetcher::new();
+    let binance_client = BinanceFetcher::<RegionGlobal>::new();
 
     let mut coin_balances = HashMap::<String, f64>::new();
 
@@ -25,16 +25,25 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
     let mut all_assets_value = 0f64;
 
     let all_prices: HashMap<String, f64> = binance_client
-        .base_fetcher
-        .fetch_all_prices()
+        .fetch_all_prices(&EndpointsGlobal::Prices.to_string())
         .await?
         .into_iter()
         .map(|x| (x.symbol, x.price))
         .collect();
 
+    let get_price = |symbol: &str| {
+        if symbol.starts_with("USD") {
+            1.0
+        } else {
+            *all_prices
+                .get(&(String::from(symbol) + "USDT"))
+                .expect(&format!("couldn't get price for {}", symbol))
+        }
+    };
+
     coin_balances.sort_by(|a, b| {
-        let price_a = all_prices.get(&(String::from(a.0) + "USDT")).unwrap();
-        let price_b = all_prices.get(&(String::from(b.0) + "USDT")).unwrap();
+        let price_a = get_price(a.0);
+        let price_b = get_price(b.0);
         match price_a * a.1 < price_b * b.1 {
             true => Ordering::Greater,
             false => Ordering::Less,
@@ -43,7 +52,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut table = Vec::new();
     for (coin, &amount) in coin_balances {
-        let price = all_prices.get(&(coin.clone() + "USDT")).unwrap();
+        let price = get_price(coin);
         // only compute a the current value for balances > 0
         let value = price * if amount > 0.0 { amount } else { 0.0 };
         all_assets_value += value;

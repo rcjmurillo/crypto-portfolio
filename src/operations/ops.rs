@@ -6,9 +6,9 @@ use tokio::sync::{mpsc, Mutex};
 
 use anyhow::anyhow;
 
-use binance::BinanceGlobalFetcher;
-
 use crate::errors::{Error};
+
+use binance::{BinanceFetcher, RegionGlobal, EndpointsGlobal};
 
 #[derive(Deserialize)]
 pub enum OperationStatus {
@@ -338,14 +338,14 @@ type PricesBucket = HashMap<u16, Vec<(u64, f64)>>;
 
 pub struct AssetPrices {
     prices: Mutex<HashMap<String, PricesBucket>>,
-    fetcher: BinanceGlobalFetcher,
+    fetcher: BinanceFetcher<RegionGlobal>,
 }
 
 impl AssetPrices {
     pub fn new() -> Self {
         Self {
             prices: Mutex::new(HashMap::new()),
-            fetcher: BinanceGlobalFetcher::new(),
+            fetcher: BinanceFetcher::<RegionGlobal>::new(),
         }
     }
 
@@ -385,8 +385,7 @@ impl AssetPrices {
         let start_ts = time - (time % bucket_size_millis);
         let end_ts = start_ts + bucket_size_millis;
         self.fetcher
-            .base_fetcher
-            .fetch_prices_in_range(symbol, start_ts, end_ts)
+            .fetch_prices_in_range(&EndpointsGlobal::Klines.to_string(), symbol, start_ts, end_ts)
             .await
     }
 
@@ -414,7 +413,7 @@ impl AssetsInfo for AssetPrices {
 
 async fn ops_from_fetcher<'a>(
     prefix: &'a str,
-    c: &Box<dyn ExchangeDataFetcher + Send + Sync>,
+    c: Box<dyn ExchangeDataFetcher + Send + Sync>,
 ) -> Vec<Operation> {
     let mut all_ops: Vec<Operation> = Vec::new();
     println!("[{}]> fetching trades...", prefix);
@@ -479,7 +478,7 @@ pub async fn fetch_ops<'a>(
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(name, &f).await {
+            for op in ops_from_fetcher(name, f).await {
                 match txc.send(op).await {
                     Ok(()) => (),
                     Err(err) => println!("could not send operation: {}", err),

@@ -9,7 +9,7 @@ use std::{convert::TryInto, sync::Arc};
 use anyhow::Result;
 use structopt::{self, StructOpt};
 
-use binance::{BinanceGlobalFetcher, BinanceUsFetcher};
+use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use crate::{
@@ -51,36 +51,30 @@ fn mk_fetchers(
     //     ));
     // }
 
-    let config_binance = config
-        .binance
-        .as_ref()
-        .and_then(|c| Some(c.try_into().unwrap()));
-    if let Some(config) = config_binance {
-        let binance_client = BinanceGlobalFetcher::with_config(config);
+    if let Some(conf) = config.binance.clone() {
+        let config_binance: Config = conf.try_into().unwrap();
+        let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
         fetchers.push((
             "Binance Global",
             Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ));
     }
 
-    let config_binance_us = config
-        .binance_us
-        .as_ref()
-        .and_then(|c| Some(c.try_into().unwrap()));
-    if let Some(config) = config_binance_us {
-        let binance_client_us = BinanceUsFetcher::with_config(config);
+    if let Some(conf) = config.binance_us.clone() {
+        let config_binance_us: Config = conf.try_into().unwrap();
+        let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
         fetchers.push((
             "Binance US",
             Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
         ));
     }
 
-    if let Some(file_fetcher) = file_fetcher {
-        fetchers.push((
-            "Custom Operations",
-            Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-        ));
-    }
+    // if let Some(file_fetcher) = file_fetcher {
+    //     fetchers.push((
+    //         "Custom Operations",
+    //         Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+    //     ));
+    // }
     fetchers
 }
 

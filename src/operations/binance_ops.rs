@@ -4,9 +4,10 @@ use std::{
 };
 
 use anyhow::anyhow;
+use futures::Future;
 
 use binance::{
-    BinanceGlobalFetcher, BinanceUsFetcher, Config, Deposit, FiatOrder, MarginLoan, MarginRepay,
+    BinanceFetcher, RegionGlobal, RegionUs, EndpointsGlobal, EndpointsUs, Config, Deposit, FiatOrder, MarginLoan, MarginRepay,
     Trade, Withdraw,
 };
 
@@ -23,9 +24,9 @@ use crate::{
     },
 };
 
-impl TryFrom<&ExchangeConfig> for Config {
+impl TryFrom<ExchangeConfig> for Config {
     type Error = AnyhowError;
-    fn try_from(c: &ExchangeConfig) -> Result<Self> {
+    fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
             start_date: c.start_date()?,
             symbols: c.symbols.clone(),
@@ -133,7 +134,7 @@ impl From<MarginRepay> for ops::Repay {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for BinanceGlobalFetcher {
+impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
     async fn operations(&self) -> Result<Vec<Operation>> {
         Ok(Vec::new())
     }
@@ -141,34 +142,42 @@ impl ExchangeDataFetcher for BinanceGlobalFetcher {
     async fn trades(&self) -> Result<Vec<ops::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
-            .base_fetcher
-            .fetch_exchange_symbols()
+            .fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string())
             .await?
             .into_iter()
             .map(|x| x.symbol)
             .collect();
 
+        let mut trades: Vec<Result<Vec<binance::Trade>>> = Vec::new();
+        let endpoint = EndpointsGlobal::Trades.to_string();
+
         let mut handles = Vec::new();
-        for symbol in self.base_fetcher.symbols().iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
-                handles.push(self.base_fetcher.fetch_trades(symbol.clone()));
+                handles.push(self.fetch_trades(&endpoint, symbol.clone()));
+                if handles.len() >= 10 {
+                    trades.extend(join_all(handles).await);
+                    handles = Vec::new();
+                }
             }
         }
-        flatten_results(join_all(handles).await)
+        if handles.len() > 0 {
+            trades.extend(join_all(handles).await);
+        }
+        flatten_results(trades)
     }
 
     async fn margin_trades(&self) -> Result<Vec<ops::Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
-            .base_fetcher
-            .fetch_exchange_symbols()
+            .fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string())
             .await?
             .into_iter()
             .map(|x| x.symbol)
             .collect();
 
         let mut handles = Vec::new();
-        for symbol in self.base_fetcher.symbols().iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 handles.push(self.fetch_margin_trades(symbol.clone()));
             }
@@ -178,11 +187,11 @@ impl ExchangeDataFetcher for BinanceGlobalFetcher {
 
     async fn loans(&self) -> Result<Vec<ops::Loan>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.base_fetcher.fetch_exchange_symbols().await?;
+        let exchange_symbols = self.fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string()).await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
 
         let mut processed_assets = HashSet::new();
-        for symbol in self.base_fetcher.symbols().iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
                 if !processed_assets.contains(&asset) {
@@ -199,11 +208,11 @@ impl ExchangeDataFetcher for BinanceGlobalFetcher {
 
     async fn repays(&self) -> Result<Vec<ops::Repay>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.base_fetcher.fetch_exchange_symbols().await?;
+        let exchange_symbols = self.fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string()).await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
 
         let mut processed_assets = HashSet::new();
-        for symbol in self.base_fetcher.symbols().iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
                 let (asset, _) = binance::symbol_into_assets(&symbol, &exchange_symbols);
                 if !processed_assets.contains(&asset) {
@@ -263,7 +272,7 @@ impl ExchangeDataFetcher for BinanceGlobalFetcher {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for BinanceUsFetcher {
+impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
     async fn operations(&self) -> Result<Vec<Operation>> {
         Ok(Vec::new())
     }
@@ -271,17 +280,17 @@ impl ExchangeDataFetcher for BinanceUsFetcher {
     async fn trades(&self) -> Result<Vec<ops::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
-            .base_fetcher
-            .fetch_exchange_symbols()
+            .fetch_exchange_symbols(&EndpointsUs::ExchangeInfo.to_string())
             .await?
             .into_iter()
             .map(|x| x.symbol)
             .collect();
 
+        let endpoint = EndpointsUs::Trades.to_string();
         let mut handles = Vec::new();
-        for symbol in self.base_fetcher.symbols().iter() {
+        for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol) {
-                handles.push(self.base_fetcher.fetch_trades(symbol.clone()));
+                handles.push(self.fetch_trades(&endpoint, symbol.clone()));
             }
         }
         flatten_results(join_all(handles).await)
@@ -343,12 +352,10 @@ impl ExchangeDataFetcher for BinanceUsFetcher {
 }
 
 #[async_trait]
-impl AssetsInfo for BinanceGlobalFetcher {
+impl AssetsInfo for BinanceFetcher<RegionGlobal> {
     async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
-        self.base_fetcher
-            .fetch_price_at(symbol, time)
-            .await
-            //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))
+        self.fetch_price_at(&EndpointsGlobal::Prices.to_string(), symbol, time).await
+        //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))
     }
 }
 
@@ -358,7 +365,6 @@ where
 {
     Ok(results
         .into_iter()
-        .map(|r| r.map_err(|e| e.into()))
         .collect::<Result<Vec<Vec<T>>>>()?
         .into_iter()
         .flatten()
