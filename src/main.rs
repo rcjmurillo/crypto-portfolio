@@ -6,7 +6,7 @@ mod reports;
 
 use std::{convert::TryInto, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use structopt::{self, StructOpt};
 
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
@@ -69,12 +69,12 @@ fn mk_fetchers(
         ));
     }
 
-    // if let Some(file_fetcher) = file_fetcher {
-    //     fetchers.push((
-    //         "Custom Operations",
-    //         Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-    //     ));
-    // }
+    if let Some(file_fetcher) = file_fetcher {
+        fetchers.push((
+            "Custom Operations",
+            Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+        ));
+    }
     fetchers
 }
 
@@ -94,7 +94,7 @@ pub async fn main() -> Result<()> {
         Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
             Ok(fetcher) => Some(fetcher),
             Err(err) => {
-                panic!("could not process file: {}", err);
+                return Err(anyhow!(err).context("could read config from file"));
             }
         },
         None => None,

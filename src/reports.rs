@@ -53,7 +53,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
     let mut table = Vec::new();
     for (coin, &amount) in coin_balances {
         let price = get_price(coin);
-        // only compute a the current value for balances > 0
+        // only compute the current value for balances > 0
         let value = price * if amount > 0.0 { amount } else { 0.0 };
         all_assets_value += value;
 

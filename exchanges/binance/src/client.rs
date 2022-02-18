@@ -509,13 +509,7 @@ impl BinanceFetcher<RegionGlobal> {
 
                 let Response { data } = self.from_json(&resp.as_ref()).await?;
                 if data.len() > 0 {
-                    orders.extend(data.into_iter().filter_map(|x| {
-                        if x.status == "Successful" {
-                            Some(x)
-                        } else {
-                            None
-                        }
-                    }));
+                    orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
                     current_page += 1;
                 } else {
                     break;
