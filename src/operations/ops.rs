@@ -1,14 +1,10 @@
-use anyhow::{Error as AnyhowError, Result};
+use anyhow::{Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::{collections::HashMap, vec::Vec};
 use tokio::sync::{mpsc, Mutex};
 
-use anyhow::anyhow;
-
-use crate::errors::{Error};
-
-use binance::{BinanceFetcher, RegionGlobal, EndpointsGlobal};
+use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 #[derive(Deserialize)]
 pub enum OperationStatus {
@@ -385,7 +381,12 @@ impl AssetPrices {
         let start_ts = time - (time % bucket_size_millis);
         let end_ts = start_ts + bucket_size_millis;
         self.fetcher
-            .fetch_prices_in_range(&EndpointsGlobal::Klines.to_string(), symbol, start_ts, end_ts)
+            .fetch_prices_in_range(
+                &EndpointsGlobal::Klines.to_string(),
+                symbol,
+                start_ts,
+                end_ts,
+            )
             .await
     }
 
@@ -473,7 +474,7 @@ async fn ops_from_fetcher<'a>(
 pub async fn fetch_ops<'a>(
     fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
 ) -> mpsc::Receiver<Operation> {
-    let (tx, rx) = mpsc::channel(1000);
+    let (tx, rx) = mpsc::channel(10000);
 
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
