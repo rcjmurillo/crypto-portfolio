@@ -22,7 +22,7 @@ fn mk_fetchers(
     config: &cli::Config,
     file_fetcher: Option<FileDataFetcher>,
 ) -> Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> {
-    let mut fetchers = Vec::new();
+    let mut fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> = Vec::new();
 
     // coinbase exchange disabled because it doesn't provide the full set of
     // operations and fees when converting coins.
@@ -56,7 +56,7 @@ fn mk_fetchers(
         let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
         fetchers.push((
             "Binance Global",
-            Box::new(binance_client) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            Box::new(binance_client),
         ));
     }
 
@@ -65,14 +65,14 @@ fn mk_fetchers(
         let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
         fetchers.push((
             "Binance US",
-            Box::new(binance_client_us) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            Box::new(binance_client_us),
         ));
     }
 
     if let Some(file_fetcher) = file_fetcher {
         fetchers.push((
             "Custom Operations",
-            Box::new(file_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            Box::new(file_fetcher),
         ));
     }
     fetchers
