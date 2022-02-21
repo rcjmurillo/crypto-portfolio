@@ -13,23 +13,19 @@ use toml;
 
 use crate::errors::Error;
 
-pub enum PorfolioAction {
-    Balances,
-}
-
-impl TryFrom<&str> for PorfolioAction {
+impl TryFrom<&str> for PortfolioAction {
     type Error = anyhow::Error;
 
-    fn try_from(s: &str) -> Result<PorfolioAction> {
-        if s == "balances" {
-            Ok(PorfolioAction::Balances)
-        } else {
-            Err(anyhow!("Invalid action".to_string()).context(Error::Cli))
+    fn try_from(s: &str) -> Result<PortfolioAction> {
+        match s {
+            "balances" => Ok(PortfolioAction::Balances),
+            "fetch-operations" => Ok(PortfolioAction::FetchOperations),
+            _ => Err(anyhow!("Invalid action".to_string()).context(Error::Cli))
         }
     }
 }
 
-fn validate_porfolio_action(action: &str) -> Result<PorfolioAction> {
+fn validate_portfolio_action(action: &str) -> Result<PortfolioAction> {
     action.try_into()
 }
 
@@ -84,13 +80,18 @@ impl Config {
     }
 }
 
+pub enum PortfolioAction {
+    Balances,
+    FetchOperations,
+}
+
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
 pub enum Args {
     Portfolio {
-        /// Action to run, one of: balances
-        #[structopt(parse(try_from_str = validate_porfolio_action))]
-        action: PorfolioAction,
+        /// Action to run
+        #[structopt(parse(try_from_str = validate_portfolio_action))]
+        action: PortfolioAction,
         /// Configuration file
         #[structopt(short, long, parse(try_from_os_str = read_config_file))]
         config: Config,

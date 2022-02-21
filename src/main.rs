@@ -1,5 +1,6 @@
 mod cli;
 mod custom_ops;
+mod db;
 mod errors;
 mod operations;
 mod reports;
@@ -13,9 +14,12 @@ use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use crate::{
-    cli::Args,
+    cli::{Args, PortfolioAction},
     custom_ops::FileDataFetcher,
-    operations::{fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher},
+    db::{create_tables, get_operations, Operation as DbOperation},
+    operations::{
+        fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, Operation, OperationsFlusher,
+    },
 };
 
 fn mk_fetchers(
@@ -54,60 +58,69 @@ fn mk_fetchers(
     if let Some(conf) = config.binance.clone() {
         let config_binance: Config = conf.try_into().unwrap();
         let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-        fetchers.push((
-            "Binance Global",
-            Box::new(binance_client),
-        ));
+        fetchers.push(("Binance Global", Box::new(binance_client)));
     }
 
     if let Some(conf) = config.binance_us.clone() {
         let config_binance_us: Config = conf.try_into().unwrap();
         let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-        fetchers.push((
-            "Binance US",
-            Box::new(binance_client_us),
-        ));
+        fetchers.push(("Binance US", Box::new(binance_client_us)));
     }
 
     if let Some(file_fetcher) = file_fetcher {
-        fetchers.push((
-            "Custom Operations",
-            Box::new(file_fetcher),
-        ));
+        fetchers.push(("Custom Operations", Box::new(file_fetcher)));
     }
     fetchers
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
+    env_logger::init();
+
+    create_tables()?;
+
     let args = Args::from_args();
 
     let Args::Portfolio {
         config,
-        action: _,
+        action,
         ops_file,
     } = args;
-    let mut coin_tracker = BalanceTracker::new(AssetPrices::new());
 
-    let config = Arc::new(config);
-    let file_fetcher = match ops_file {
-        Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
-            Ok(fetcher) => Some(fetcher),
-            Err(err) => {
-                return Err(anyhow!(err).context("could read config from file"));
+    match action {
+        PortfolioAction::Balances => {
+            let mut coin_tracker = BalanceTracker::new(AssetPrices::new());
+            let ops = get_operations()?
+                .into_iter()
+                .map(|o: DbOperation| o.try_into())
+                .collect::<Result<Vec<Operation>>>()?;
+
+            for op in ops {
+                coin_tracker.track_operation(op).await?;
             }
-        },
-        None => None,
-    };
 
-    let mut s = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
+            reports::asset_balances(&coin_tracker).await?;
+            println!();
+        }
+        PortfolioAction::FetchOperations => {
+            let config = Arc::new(config);
+            let file_fetcher = match ops_file {
+                Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
+                    Ok(fetcher) => Some(fetcher),
+                    Err(err) => {
+                        return Err(anyhow!(err).context("could read config from file"));
+                    }
+                },
+                None => None,
+            };
 
-    while let Some(op) = s.recv().await {
-        coin_tracker.track_operation(op).await?;
+            let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
+            let mut flusher = OperationsFlusher::with_receiver(receiver);
+            flusher.receive().await?;
+
+            log::info!("fetch done!");
+        }
     }
-
-    reports::asset_balances(&coin_tracker).await?;
-    println!();
 
     Ok(())
 }

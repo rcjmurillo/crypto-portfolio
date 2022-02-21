@@ -1,9 +1,12 @@
-use anyhow::{Result};
+use std::collections::HashMap;
+use std::convert::{TryFrom, TryInto};
+
+use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::{collections::HashMap, vec::Vec};
 use tokio::sync::{mpsc, Mutex};
 
+use crate::db::{insert_operations, Operation as DbOperation};
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 #[derive(Deserialize)]
@@ -254,6 +257,79 @@ pub enum Operation {
     },
 }
 
+impl Into<DbOperation> for Operation {
+    fn into(self) -> DbOperation {
+        match self {
+            Operation::Cost {
+                asset,
+                amount,
+                time,
+            } => DbOperation {
+                // source_id: "todo".to_string(),
+                op_type: "cost".to_string(),
+                asset,
+                amount,
+                timestamp: Some(time as u32),
+            },
+            Operation::Revenue {
+                asset,
+                amount,
+                time,
+            } => DbOperation {
+                // source_id: "todo".to_string(),
+                op_type: "revenue".to_string(),
+                asset,
+                amount,
+                timestamp: Some(time as u32),
+            },
+            Operation::BalanceIncrease { asset, amount } => DbOperation {
+                // source_id: "todo".to_string(),
+                op_type: "balance_increase".to_string(),
+                asset,
+                amount,
+                timestamp: None,
+            },
+            Operation::BalanceDecrease { asset, amount } => DbOperation {
+                // source_id: "todo".to_string(),
+                op_type: "balance_decrease".to_string(),
+                asset,
+                amount,
+                timestamp: None,
+            },
+        }
+    }
+}
+
+impl TryFrom<DbOperation> for Operation {
+    type Error = Error;
+
+    fn try_from(op: DbOperation) -> Result<Operation> {
+        match op.op_type.as_str() {
+            "cost" => Ok(Operation::Cost {
+                asset: op.asset,
+                amount: op.amount,
+                time: op.timestamp.expect("missing timestamp in cost operation") as u64,
+            }),
+            "revenue" => Ok(Operation::Revenue {
+                asset: op.asset,
+                amount: op.amount,
+                time: op
+                    .timestamp
+                    .expect("missing timestamp in revenue operation") as u64,
+            }),
+            "balance_increase" => Ok(Operation::BalanceIncrease {
+                asset: op.asset,
+                amount: op.amount,
+            }),
+            "balance_decrease" => Ok(Operation::BalanceDecrease {
+                asset: op.asset,
+                amount: op.amount,
+            }),
+            _ => Err(anyhow!("couldn't convert db operation into operation")),
+        }
+    }
+}
+
 pub struct BalanceTracker<T: AssetsInfo> {
     coin_balances: HashMap<String, AssetBalance>,
     asset_info: T,
@@ -328,6 +404,52 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     }
 }
 
+const OPS_RECEIVE_BATCH_SIZE: usize = 1000;
+
+pub struct OperationsFlusher {
+    receiver: mpsc::Receiver<Operation>,
+}
+
+impl OperationsFlusher {
+    pub fn with_receiver(receiver: mpsc::Receiver<Operation>) -> Self {
+        Self { receiver }
+    }
+
+    pub async fn receive(&mut self) -> Result<()> {
+        let mut batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
+        let mut num_ops = 0;
+        while let Some(op) = self.receiver.recv().await {
+            batch.push(op);
+            if batch.len() == OPS_RECEIVE_BATCH_SIZE {
+                self.flush(batch)?;
+                batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
+                num_ops += OPS_RECEIVE_BATCH_SIZE;
+            }
+        }
+
+        let r = if batch.len() > 0 {
+            num_ops += batch.len();
+            self.flush(batch)
+        } else {
+            Ok(())
+        };
+        log::info!("fetched {} operations", num_ops);
+        r
+    }
+
+    fn flush(&self, batch: Vec<Operation>) -> Result<()> {
+        let batch_size = batch.len();
+        insert_operations(
+            batch
+                .into_iter()
+                .filter_map(|op| op.try_into().map_or(None, |op: DbOperation| Some(op)))
+                .collect(),
+        )?;
+        log::debug!("flushed {} operations into db", batch_size);
+        Ok(())
+    }
+}
+
 // stores a map of buckets to prices, buckets are periods of time
 // defined by how the key is computed.
 type PricesBucket = HashMap<u16, Vec<(u64, f64)>>;
@@ -380,6 +502,7 @@ impl AssetPrices {
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let start_ts = time - (time % bucket_size_millis);
         let end_ts = start_ts + bucket_size_millis;
+        println!("fetching prices for {} time={} start={} end={}", symbol, time, start_ts, end_ts);
         self.fetcher
             .fetch_prices_in_range(
                 &EndpointsGlobal::Klines.to_string(),
@@ -417,7 +540,7 @@ async fn ops_from_fetcher<'a>(
     c: Box<dyn ExchangeDataFetcher + Send + Sync>,
 ) -> Vec<Operation> {
     let mut all_ops: Vec<Operation> = Vec::new();
-    println!("[{}]> fetching trades...", prefix);
+    log::info!("[{}] fetching trades...", prefix);
     all_ops.extend(
         c.trades()
             .await
@@ -425,7 +548,7 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching margin trades...", prefix);
+    log::info!("[{}] fetching margin trades...", prefix);
     all_ops.extend(
         c.margin_trades()
             .await
@@ -433,7 +556,7 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching loans...", prefix);
+    log::info!("[{}] fetching loans...", prefix);
     all_ops.extend(
         c.loans()
             .await
@@ -441,7 +564,7 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching repays...", prefix);
+    log::info!("[{}] fetching repays...", prefix);
     all_ops.extend(
         c.repays()
             .await
@@ -449,7 +572,7 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching deposits...", prefix);
+    log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
         c.deposits()
             .await
@@ -457,7 +580,7 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching withdraws...", prefix);
+    log::info!("[{}] fetching withdraws...", prefix);
     all_ops.extend(
         c.withdraws()
             .await
@@ -465,9 +588,9 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    println!("[{}]> fetching operations...", prefix);
+    log::info!("[{}] fetching operations...", prefix);
     all_ops.extend(c.operations().await.unwrap());
-    println!("[{}]> ALL DONE!!!", prefix);
+    log::info!("[{}] ALL DONE!!!", prefix);
     all_ops
 }
 
