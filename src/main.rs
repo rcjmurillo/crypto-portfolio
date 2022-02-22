@@ -8,6 +8,7 @@ mod reports;
 use std::{convert::TryInto, sync::Arc};
 
 use anyhow::{anyhow, Result};
+use futures::future::join_all;
 use structopt::{self, StructOpt};
 
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
@@ -18,7 +19,7 @@ use crate::{
     custom_ops::FileDataFetcher,
     db::{create_tables, get_operations, Operation as DbOperation},
     operations::{
-        fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, Operation, OperationsFlusher,
+        fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, OperationsFlusher,
     },
 };
 
@@ -89,15 +90,28 @@ pub async fn main() -> Result<()> {
 
     match action {
         PortfolioAction::Balances => {
-            let mut coin_tracker = BalanceTracker::new(AssetPrices::new());
+            let coin_tracker = BalanceTracker::new(AssetPrices::new());
             let ops = get_operations()?
                 .into_iter()
-                .map(|o: DbOperation| o.try_into())
-                .collect::<Result<Vec<Operation>>>()?;
+                .map(|o: DbOperation| o.try_into());
 
+            // let mut handles = Vec::new();
+            // let coin_tracker = Arc::new(coin_tracker);
             for op in ops {
-                coin_tracker.track_operation(op).await?;
+                // let ct = Arc::clone(&coin_tracker);
+                // handles.push(tokio::spawn(async move {
+                    // handles.push(coin_tracker.track_operation(op));
+                    if let Err(err) = coin_tracker.track_operation(op?).await {
+                        log::error!("couldn't process operation: {:?}", err);
+                    }
+                // }));
             }
+
+            // join_all(handles)
+            //     .await
+            //     .into_iter()
+            //     .map(|e| e.map_err(|err| anyhow!(err).context("")))
+            //     .collect::<Result<()>>()?;
 
             reports::asset_balances(&coin_tracker).await?;
             println!();

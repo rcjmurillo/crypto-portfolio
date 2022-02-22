@@ -1,5 +1,5 @@
 use crate::client::Identifiable;
-use chrono::{NaiveDateTime, DateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 fn default_buy() -> TransactionSide {
@@ -84,11 +84,11 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn update_time(&self) -> NaiveDateTime {
+    pub fn update_time(&self) -> DateTime<Utc> {
         self.updated_at.parse::<DateTime<Utc>>().expect(&format!(
             "couldn't parse updated_at time '{}'",
             self.updated_at
-        )).naive_utc()
+        ))
     }
 }
 

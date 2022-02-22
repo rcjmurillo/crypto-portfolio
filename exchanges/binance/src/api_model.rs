@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 fn default_currency_usd() -> String {
@@ -21,7 +22,8 @@ pub struct FiatOrder {
     pub platform_fee: f64,
     #[serde(alias = "orderStatus")]
     pub status: String,
-    pub update_time: Option<u64>,
+    #[serde(with = "datetime_from_str")]
+    pub create_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -33,7 +35,7 @@ pub struct Deposit {
     pub coin: String,
     pub status: u8,
     #[serde(with = "datetime_from_str")]
-    pub insert_time: u64,
+    pub insert_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -51,7 +53,7 @@ pub struct Withdraw {
     #[serde(alias = "asset")]
     pub coin: String,
     #[serde(with = "datetime_from_str", alias = "apply_time")]
-    pub apply_time: u64,
+    pub apply_time: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -67,7 +69,8 @@ pub struct Trade {
     #[serde(with = "float_from_str")]
     pub commission: f64,
     pub commission_asset: String,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub is_buyer: bool,
 
     // computed
@@ -84,7 +87,8 @@ pub struct MarginLoan {
     pub asset: String,
     #[serde(with = "float_from_str")]
     pub principal: f64,
-    pub timestamp: u64,
+    #[serde(with = "datetime_from_str")]
+    pub timestamp: DateTime<Utc>,
     pub status: String,
 }
 
@@ -100,7 +104,8 @@ pub struct MarginRepay {
     #[serde(with = "float_from_str")]
     pub interest: f64,
     pub status: String,
-    pub timestamp: u64,
+    #[serde(with = "datetime_from_str")]
+    pub timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -140,29 +145,26 @@ pub(crate) mod float_from_str {
 }
 
 pub(crate) mod datetime_from_str {
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
     use serde::{de, Deserialize, Deserializer};
-    use std::convert::TryInto;
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum TimestampOrString {
-            Timestamp(u64),
+            Timestamp(i64),
             String(String),
         }
 
-        match TimestampOrString::deserialize(deserializer)? {
-            TimestampOrString::Timestamp(ts) => Ok(ts),
-            TimestampOrString::String(s) => {
-                match Utc.datetime_from_str(&s, "%Y-%m-%d %H:%M:%S") {
-                    Ok(dt) => dt.timestamp_millis().try_into().map_err(de::Error::custom),
-                    Err(err) => Err(de::Error::custom(err)),
-                }
-            }
-        }
+        Ok(match TimestampOrString::deserialize(deserializer)? {
+            // timestamps from the API are in milliseconds
+            TimestampOrString::Timestamp(ts) => Utc.timestamp_millis(ts),
+            TimestampOrString::String(s) => Utc
+                .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                .map_err(de::Error::custom)?,
+        })
     }
 }

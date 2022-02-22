@@ -3,7 +3,7 @@ use std::{env, fmt, marker::PhantomData, sync::Arc};
 use anyhow::{anyhow, Error, Result};
 
 use bytes::Bytes;
-use chrono::{Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, Utc, DateTime};
 use futures::future::join_all;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
@@ -222,7 +222,8 @@ impl<Region> BinanceFetcher<Region> {
         self.from_json(resp.as_ref()).await
     }
 
-    pub async fn fetch_price_at(&self, endpoint: &str, symbol: &str, time: u64) -> Result<f64> {
+    pub async fn fetch_price_at(&self, endpoint: &str, symbol: &str, datetime: DateTime<Utc>) -> Result<f64> {
+        let time = datetime.timestamp_millis();
         let start_time = time - 30 * 60 * 1000;
         let end_time = time + 30 * 60 * 1000;
 
@@ -340,32 +341,6 @@ impl<Region> BinanceFetcher<Region> {
         }
         all_prices.sort_by_key(|x| x.0);
         Ok(all_prices)
-    }
-
-    async fn fetch_usd_prices_in_range(
-        &self,
-        endpoint: &str,
-        asset: &str,
-        start_ts: u64,
-        end_ts: u64,
-    ) -> Result<Vec<(u64, f64)>> {
-        let (first, second) = ("USDT", "USD");
-        match self
-            .fetch_prices_in_range(endpoint, &format!("{}{}", asset, first), start_ts, end_ts)
-            .await
-        {
-            Ok(p) => Ok(p),
-            Err(_) => {
-                // retry with the other one
-                self.fetch_prices_in_range(
-                    endpoint,
-                    &format!("{}{}", asset, second),
-                    start_ts,
-                    end_ts,
-                )
-                .await
-            }
-        }
     }
 
     async fn fetch_trades_from_endpoint(

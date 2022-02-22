@@ -3,10 +3,13 @@ use std::convert::{TryFrom, TryInto};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
-use crate::db::{insert_operations, Operation as DbOperation};
+use crate::db::{
+    get_asset_price_bucket, insert_asset_price_bucket, insert_operations, Operation as DbOperation,
+};
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 #[derive(Deserialize)]
@@ -35,7 +38,7 @@ pub trait ExchangeDataFetcher {
 
 #[async_trait]
 pub trait AssetsInfo {
-    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64>;
+    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -45,7 +48,7 @@ pub enum TradeSide {
     Sell,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Trade {
     pub symbol: String,
     pub base_asset: String,
@@ -54,7 +57,8 @@ pub struct Trade {
     pub price: f64,
     pub fee: f64,
     pub fee_asset: String,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub side: TradeSide,
 }
 
@@ -122,7 +126,8 @@ impl Into<Vec<Operation>> for Trade {
 pub struct Deposit {
     pub asset: String,
     pub amount: f64,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub fee: Option<f64>,
     pub is_fiat: bool,
 }
@@ -154,7 +159,8 @@ impl Into<Vec<Operation>> for Deposit {
 pub struct Withdraw {
     pub asset: String,
     pub amount: f64,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub fee: f64,
 }
 
@@ -178,10 +184,12 @@ impl Into<Vec<Operation>> for Withdraw {
     }
 }
 
+#[derive(Deserialize)]
 pub struct Loan {
     pub asset: String,
     pub amount: f64,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub status: OperationStatus,
 }
 
@@ -204,7 +212,8 @@ pub struct Repay {
     pub asset: String,
     pub amount: f64,
     pub interest: f64,
-    pub time: u64,
+    #[serde(with = "datetime_from_str")]
+    pub time: DateTime<Utc>,
     pub status: OperationStatus,
 }
 
@@ -248,12 +257,12 @@ pub enum Operation {
     Cost {
         asset: String,
         amount: f64,
-        time: u64,
+        time: DateTime<Utc>,
     },
     Revenue {
         asset: String,
         amount: f64,
-        time: u64,
+        time: DateTime<Utc>,
     },
 }
 
@@ -269,7 +278,7 @@ impl Into<DbOperation> for Operation {
                 op_type: "cost".to_string(),
                 asset,
                 amount,
-                timestamp: Some(time as u32),
+                timestamp: Some(time),
             },
             Operation::Revenue {
                 asset,
@@ -280,7 +289,7 @@ impl Into<DbOperation> for Operation {
                 op_type: "revenue".to_string(),
                 asset,
                 amount,
-                timestamp: Some(time as u32),
+                timestamp: Some(time),
             },
             Operation::BalanceIncrease { asset, amount } => DbOperation {
                 // source_id: "todo".to_string(),
@@ -308,14 +317,14 @@ impl TryFrom<DbOperation> for Operation {
             "cost" => Ok(Operation::Cost {
                 asset: op.asset,
                 amount: op.amount,
-                time: op.timestamp.expect("missing timestamp in cost operation") as u64,
+                time: op.timestamp.expect("missing timestamp in cost operation"),
             }),
             "revenue" => Ok(Operation::Revenue {
                 asset: op.asset,
                 amount: op.amount,
                 time: op
                     .timestamp
-                    .expect("missing timestamp in revenue operation") as u64,
+                    .expect("missing timestamp in revenue operation"),
             }),
             "balance_increase" => Ok(Operation::BalanceIncrease {
                 asset: op.asset,
@@ -331,26 +340,27 @@ impl TryFrom<DbOperation> for Operation {
 }
 
 pub struct BalanceTracker<T: AssetsInfo> {
-    coin_balances: HashMap<String, AssetBalance>,
+    coin_balances: RwLock<HashMap<String, AssetBalance>>,
     asset_info: T,
 }
 
 impl<T: AssetsInfo> BalanceTracker<T> {
     pub fn new(asset_info: T) -> Self {
         BalanceTracker {
-            coin_balances: HashMap::new(),
+            coin_balances: RwLock::new(HashMap::new()),
             asset_info,
         }
     }
 
-    pub async fn track_operation(&mut self, op: Operation) -> Result<()> {
+    pub async fn track_operation(&self, op: Operation) -> Result<()> {
         match op {
             Operation::BalanceIncrease { asset, amount } => {
                 assert!(
                     amount >= 0.0,
                     "balance increase operation amount can't be negative"
                 );
-                let coin_balance = self.coin_balances.entry(asset).or_default();
+                let mut bal = self.coin_balances.write().await;
+                let coin_balance = bal.entry(asset).or_default();
                 coin_balance.amount += amount;
             }
             Operation::BalanceDecrease { asset, amount } => {
@@ -358,7 +368,8 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     amount >= 0.0,
                     "balance decrease operation amount can't be negative"
                 );
-                let coin_balance = self.coin_balances.entry(asset).or_default();
+                let mut bal = self.coin_balances.write().await;
+                let coin_balance = bal.entry(asset).or_default();
                 coin_balance.amount -= amount;
             }
             Operation::Cost {
@@ -373,7 +384,8 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                         .price_at(&format!("{}USDT", asset), time)
                         .await?
                 };
-                let coin_balance = self.coin_balances.entry(asset).or_default();
+                let mut bal = self.coin_balances.write().await;
+                let coin_balance = bal.entry(asset).or_default();
                 coin_balance.usd_position += -amount * usd_price;
             }
             Operation::Revenue {
@@ -388,19 +400,30 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                         .price_at(&format!("{}USDT", asset), time)
                         .await?
                 };
-                let coin_balance = self.coin_balances.entry(asset).or_default();
+                let mut bal = self.coin_balances.write().await;
+                let coin_balance = bal.entry(asset).or_default();
                 coin_balance.usd_position += amount * usd_price;
             }
         }
         Ok(())
     }
 
-    pub fn get_balance(&self, asset: &str) -> Option<&AssetBalance> {
-        self.coin_balances.get(asset)
+    pub async fn get_balance(&self, asset: &str) -> Option<AssetBalance> {
+        self.coin_balances
+            .read()
+            .await
+            .get(asset)
+            .clone()
+            .map(|v| v.clone())
     }
 
-    pub fn balances(&self) -> Vec<(&String, &AssetBalance)> {
-        self.coin_balances.iter().collect()
+    pub async fn balances(&self) -> Vec<(String, AssetBalance)> {
+        self.coin_balances
+            .read()
+            .await
+            .clone()
+            .into_iter()
+            .collect()
     }
 }
 
@@ -450,48 +473,38 @@ impl OperationsFlusher {
     }
 }
 
-// stores a map of buckets to prices, buckets are periods of time
-// defined by how the key is computed.
-type PricesBucket = HashMap<u16, Vec<(u64, f64)>>;
-
+/// stores buckets to prices in the db, buckets are periods of time
+/// defined by number of days of span.
 pub struct AssetPrices {
-    prices: Mutex<HashMap<String, PricesBucket>>,
     fetcher: BinanceFetcher<RegionGlobal>,
 }
 
 impl AssetPrices {
     pub fn new() -> Self {
         Self {
-            prices: Mutex::new(HashMap::new()),
             fetcher: BinanceFetcher::<RegionGlobal>::new(),
         }
     }
 
-    async fn asset_price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+    async fn asset_price_at(&self, symbol: &str, datetime: DateTime<Utc>) -> Result<f64> {
         // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
         // Once made sure the data for the bucket is in the map use it to
         // determine the price of the symbol at `time`.
+        let time = datetime.timestamp_millis().try_into()?;
         let period_days = 180;
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size_millis) as u16;
-        // fixme: use different locks for checking and updating the map.
-        let mut prices = self.prices.lock().await;
-        if !prices.contains_key(symbol) {
-            let symbol_prices = self.fetch_prices_for(symbol, time).await?;
-            let mut prices_bucket = PricesBucket::new();
-            prices_bucket.insert(bucket, symbol_prices);
-            prices.insert(symbol.to_string(), prices_bucket);
-        }
 
-        let prices_bucket = prices.get_mut(symbol).unwrap();
-        if !prices_bucket.contains_key(&bucket) {
+        if let Some(prices) = get_asset_price_bucket(bucket, symbol)? {
+            Ok(self.find_price_at(&prices, time))
+        } else {
             let symbol_prices = self.fetch_prices_for(symbol, time).await?;
-            prices_bucket.insert(bucket, symbol_prices);
+            let price = self.find_price_at(&symbol_prices, time);
+            insert_asset_price_bucket(bucket, symbol, symbol_prices)?;
+            Ok(price)
         }
-
-        Ok(self.find_price_at(prices_bucket.get(&bucket).unwrap(), time))
     }
 
     async fn fetch_prices_for(&self, symbol: &str, time: u64) -> Result<Vec<(u64, f64)>> {
@@ -502,7 +515,6 @@ impl AssetPrices {
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let start_ts = time - (time % bucket_size_millis);
         let end_ts = start_ts + bucket_size_millis;
-        println!("fetching prices for {} time={} start={} end={}", symbol, time, start_ts, end_ts);
         self.fetcher
             .fetch_prices_in_range(
                 &EndpointsGlobal::Klines.to_string(),
@@ -530,7 +542,7 @@ impl AssetPrices {
 
 #[async_trait]
 impl AssetsInfo for AssetPrices {
-    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
+    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64> {
         self.asset_price_at(symbol, time).await
     }
 }
@@ -614,6 +626,34 @@ pub async fn fetch_ops<'a>(
     rx
 }
 
+pub(crate) mod datetime_from_str {
+    use chrono::{DateTime, TimeZone, Utc};
+    use serde::{de, Deserialize, Deserializer};
+    use std::convert::TryInto;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum TimestampOrString {
+            Timestamp(u64),
+            String(String),
+        }
+
+        match TimestampOrString::deserialize(deserializer)? {
+            // timestamps from the API are in milliseconds
+            TimestampOrString::Timestamp(ts) => {
+                Ok(Utc.timestamp_millis(ts.try_into().map_err(de::Error::custom)?))
+            }
+            TimestampOrString::String(s) => Utc
+                .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                .map_err(de::Error::custom),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,7 +668,7 @@ mod tests {
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
-            time: 123,
+            time: Utc::now(),
             side: TradeSide::Buy,
         };
 
@@ -648,7 +688,7 @@ mod tests {
             Operation::Cost {
                 asset: "DOT".into(),
                 amount: 3.0,
-                time: 123
+                time: Utc::now()
             }
         );
         assert_eq!(
@@ -663,7 +703,7 @@ mod tests {
             Operation::Revenue {
                 asset: "ETH".into(),
                 amount: 1.5,
-                time: 123
+                time: Utc::now()
             }
         );
         assert_eq!(
@@ -678,7 +718,7 @@ mod tests {
             Operation::Cost {
                 asset: "ETH".into(),
                 amount: 0.01,
-                time: 123
+                time: Utc::now()
             }
         );
     }
@@ -693,7 +733,7 @@ mod tests {
             amount: 3.0,
             fee: 0.01,
             fee_asset: "XCOIN".into(),
-            time: 123,
+            time: Utc::now(),
             side: TradeSide::Sell,
         };
 
@@ -713,7 +753,7 @@ mod tests {
             Operation::Revenue {
                 asset: "DOT".into(),
                 amount: 3.0,
-                time: 123,
+                time: Utc::now(),
             }
         );
         assert_eq!(
@@ -728,7 +768,7 @@ mod tests {
             Operation::Cost {
                 asset: "ETH".into(),
                 amount: 1.5,
-                time: 123
+                time: Utc::now()
             }
         );
         assert_eq!(
@@ -743,7 +783,7 @@ mod tests {
             Operation::Cost {
                 asset: "XCOIN".into(),
                 amount: 0.01,
-                time: 123,
+                time: Utc::now(),
             }
         );
     }
@@ -760,7 +800,7 @@ mod tests {
                 amount: 3.0,
                 fee: fee_amount,
                 fee_asset: fee_asset.to_string(),
-                time: 123,
+                time: Utc::now(),
                 side: TradeSide::Buy,
             };
             let ops: Vec<Operation> = t.into();
@@ -778,7 +818,7 @@ mod tests {
                 Operation::Cost {
                     asset: "DOT".into(),
                     amount: 3.0,
-                    time: 123
+                    time: Utc::now()
                 }
             );
             assert_eq!(
@@ -793,7 +833,7 @@ mod tests {
                 Operation::Revenue {
                     asset: "ETH".into(),
                     amount: 1.5,
-                    time: 123
+                    time: Utc::now()
                 }
             );
         }
@@ -801,17 +841,28 @@ mod tests {
 
     #[tokio::test]
     async fn track_operations() -> Result<()> {
-        struct TestAssetInfo {}
+        struct TestAssetInfo {
+            prices: Mutex<Vec<f64>>,
+        }
 
-        #[async_trait]
-        impl AssetsInfo for TestAssetInfo {
-            async fn price_at(&self, _symbol: &str, time: u64) -> Result<f64> {
-                let prices = vec![8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0];
-                Ok(prices[(time - 1) as usize])
+        impl TestAssetInfo {
+            fn new() -> Self {
+                Self {
+                    prices: Mutex::new(vec![
+                        8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0,
+                    ]),
+                }
             }
         }
 
-        let mut coin_tracker = BalanceTracker::new(TestAssetInfo {});
+        #[async_trait]
+        impl AssetsInfo for TestAssetInfo {
+            async fn price_at(&self, _symbol: &str, time: DateTime<Utc>) -> Result<f64> {
+                Ok(self.prices.lock().await.remove(0))
+            }
+        }
+
+        let mut coin_tracker = BalanceTracker::new(TestAssetInfo::new());
         let ops = vec![
             Operation::BalanceIncrease {
                 asset: "BTCUSD".into(),
@@ -820,7 +871,7 @@ mod tests {
             Operation::Cost {
                 asset: "BTCUSD".into(),
                 amount: 0.03,
-                time: 1,
+                time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 asset: "BTCUSD".into(),
@@ -829,7 +880,7 @@ mod tests {
             Operation::Cost {
                 asset: "BTCUSD".into(),
                 amount: 0.1,
-                time: 2,
+                time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 asset: "ETHUSD".into(),
@@ -838,7 +889,7 @@ mod tests {
             Operation::Cost {
                 asset: "ETHUSD".into(),
                 amount: 0.5,
-                time: 3,
+                time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 asset: "ETHUSD".into(),
@@ -847,7 +898,7 @@ mod tests {
             Operation::Cost {
                 asset: "ETHUSD".into(),
                 amount: 0.01,
-                time: 4,
+                time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 asset: "ETHUSD".into(),
@@ -856,7 +907,7 @@ mod tests {
             Operation::Revenue {
                 asset: "ETHUSD".into(),
                 amount: 0.2,
-                time: 5,
+                time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 asset: "DOTUSD".into(),
@@ -865,7 +916,7 @@ mod tests {
             Operation::Cost {
                 asset: "DOTUSD".into(),
                 amount: 0.5,
-                time: 6,
+                time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 asset: "DOTUSD".into(),
@@ -874,7 +925,7 @@ mod tests {
             Operation::Revenue {
                 asset: "DOTUSD".into(),
                 amount: 0.1,
-                time: 7,
+                time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 asset: "DOTUSD".into(),
@@ -883,7 +934,7 @@ mod tests {
             Operation::Revenue {
                 asset: "DOTUSD".into(),
                 amount: 0.2,
-                time: 8,
+                time: Utc::now(),
             },
         ];
 
@@ -917,7 +968,7 @@ mod tests {
 
         expected.sort_by_key(|x| x.0.clone());
 
-        let mut balances = coin_tracker.balances();
+        let mut balances = coin_tracker.balances().await;
         balances.sort_by_key(|x| x.0.clone());
 
         for ((asset_a, balance_a), (asset_b, balance_b)) in expected.iter().zip(balances.iter()) {

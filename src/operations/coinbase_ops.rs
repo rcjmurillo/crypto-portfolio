@@ -49,10 +49,7 @@ impl Into<ops::Trade> for Fill {
             time: self
                 .created_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", self.created_at))
-                .timestamp_millis()
-                .try_into()
-                .unwrap(),
+                .expect(&format!("couldn't parse time '{}'", self.created_at)),
             side: match self.side.as_str() {
                 "buy" => ops::TradeSide::Buy,
                 "sell" => ops::TradeSide::Sell,
@@ -80,10 +77,7 @@ impl Into<ops::Deposit> for Transaction {
             ),
             time: payout_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", payout_at))
-                .timestamp_millis()
-                .try_into()
-                .unwrap(),
+                .expect(&format!("couldn't parse time '{}'", payout_at)),
             is_fiat: true,
         }
     }
@@ -106,10 +100,7 @@ impl Into<ops::Withdraw> for Transaction {
                 .expect(&format!("couldn't parse amount '{}' into f64", fee.amount)),
             time: payout_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", payout_at))
-                .timestamp_millis()
-                .try_into()
-                .unwrap(),
+                .expect(&format!("couldn't parse time '{}'", payout_at)),
         }
     }
 }
@@ -148,10 +139,7 @@ impl Into<ops::Trade> for Transaction {
             time: self
                 .updated_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", self.updated_at))
-                .timestamp_millis()
-                .try_into()
-                .unwrap(),
+                .expect(&format!("couldn't parse time '{}'", self.updated_at)),
             side: self.side.into(),
         }
     }
@@ -179,7 +167,7 @@ impl Into<Operations> for Transaction {
                 ops::Operation::Cost {
                     asset: self.amount.currency.clone(),
                     amount: amount,
-                    time: self.update_time().timestamp_millis().try_into().unwrap(),
+                    time: self.update_time(),
                 },
             ]
         } else {
@@ -191,7 +179,7 @@ impl Into<Operations> for Transaction {
                 ops::Operation::Revenue {
                     asset: self.amount.currency.clone(),
                     amount: amount,
-                    time: self.update_time().timestamp_millis().try_into().unwrap(),
+                    time: self.update_time(),
                 },
             ]
         })

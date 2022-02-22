@@ -3,22 +3,18 @@ use std::{
     convert::{TryFrom, TryInto},
 };
 
-use anyhow::anyhow;
-use futures::Future;
-
 use binance::{
-    BinanceFetcher, RegionGlobal, RegionUs, EndpointsGlobal, EndpointsUs, Config, Deposit, FiatOrder, MarginLoan, MarginRepay,
-    Trade, Withdraw,
+    BinanceFetcher, Config, Deposit, EndpointsGlobal, EndpointsUs, FiatOrder, MarginLoan,
+    MarginRepay, RegionGlobal, RegionUs, Trade, Withdraw,
 };
 
 use anyhow::{Error as AnyhowError, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::future::join_all;
 
 use crate::{
     cli::ExchangeConfig,
-    errors::Error,
     operations::{
         self as ops, AssetsInfo, ExchangeDataFetcher, Operation, OperationStatus, TradeSide,
     },
@@ -40,9 +36,7 @@ impl From<FiatOrder> for ops::Deposit {
             asset: d.fiat_currency,
             amount: d.amount,
             fee: Some(d.platform_fee),
-            time: d
-                .update_time
-                .unwrap_or(Utc::now().timestamp_millis().try_into().unwrap()),
+            time: d.create_time,
             is_fiat: true,
         }
     }
@@ -54,9 +48,7 @@ impl From<FiatOrder> for ops::Withdraw {
             asset: d.fiat_currency,
             amount: d.amount,
             fee: d.transaction_fee + d.platform_fee,
-            time: d
-                .update_time
-                .unwrap_or(Utc::now().timestamp_millis().try_into().unwrap()),
+            time: d.create_time,
         }
     }
 }
@@ -187,7 +179,9 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
     async fn loans(&self) -> Result<Vec<ops::Loan>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string()).await?;
+        let exchange_symbols = self
+            .fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string())
+            .await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
 
         let mut processed_assets = HashSet::new();
@@ -208,7 +202,9 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
     async fn repays(&self) -> Result<Vec<ops::Repay>> {
         let mut handles = Vec::new();
-        let exchange_symbols = self.fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string()).await?;
+        let exchange_symbols = self
+            .fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string())
+            .await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
 
         let mut processed_assets = HashSet::new();
@@ -353,8 +349,9 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
 
 #[async_trait]
 impl AssetsInfo for BinanceFetcher<RegionGlobal> {
-    async fn price_at(&self, symbol: &str, time: u64) -> Result<f64> {
-        self.fetch_price_at(&EndpointsGlobal::Prices.to_string(), symbol, time).await
+    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64> {
+        self.fetch_price_at(&EndpointsGlobal::Prices.to_string(), symbol, time)
+            .await
         //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))
     }
 }

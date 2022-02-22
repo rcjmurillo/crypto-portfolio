@@ -14,7 +14,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
 
     let mut all_assets_usd_unrealized_position = 0.0;
 
-    for (coin, balance) in balance_tracker.balances().iter() {
+    for (coin, balance) in balance_tracker.balances().await.iter() {
         *coin_balances.entry(coin.to_string()).or_insert(0.0) += balance.amount;
     }
 
@@ -57,7 +57,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
         let value = price * if amount > 0.0 { amount } else { 0.0 };
         all_assets_value += value;
 
-        if let Some(balance) = balance_tracker.get_balance(&coin[..]) {
+        if let Some(balance) = balance_tracker.get_balance(&coin[..]).await {
             let usd_unrealized_position = value + balance.usd_position;
             let usd_unrealized_position_pcnt = (value / balance.usd_position.abs() - 1.0) * 100.0;
             all_assets_usd_unrealized_position += usd_unrealized_position;
