@@ -67,7 +67,7 @@ pub struct Fill {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Transaction {
-    id: String,
+    pub id: String,
     transaction: Option<Resource>,
     #[serde(alias = "type")]
     pub tx_type: Option<String>,

@@ -29,6 +29,8 @@ impl Into<ops::Trade> for Fill {
         let base_asset = assets[0].to_string();
         let quote_asset = assets[1].to_string();
         ops::Trade {
+            source_id: self.trade_id.to_string(),
+            source: "coinbase".to_string(),
             symbol: self.product_id.clone(),
             base_asset,
             quote_asset,
@@ -65,6 +67,8 @@ impl Into<ops::Deposit> for Transaction {
         let fee: Amount = self.fee.expect("missing fee in transaction");
         let payout_at = self.payout_at.expect("missing payout_at in transaction");
         ops::Deposit {
+            source_id: self.id,
+            source: "coinbase".to_string(),
             asset: subtotal.currency,
             amount: subtotal.amount.parse::<f64>().expect(&format!(
                 "couldn't parse amount '{}' into f64",
@@ -89,6 +93,8 @@ impl Into<ops::Withdraw> for Transaction {
         let fee: Amount = self.fee.expect("missing fee in transaction");
         let payout_at = self.payout_at.expect("missing payout_at in transaction");
         ops::Withdraw {
+            source_id: self.id,
+            source: "coinbase".to_string(),
             asset: subtotal.currency,
             amount: subtotal.amount.parse::<f64>().expect(&format!(
                 "couldn't parse amount '{}' into f64",
@@ -129,6 +135,8 @@ impl Into<ops::Trade> for Transaction {
         let amount = to_f64(&self.amount.amount);
         let fee = self.fee.expect("missing fee in transaction");
         ops::Trade {
+            source_id: self.id,
+            source: "coinbase".to_string(),
             symbol: format!("{}{}", base_asset, quote_asset),
             base_asset,
             quote_asset,
@@ -161,10 +169,14 @@ impl Into<Operations> for Transaction {
         Operations(if amount > 0.0 {
             vec![
                 ops::Operation::BalanceIncrease {
+                    source_id: self.id.clone(),
+                    source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
                 ops::Operation::Cost {
+                    source_id: self.id.clone(),
+                    source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                     time: self.update_time(),
@@ -173,10 +185,14 @@ impl Into<Operations> for Transaction {
         } else {
             vec![
                 ops::Operation::BalanceDecrease {
+                    source_id: self.id.clone(),
+                    source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
                 ops::Operation::Revenue {
+                    source_id: self.id.clone(),
+                    source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                     time: self.update_time(),

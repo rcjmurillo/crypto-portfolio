@@ -33,6 +33,8 @@ impl TryFrom<ExchangeConfig> for Config {
 impl From<FiatOrder> for ops::Deposit {
     fn from(d: FiatOrder) -> Self {
         Self {
+            source_id: d.id,
+            source: "binance".to_string(),
             asset: d.fiat_currency,
             amount: d.amount,
             fee: Some(d.platform_fee),
@@ -45,6 +47,8 @@ impl From<FiatOrder> for ops::Deposit {
 impl From<FiatOrder> for ops::Withdraw {
     fn from(d: FiatOrder) -> Self {
         Self {
+            source_id: d.id,
+            source: "binance".to_string(),
             asset: d.fiat_currency,
             amount: d.amount,
             fee: d.transaction_fee + d.platform_fee,
@@ -56,6 +60,8 @@ impl From<FiatOrder> for ops::Withdraw {
 impl From<Deposit> for ops::Deposit {
     fn from(d: Deposit) -> Self {
         Self {
+            source_id: d.id,
+            source: "binance".to_string(),
             asset: d.coin,
             amount: d.amount,
             fee: None,
@@ -68,6 +74,8 @@ impl From<Deposit> for ops::Deposit {
 impl From<Withdraw> for ops::Withdraw {
     fn from(w: Withdraw) -> Self {
         Self {
+            source_id: w.id,
+            source: "binance".to_string(),
             asset: w.coin,
             amount: w.amount,
             time: w.apply_time,
@@ -79,6 +87,8 @@ impl From<Withdraw> for ops::Withdraw {
 impl From<Trade> for ops::Trade {
     fn from(t: Trade) -> Self {
         Self {
+            source_id: t.id.to_string(),
+            source: "binance".to_string(),
             symbol: t.symbol,
             base_asset: t.base_asset,
             quote_asset: t.quote_asset,
@@ -99,6 +109,8 @@ impl From<Trade> for ops::Trade {
 impl From<MarginLoan> for ops::Loan {
     fn from(m: MarginLoan) -> Self {
         Self {
+            source_id: m.tx_id.to_string(),
+            source: "binance".to_string(),
             asset: m.asset,
             amount: m.principal,
             time: m.timestamp,
@@ -113,6 +125,8 @@ impl From<MarginLoan> for ops::Loan {
 impl From<MarginRepay> for ops::Repay {
     fn from(r: MarginRepay) -> Self {
         Self {
+            source_id: r.tx_id.to_string(),
+            source: "binance".to_string(),
             asset: r.asset,
             amount: r.principal,
             interest: r.interest,

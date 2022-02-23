@@ -12,6 +12,8 @@ fn default_zero() -> f64 {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FiatOrder {
+    #[serde(alias="orderId", alias="orderNo")]
+    pub id: String,
     #[serde(default = "default_currency_usd")]
     pub fiat_currency: String,
     #[serde(with = "float_from_str")]
@@ -29,6 +31,8 @@ pub struct FiatOrder {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Deposit {
+    #[serde(alias="txId")]
+    pub id: String,
     #[serde(with = "float_from_str")]
     pub amount: f64,
     #[serde(alias = "asset")]
@@ -41,10 +45,7 @@ pub struct Deposit {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Withdraw {
-    id: String,
-    withdraw_order_id: Option<String>,
-    tx_id: Option<String>,
-    address: String,
+    pub id: String,
     status: u16,
     #[serde(with = "float_from_str")]
     pub amount: f64,

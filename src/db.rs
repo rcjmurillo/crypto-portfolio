@@ -7,7 +7,8 @@ const DB_NAME: &'static str = "operations.db";
 
 #[derive(Debug)]
 pub struct Operation {
-    //pub source_id: String,
+    pub source_id: String,
+    pub source: String,
     pub op_type: String,
     pub asset: String,
     pub amount: f64,
@@ -19,10 +20,13 @@ pub fn create_tables() -> Result<()> {
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS operations (
+            source_id   VARCHAR(100), 
+            source      VARCHAR(25),
             type        VARCHAR(20),
             asset       VARCHAR(15),
             amount      FLOAT,
-            timestamp   TIMESTAMP NULL
+            timestamp   TIMESTAMP NULL,
+            PRIMARY KEY (source_id, source, type, asset, amount)
         )",
         [],
     )?;
@@ -43,11 +47,16 @@ pub fn create_tables() -> Result<()> {
 pub fn insert_operations(ops: Vec<Operation>) -> Result<()> {
     let conn = Connection::open(DB_NAME)?;
 
-    let mut stmt = conn
-        .prepare("INSERT INTO operations (type, asset, amount, timestamp) VALUES (?, ?, ?, ?)")?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO 
+         operations (source_id, source, type, asset, amount, timestamp) 
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )?;
 
     for op in ops {
         stmt.execute(params![
+            op.source_id,
+            op.source,
             op.op_type,
             op.asset,
             op.amount,
@@ -61,13 +70,18 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<()> {
 pub fn get_operations() -> Result<Vec<Operation>> {
     let conn = Connection::open(DB_NAME)?;
 
-    let mut stmt = conn.prepare("SELECT type, asset, amount, timestamp FROM operations")?;
+    let mut stmt = conn.prepare(
+        "SELECT source_id, source,type, asset, amount, timestamp 
+         FROM operations",
+    )?;
     let op_iter = stmt.query_map([], |row| {
-        let timestamp: Option<i64> = row.get(3)?;
+        let timestamp: Option<i64> = row.get(5)?;
         Ok(Operation {
-            op_type: row.get(0)?,
-            asset: row.get(1)?,
-            amount: row.get(2)?,
+            source_id: row.get(0)?,
+            source: row.get(1)?,
+            op_type: row.get(2)?,
+            asset: row.get(3)?,
+            amount: row.get(4)?,
             timestamp: timestamp.map(|ts| Utc.timestamp(ts, 0)),
         })
     })?;

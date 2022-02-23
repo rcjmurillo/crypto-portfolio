@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 
 use anyhow::{anyhow, Error, Result};
@@ -50,6 +50,8 @@ pub enum TradeSide {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Trade {
+    pub source_id: String,
+    pub source: String,
     pub symbol: String,
     pub base_asset: String,
     pub quote_asset: String,
@@ -67,19 +69,27 @@ impl Into<Vec<Operation>> for Trade {
         let mut ops = match self.side {
             TradeSide::Buy => vec![
                 Operation::BalanceIncrease {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
                 Operation::Cost {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.base_asset,
                     amount: self.amount,
                     time: self.time,
                 },
                 Operation::BalanceDecrease {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
                 Operation::Revenue {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.quote_asset,
                     amount: self.amount * self.price,
                     time: self.time,
@@ -87,19 +97,27 @@ impl Into<Vec<Operation>> for Trade {
             ],
             TradeSide::Sell => vec![
                 Operation::BalanceDecrease {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
                 Operation::Revenue {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.base_asset,
                     amount: self.amount,
                     time: self.time,
                 },
                 Operation::BalanceIncrease {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
                 Operation::Cost {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.quote_asset,
                     amount: self.amount * self.price,
                     time: self.time,
@@ -108,10 +126,14 @@ impl Into<Vec<Operation>> for Trade {
         };
         if self.fee_asset != "" && self.fee > 0.0 {
             ops.push(Operation::BalanceDecrease {
+                source_id: self.source_id.clone(),
+                source: self.source.clone(),
                 asset: self.fee_asset.clone(),
                 amount: self.fee,
             });
             ops.push(Operation::Cost {
+                source_id: format!("{}-fee", self.source_id),
+                source: self.source,
                 asset: self.fee_asset,
                 amount: self.fee,
                 time: self.time,
@@ -124,6 +146,8 @@ impl Into<Vec<Operation>> for Trade {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Deposit {
+    pub source_id: String,
+    pub source: String,
     pub asset: String,
     pub amount: f64,
     #[serde(with = "datetime_from_str")]
@@ -135,16 +159,22 @@ pub struct Deposit {
 impl Into<Vec<Operation>> for Deposit {
     fn into(self) -> Vec<Operation> {
         let mut ops = vec![Operation::BalanceIncrease {
+            source_id: self.source_id.clone(),
+            source: self.source.clone(),
             asset: self.asset.clone(),
             amount: self.amount,
         }];
         if let Some(fee) = self.fee {
             ops.extend(vec![
                 Operation::BalanceDecrease {
+                    source_id: self.source_id.clone(),
+                    source: self.source.clone(),
                     asset: self.asset.clone(),
                     amount: fee,
                 },
                 Operation::Cost {
+                    source_id: self.source_id,
+                    source: self.source,
                     asset: self.asset,
                     amount: fee,
                     time: self.time,
@@ -157,6 +187,8 @@ impl Into<Vec<Operation>> for Deposit {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Withdraw {
+    pub source_id: String,
+    pub source: String,
     pub asset: String,
     pub amount: f64,
     #[serde(with = "datetime_from_str")]
@@ -168,14 +200,20 @@ impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
         vec![
             Operation::BalanceDecrease {
+                source_id: self.source_id.clone(),
+                source: self.source.clone(),
                 asset: self.asset.clone(),
                 amount: self.amount,
             },
             Operation::BalanceDecrease {
+                source_id: format!("{}-fee", self.source_id.clone()),
+                source: self.source.clone(),
                 asset: self.asset.clone(),
                 amount: self.fee,
             },
             Operation::Cost {
+                source_id: self.source_id,
+                source: self.source,
                 asset: self.asset,
                 amount: self.fee,
                 time: self.time,
@@ -186,6 +224,8 @@ impl Into<Vec<Operation>> for Withdraw {
 
 #[derive(Deserialize)]
 pub struct Loan {
+    pub source_id: String,
+    pub source: String,
     pub asset: String,
     pub amount: f64,
     #[serde(with = "datetime_from_str")]
@@ -198,6 +238,8 @@ impl Into<Vec<Operation>> for Loan {
         match self.status {
             OperationStatus::Success => {
                 vec![Operation::BalanceIncrease {
+                    source_id: self.source_id,
+                    source: self.source,
                     asset: self.asset,
                     amount: self.amount,
                 }]
@@ -209,6 +251,8 @@ impl Into<Vec<Operation>> for Loan {
 
 #[derive(Deserialize)]
 pub struct Repay {
+    pub source_id: String,
+    pub source: String,
     pub asset: String,
     pub amount: f64,
     pub interest: f64,
@@ -223,10 +267,14 @@ impl Into<Vec<Operation>> for Repay {
             OperationStatus::Success => {
                 vec![
                     Operation::BalanceDecrease {
+                        source_id: self.source_id.clone(),
+                        source: self.source.clone(),
                         asset: self.asset.clone(),
                         amount: self.amount + self.interest,
                     },
                     Operation::Cost {
+                        source_id: self.source_id,
+                        source: self.source,
                         asset: self.asset,
                         amount: self.interest,
                         time: self.time,
@@ -247,59 +295,124 @@ pub struct AssetBalance {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     BalanceIncrease {
+        source_id: String,
+        source: String,
         asset: String,
         amount: f64,
     },
     BalanceDecrease {
+        source_id: String,
+        source: String,
         asset: String,
         amount: f64,
     },
     Cost {
+        source_id: String,
+        source: String,
         asset: String,
         amount: f64,
         time: DateTime<Utc>,
     },
     Revenue {
+        source_id: String,
+        source: String,
         asset: String,
         amount: f64,
         time: DateTime<Utc>,
     },
 }
 
+impl Operation {
+    fn id(&self) -> String {
+        match self {
+            Self::BalanceIncrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => format!(
+                "balance_increase-{}-{}-{}-{}",
+                source_id, source, asset, amount
+            ),
+            Self::BalanceDecrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => format!(
+                "balance_decrease-{}-{}-{}-{}",
+                source_id, source, asset, amount
+            ),
+            Self::Cost {
+                source_id,
+                source,
+                asset,
+                amount,
+                ..
+            } => format!("cost-{}-{}-{}-{}", source_id, source, asset, amount),
+            Self::Revenue {
+                source_id,
+                source,
+                asset,
+                amount,
+                ..
+            } => format!("revenue-{}-{}-{}-{}", source_id, source, asset, amount),
+        }
+    }
+}
+
 impl Into<DbOperation> for Operation {
     fn into(self) -> DbOperation {
         match self {
             Operation::Cost {
+                source_id,
+                source,
                 asset,
                 amount,
                 time,
             } => DbOperation {
-                // source_id: "todo".to_string(),
+                source_id,
+                source,
                 op_type: "cost".to_string(),
                 asset,
                 amount,
                 timestamp: Some(time),
             },
             Operation::Revenue {
+                source_id,
+                source,
                 asset,
                 amount,
                 time,
             } => DbOperation {
-                // source_id: "todo".to_string(),
+                source_id,
+                source,
                 op_type: "revenue".to_string(),
                 asset,
                 amount,
                 timestamp: Some(time),
             },
-            Operation::BalanceIncrease { asset, amount } => DbOperation {
-                // source_id: "todo".to_string(),
+            Operation::BalanceIncrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => DbOperation {
+                source_id,
+                source,
                 op_type: "balance_increase".to_string(),
                 asset,
                 amount,
                 timestamp: None,
             },
-            Operation::BalanceDecrease { asset, amount } => DbOperation {
-                // source_id: "todo".to_string(),
+            Operation::BalanceDecrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => DbOperation {
+                source_id,
+                source,
                 op_type: "balance_decrease".to_string(),
                 asset,
                 amount,
@@ -315,11 +428,15 @@ impl TryFrom<DbOperation> for Operation {
     fn try_from(op: DbOperation) -> Result<Operation> {
         match op.op_type.as_str() {
             "cost" => Ok(Operation::Cost {
+                source_id: op.source_id,
+                source: op.source,
                 asset: op.asset,
                 amount: op.amount,
                 time: op.timestamp.expect("missing timestamp in cost operation"),
             }),
             "revenue" => Ok(Operation::Revenue {
+                source_id: op.source_id,
+                source: op.source,
                 asset: op.asset,
                 amount: op.amount,
                 time: op
@@ -327,10 +444,14 @@ impl TryFrom<DbOperation> for Operation {
                     .expect("missing timestamp in revenue operation"),
             }),
             "balance_increase" => Ok(Operation::BalanceIncrease {
+                source_id: op.source_id,
+                source: op.source,
                 asset: op.asset,
                 amount: op.amount,
             }),
             "balance_decrease" => Ok(Operation::BalanceDecrease {
+                source_id: op.source_id,
+                source: op.source,
                 asset: op.asset,
                 amount: op.amount,
             }),
@@ -341,6 +462,7 @@ impl TryFrom<DbOperation> for Operation {
 
 pub struct BalanceTracker<T: AssetsInfo> {
     coin_balances: RwLock<HashMap<String, AssetBalance>>,
+    operations_seen: RwLock<HashSet<String>>,
     asset_info: T,
 }
 
@@ -348,13 +470,23 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     pub fn new(asset_info: T) -> Self {
         BalanceTracker {
             coin_balances: RwLock::new(HashMap::new()),
+            operations_seen: RwLock::new(HashSet::new()),
             asset_info,
         }
     }
 
     pub async fn track_operation(&self, op: Operation) -> Result<()> {
+        if self.operations_seen.read().await.contains(&op.id()) {
+            log::info!("ignoring duplicate operation {:?}", op);
+            return Ok(());
+        }
+        self.operations_seen.write().await.insert(op.id());
         match op {
-            Operation::BalanceIncrease { asset, amount } => {
+            Operation::BalanceIncrease {
+                asset,
+                amount,
+                ..
+            } => {
                 assert!(
                     amount >= 0.0,
                     "balance increase operation amount can't be negative"
@@ -363,7 +495,11 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let coin_balance = bal.entry(asset).or_default();
                 coin_balance.amount += amount;
             }
-            Operation::BalanceDecrease { asset, amount } => {
+            Operation::BalanceDecrease {
+                asset,
+                amount,
+                ..
+            } => {
                 assert!(
                     amount >= 0.0,
                     "balance decrease operation amount can't be negative"
@@ -376,6 +512,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 asset,
                 amount,
                 time,
+                ..
             } => {
                 let usd_price = if asset.starts_with("USD") {
                     1.0
@@ -392,6 +529,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 asset,
                 amount,
                 time,
+                ..
             } => {
                 let usd_price = if asset.starts_with("USD") {
                     1.0
@@ -462,9 +600,18 @@ impl OperationsFlusher {
 
     fn flush(&self, batch: Vec<Operation>) -> Result<()> {
         let batch_size = batch.len();
+
+        let mut seen_ops = HashSet::new();
         insert_operations(
             batch
                 .into_iter()
+                .inspect(|op| {
+                    if seen_ops.contains(&op.id()) {
+                        log::info!("duplicate op {} {:?}", op.id(), op);
+                    } else {
+                        seen_ops.insert(op.id());
+                    }
+                })
                 .filter_map(|op| op.try_into().map_or(None, |op: DbOperation| Some(op)))
                 .collect(),
         )?;
@@ -661,6 +808,8 @@ mod tests {
     #[test]
     fn trade_buy_into() {
         let t1 = Trade {
+            source_id: "1".to_string(),
+            source: "test".to_string(),
             symbol: "DOTETH".into(),
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
@@ -679,6 +828,8 @@ mod tests {
         assert_eq!(
             ops[0],
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 3.0
             }
@@ -686,6 +837,8 @@ mod tests {
         assert_eq!(
             ops[1],
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 3.0,
                 time: Utc::now()
@@ -694,6 +847,8 @@ mod tests {
         assert_eq!(
             ops[2],
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 1.5,
             }
@@ -701,6 +856,8 @@ mod tests {
         assert_eq!(
             ops[3],
             Operation::Revenue {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 1.5,
                 time: Utc::now()
@@ -709,6 +866,8 @@ mod tests {
         assert_eq!(
             ops[4],
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.01,
             }
@@ -716,6 +875,8 @@ mod tests {
         assert_eq!(
             ops[5],
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.01,
                 time: Utc::now()
@@ -726,6 +887,8 @@ mod tests {
     #[test]
     fn trade_sell_into() {
         let t1 = Trade {
+            source_id: "1".to_string(),
+            source: "test".to_string(),
             symbol: "DOTETH".into(),
             base_asset: "DOT".into(),
             quote_asset: "ETH".into(),
@@ -744,6 +907,8 @@ mod tests {
         assert_eq!(
             ops[0],
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 3.0
             }
@@ -751,6 +916,8 @@ mod tests {
         assert_eq!(
             ops[1],
             Operation::Revenue {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 3.0,
                 time: Utc::now(),
@@ -759,6 +926,8 @@ mod tests {
         assert_eq!(
             ops[2],
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 1.5
             }
@@ -766,6 +935,8 @@ mod tests {
         assert_eq!(
             ops[3],
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 1.5,
                 time: Utc::now()
@@ -774,6 +945,8 @@ mod tests {
         assert_eq!(
             ops[4],
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "XCOIN".into(),
                 amount: 0.01,
             }
@@ -781,6 +954,8 @@ mod tests {
         assert_eq!(
             ops[5],
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "XCOIN".into(),
                 amount: 0.01,
                 time: Utc::now(),
@@ -793,6 +968,8 @@ mod tests {
         let fee_cases = vec![(1.0, ""), (0.0, "ETH"), (0.0, "")];
         for (fee_amount, fee_asset) in fee_cases.into_iter() {
             let t = Trade {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 symbol: "DOTETH".into(),
                 base_asset: "DOT".into(),
                 quote_asset: "ETH".into(),
@@ -809,6 +986,8 @@ mod tests {
             assert_eq!(
                 ops[0],
                 Operation::BalanceIncrease {
+                    source_id: "1".to_string(),
+                    source: "test".to_string(),
                     asset: "DOT".into(),
                     amount: 3.0
                 }
@@ -816,6 +995,8 @@ mod tests {
             assert_eq!(
                 ops[1],
                 Operation::Cost {
+                    source_id: "1".to_string(),
+                    source: "test".to_string(),
                     asset: "DOT".into(),
                     amount: 3.0,
                     time: Utc::now()
@@ -824,6 +1005,8 @@ mod tests {
             assert_eq!(
                 ops[2],
                 Operation::BalanceDecrease {
+                    source_id: "1".to_string(),
+                    source: "test".to_string(),
                     asset: "ETH".into(),
                     amount: 1.5,
                 }
@@ -831,6 +1014,8 @@ mod tests {
             assert_eq!(
                 ops[3],
                 Operation::Revenue {
+                    source_id: "1".to_string(),
+                    source: "test".to_string(),
                     asset: "ETH".into(),
                     amount: 1.5,
                     time: Utc::now()
@@ -865,73 +1050,105 @@ mod tests {
         let mut coin_tracker = BalanceTracker::new(TestAssetInfo::new());
         let ops = vec![
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "BTCUSD".into(),
                 amount: 0.03,
             },
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "BTCUSD".into(),
                 amount: 0.03,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "BTCUSD".into(),
                 amount: 0.1,
             },
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "BTCUSD".into(),
                 amount: 0.1,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.5,
             },
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.5,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.01,
             },
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.01,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "ETHUSD".into(),
                 amount: 0.2,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.5,
             },
             Operation::Cost {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.5,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.1,
             },
             Operation::Revenue {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.1,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
                 asset: "DOTUSD".into(),
                 amount: 0.2,
                 time: Utc::now(),
