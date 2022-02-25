@@ -3,7 +3,7 @@ use std::convert::{TryFrom, TryInto};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex, RwLock};
 
@@ -376,7 +376,7 @@ impl Into<DbOperation> for Operation {
                 op_type: "cost".to_string(),
                 asset,
                 amount,
-                timestamp: Some(time),
+                timestamp: Some(time.timestamp()),
             },
             Operation::Revenue {
                 source_id,
@@ -390,7 +390,7 @@ impl Into<DbOperation> for Operation {
                 op_type: "revenue".to_string(),
                 asset,
                 amount,
-                timestamp: Some(time),
+                timestamp: Some(time.timestamp()),
             },
             Operation::BalanceIncrease {
                 source_id,
@@ -432,16 +432,21 @@ impl TryFrom<DbOperation> for Operation {
                 source: op.source,
                 asset: op.asset,
                 amount: op.amount,
-                time: op.timestamp.expect("missing timestamp in cost operation"),
+                time: Utc.timestamp(
+                    op.timestamp.expect("missing timestamp in cost operation"),
+                    0,
+                ),
             }),
             "revenue" => Ok(Operation::Revenue {
                 source_id: op.source_id,
                 source: op.source,
                 asset: op.asset,
                 amount: op.amount,
-                time: op
-                    .timestamp
-                    .expect("missing timestamp in revenue operation"),
+                time: Utc.timestamp(
+                    op.timestamp
+                        .expect("missing timestamp in revenue operation"),
+                    0,
+                ),
             }),
             "balance_increase" => Ok(Operation::BalanceIncrease {
                 source_id: op.source_id,
@@ -482,11 +487,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
         }
         self.operations_seen.write().await.insert(op.id());
         match op {
-            Operation::BalanceIncrease {
-                asset,
-                amount,
-                ..
-            } => {
+            Operation::BalanceIncrease { asset, amount, .. } => {
                 assert!(
                     amount >= 0.0,
                     "balance increase operation amount can't be negative"
@@ -495,11 +496,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let coin_balance = bal.entry(asset).or_default();
                 coin_balance.amount += amount;
             }
-            Operation::BalanceDecrease {
-                asset,
-                amount,
-                ..
-            } => {
+            Operation::BalanceDecrease { asset, amount, .. } => {
                 assert!(
                     amount >= 0.0,
                     "balance decrease operation amount can't be negative"
@@ -579,30 +576,27 @@ impl OperationsFlusher {
     pub async fn receive(&mut self) -> Result<()> {
         let mut batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
         let mut num_ops = 0;
+        let mut num_fetched = 0;
         while let Some(op) = self.receiver.recv().await {
             batch.push(op);
             if batch.len() == OPS_RECEIVE_BATCH_SIZE {
-                self.flush(batch)?;
+                num_ops += self.flush(batch)?;
+                num_fetched += OPS_RECEIVE_BATCH_SIZE;
                 batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
-                num_ops += OPS_RECEIVE_BATCH_SIZE;
             }
         }
 
-        let r = if batch.len() > 0 {
-            num_ops += batch.len();
-            self.flush(batch)
-        } else {
-            Ok(())
+        if batch.len() > 0 {
+            num_fetched += batch.len();
+            num_ops += self.flush(batch)?;
         };
-        log::info!("fetched {} operations", num_ops);
-        r
+        log::info!("fetched={} inserted={}", num_fetched, num_ops);
+        Ok(())
     }
 
-    fn flush(&self, batch: Vec<Operation>) -> Result<()> {
-        let batch_size = batch.len();
-
+    fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
         let mut seen_ops = HashSet::new();
-        insert_operations(
+        let inserted = insert_operations(
             batch
                 .into_iter()
                 .inspect(|op| {
@@ -615,8 +609,8 @@ impl OperationsFlusher {
                 .filter_map(|op| op.try_into().map_or(None, |op: DbOperation| Some(op)))
                 .collect(),
         )?;
-        log::debug!("flushed {} operations into db", batch_size);
-        Ok(())
+        log::debug!("flushed {} operations into db", inserted);
+        Ok(inserted)
     }
 }
 

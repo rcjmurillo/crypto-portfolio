@@ -540,7 +540,7 @@ impl BinanceFetcher<RegionGlobal> {
         let mut loans = Vec::<MarginLoan>::new();
 
         // does archived = true fetches records from the last 6 months?
-        for archived in &["true"] {
+        for archived in &["true", "false"] {
             // fetch in batches of 90 days from `start_date` to `now()`
             let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
             let now = Utc::now().naive_utc();

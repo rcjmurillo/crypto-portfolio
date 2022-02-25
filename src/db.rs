@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, TimeZone, Utc};
-use rusqlite::{params, Connection};
+use chrono::Utc;
+use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
 
 const DB_NAME: &'static str = "operations.db";
@@ -12,7 +12,7 @@ pub struct Operation {
     pub op_type: String,
     pub asset: String,
     pub amount: f64,
-    pub timestamp: Option<DateTime<Utc>>,
+    pub timestamp: Option<i64>,
 }
 
 pub fn create_tables() -> Result<()> {
@@ -44,27 +44,42 @@ pub fn create_tables() -> Result<()> {
     Ok(())
 }
 
-pub fn insert_operations(ops: Vec<Operation>) -> Result<()> {
+pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
     let conn = Connection::open(DB_NAME)?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO 
          operations (source_id, source, type, asset, amount, timestamp) 
          VALUES (?, ?, ?, ?, ?, ?)",
     )?;
 
+    let mut inserted = 0;
     for op in ops {
-        stmt.execute(params![
+        inserted += match stmt.execute(params![
             op.source_id,
             op.source,
             op.op_type,
             op.asset,
             op.amount,
-            op.timestamp.map(|t| t.timestamp())
-        ])?;
+            op.timestamp,
+        ]) {
+            Ok(inserted) => inserted,
+            Err(err) => match err {
+                Error::SqliteFailure(FfiError { code, .. }, ..) => {
+                    match code {
+                        ErrorCode::ConstraintViolation => {
+                            // already exists, skip it
+                            continue;
+                        }
+                        _ => return Err(anyhow::Error::new(err)),
+                    }
+                }
+                err => return Err(anyhow::Error::new(err)),
+            },
+        };
     }
 
-    Ok(())
+    Ok(inserted)
 }
 
 pub fn get_operations() -> Result<Vec<Operation>> {
@@ -75,14 +90,13 @@ pub fn get_operations() -> Result<Vec<Operation>> {
          FROM operations",
     )?;
     let op_iter = stmt.query_map([], |row| {
-        let timestamp: Option<i64> = row.get(5)?;
         Ok(Operation {
             source_id: row.get(0)?,
             source: row.get(1)?,
             op_type: row.get(2)?,
             asset: row.get(3)?,
             amount: row.get(4)?,
-            timestamp: timestamp.map(|ts| Utc.timestamp(ts, 0)),
+            timestamp: row.get(5)?,
         })
     })?;
 

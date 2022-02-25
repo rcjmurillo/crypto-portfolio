@@ -56,11 +56,11 @@ fn mk_fetchers(
     //     ));
     // }
 
-    if let Some(conf) = config.binance.clone() {
-        let config_binance: Config = conf.try_into().unwrap();
-        let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-        fetchers.push(("Binance Global", Box::new(binance_client)));
-    }
+    // if let Some(conf) = config.binance.clone() {
+    //     let config_binance: Config = conf.try_into().unwrap();
+    //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+    //     fetchers.push(("Binance Global", Box::new(binance_client)));
+    // }
 
     if let Some(conf) = config.binance_us.clone() {
         let config_binance_us: Config = conf.try_into().unwrap();
