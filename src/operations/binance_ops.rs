@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    convert::{TryFrom, TryInto},
-};
+use std::{collections::HashSet, convert::TryFrom};
 
 use binance::{
     BinanceFetcher, Config, Deposit, EndpointsGlobal, EndpointsUs, FiatOrder, MarginLoan,

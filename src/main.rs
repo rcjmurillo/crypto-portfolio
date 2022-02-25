@@ -8,11 +8,10 @@ mod reports;
 use std::{convert::TryInto, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use futures::future::join_all;
 use structopt::{self, StructOpt};
 
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
-use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
+// use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use crate::{
     cli::{Args, PortfolioAction},
@@ -56,11 +55,11 @@ fn mk_fetchers(
     //     ));
     // }
 
-    // if let Some(conf) = config.binance.clone() {
-    //     let config_binance: Config = conf.try_into().unwrap();
-    //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-    //     fetchers.push(("Binance Global", Box::new(binance_client)));
-    // }
+    if let Some(conf) = config.binance.clone() {
+        let config_binance: Config = conf.try_into().unwrap();
+        let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+        fetchers.push(("Binance Global", Box::new(binance_client)));
+    }
 
     if let Some(conf) = config.binance_us.clone() {
         let config_binance_us: Config = conf.try_into().unwrap();
@@ -116,7 +115,7 @@ pub async fn main() -> Result<()> {
             reports::asset_balances(&coin_tracker).await?;
             println!();
         }
-        PortfolioAction::FetchOperations => {
+        PortfolioAction::Sync => {
             let config = Arc::new(config);
             let file_fetcher = match ops_file {
                 Some(ops_file) => match FileDataFetcher::from_file(ops_file) {

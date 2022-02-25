@@ -5,7 +5,7 @@ use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 
 use crate::db::{
     get_asset_price_bucket, insert_asset_price_bucket, insert_operations, Operation as DbOperation,
@@ -798,6 +798,7 @@ pub(crate) mod datetime_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::Mutex;
 
     #[test]
     fn trade_buy_into() {

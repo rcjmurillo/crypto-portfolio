@@ -19,7 +19,7 @@ impl TryFrom<&str> for PortfolioAction {
     fn try_from(s: &str) -> Result<PortfolioAction> {
         match s {
             "balances" => Ok(PortfolioAction::Balances),
-            "fetch-operations" => Ok(PortfolioAction::FetchOperations),
+            "sync" => Ok(PortfolioAction::Sync),
             _ => Err(anyhow!("Invalid action".to_string()).context(Error::Cli))
         }
     }
@@ -82,7 +82,7 @@ impl Config {
 
 pub enum PortfolioAction {
     Balances,
-    FetchOperations,
+    Sync,
 }
 
 #[derive(StructOpt)]

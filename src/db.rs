@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
 use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
 
