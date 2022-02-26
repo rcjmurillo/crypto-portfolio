@@ -639,7 +639,6 @@ impl OperationsProcesor for PricesFetcher {
         log::info!("syncing asset prices to db...");
         let asset_prices = AssetPrices::new();
         while let Some(op) = receiver.recv().await {
-            log::info!("processing op: {:?}", op);
             // the `.price_at(..)` call will make the DB to populate with
             // bucket of prices corresponding to each processed transaction.
             match &op {
