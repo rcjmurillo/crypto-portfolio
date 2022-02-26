@@ -360,7 +360,7 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
 
 #[async_trait]
 impl AssetsInfo for BinanceFetcher<RegionGlobal> {
-    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64> {
+    async fn price_at(&self, symbol: &str, time: &DateTime<Utc>) -> Result<f64> {
         self.fetch_price_at(&EndpointsGlobal::Prices.to_string(), symbol, time)
             .await
         //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))

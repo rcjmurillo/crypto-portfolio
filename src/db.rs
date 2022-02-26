@@ -110,11 +110,22 @@ pub fn insert_asset_price_bucket(bucket: u16, asset: &str, prices: Vec<(u64, f64
     let mut stmt =
         conn.prepare("INSERT INTO asset_price_buckets (bucket, asset, prices) VALUES (?, ?, ?)")?;
 
-    stmt.execute(params![
+    match stmt.execute(params![
         bucket,
         asset,
         serde_json::to_string(&prices).context("error while converting prices into JSON")?
-    ])?;
+    ]) {
+        Ok(_) => (),
+        Err(err) => match err {
+            Error::SqliteFailure(FfiError { code, .. }, ..) => {
+                match code {
+                    ErrorCode::ConstraintViolation => (), // already exists, skip it
+                    _ => return Err(anyhow::Error::new(err)),
+                }
+            }
+            err => return Err(anyhow::Error::new(err)),
+        },
+    };
 
     Ok(())
 }

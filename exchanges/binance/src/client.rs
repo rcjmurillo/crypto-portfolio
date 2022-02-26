@@ -3,7 +3,7 @@ use std::{env, fmt, marker::PhantomData, sync::Arc};
 use anyhow::{anyhow, Error, Result};
 
 use bytes::Bytes;
-use chrono::{Duration, NaiveDate, Utc, DateTime};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use futures::future::join_all;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
@@ -222,7 +222,12 @@ impl<Region> BinanceFetcher<Region> {
         self.from_json(resp.as_ref()).await
     }
 
-    pub async fn fetch_price_at(&self, endpoint: &str, symbol: &str, datetime: DateTime<Utc>) -> Result<f64> {
+    pub async fn fetch_price_at(
+        &self,
+        endpoint: &str,
+        symbol: &str,
+        datetime: &DateTime<Utc>,
+    ) -> Result<f64> {
         let time = datetime.timestamp_millis();
         let start_time = time - 30 * 60 * 1000;
         let end_time = time + 30 * 60 * 1000;
@@ -752,7 +757,6 @@ impl BinanceFetcher<RegionUs> {
     }
 
     pub fn with_config(config: Config) -> Self {
-        let credentials = Credentials::<RegionUs>::new();
         Self {
             api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
             config: Some(config),

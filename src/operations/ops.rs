@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
@@ -7,9 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::db::{
-    get_asset_price_bucket, insert_asset_price_bucket, insert_operations, Operation as DbOperation,
-};
+use crate::db::{self, get_asset_price_bucket, insert_asset_price_bucket, insert_operations};
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 #[derive(Deserialize)]
@@ -38,7 +37,7 @@ pub trait ExchangeDataFetcher {
 
 #[async_trait]
 pub trait AssetsInfo {
-    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64>;
+    async fn price_at(&self, symbol: &str, time: &DateTime<Utc>) -> Result<f64>;
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -361,8 +360,8 @@ impl Operation {
     }
 }
 
-impl Into<DbOperation> for Operation {
-    fn into(self) -> DbOperation {
+impl Into<db::Operation> for Operation {
+    fn into(self) -> db::Operation {
         match self {
             Operation::Cost {
                 source_id,
@@ -370,7 +369,7 @@ impl Into<DbOperation> for Operation {
                 asset,
                 amount,
                 time,
-            } => DbOperation {
+            } => db::Operation {
                 source_id,
                 source,
                 op_type: "cost".to_string(),
@@ -384,7 +383,7 @@ impl Into<DbOperation> for Operation {
                 asset,
                 amount,
                 time,
-            } => DbOperation {
+            } => db::Operation {
                 source_id,
                 source,
                 op_type: "revenue".to_string(),
@@ -397,7 +396,7 @@ impl Into<DbOperation> for Operation {
                 source,
                 asset,
                 amount,
-            } => DbOperation {
+            } => db::Operation {
                 source_id,
                 source,
                 op_type: "balance_increase".to_string(),
@@ -410,7 +409,7 @@ impl Into<DbOperation> for Operation {
                 source,
                 asset,
                 amount,
-            } => DbOperation {
+            } => db::Operation {
                 source_id,
                 source,
                 op_type: "balance_decrease".to_string(),
@@ -422,10 +421,10 @@ impl Into<DbOperation> for Operation {
     }
 }
 
-impl TryFrom<DbOperation> for Operation {
+impl TryFrom<db::Operation> for Operation {
     type Error = Error;
 
-    fn try_from(op: DbOperation) -> Result<Operation> {
+    fn try_from(op: db::Operation) -> Result<Operation> {
         match op.op_type.as_str() {
             "cost" => Ok(Operation::Cost {
                 source_id: op.source_id,
@@ -515,7 +514,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), time)
+                        .price_at(&format!("{}USDT", asset), &time)
                         .await?
                 };
                 let mut bal = self.coin_balances.write().await;
@@ -532,7 +531,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), time)
+                        .price_at(&format!("{}USDT", asset), &time)
                         .await?
                 };
                 let mut bal = self.coin_balances.write().await;
@@ -562,38 +561,20 @@ impl<T: AssetsInfo> BalanceTracker<T> {
     }
 }
 
-const OPS_RECEIVE_BATCH_SIZE: usize = 1000;
-
-pub struct OperationsFlusher {
-    receiver: mpsc::Receiver<Operation>,
+#[async_trait]
+pub trait OperationsProcesor {
+    async fn process(
+        &self,
+        mut receiver: mpsc::Receiver<Operation>,
+        sender: Option<mpsc::Sender<Operation>>,
+    ) -> Result<()>;
 }
 
+const OPS_RECEIVE_BATCH_SIZE: usize = 1000;
+
+pub struct OperationsFlusher;
+
 impl OperationsFlusher {
-    pub fn with_receiver(receiver: mpsc::Receiver<Operation>) -> Self {
-        Self { receiver }
-    }
-
-    pub async fn receive(&mut self) -> Result<()> {
-        let mut batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
-        let mut num_ops = 0;
-        let mut num_fetched = 0;
-        while let Some(op) = self.receiver.recv().await {
-            batch.push(op);
-            if batch.len() == OPS_RECEIVE_BATCH_SIZE {
-                num_ops += self.flush(batch)?;
-                num_fetched += OPS_RECEIVE_BATCH_SIZE;
-                batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
-            }
-        }
-
-        if batch.len() > 0 {
-            num_fetched += batch.len();
-            num_ops += self.flush(batch)?;
-        };
-        log::info!("fetched={} inserted={}", num_fetched, num_ops);
-        Ok(())
-    }
-
     fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
         let mut seen_ops = HashSet::new();
         let inserted = insert_operations(
@@ -606,11 +587,87 @@ impl OperationsFlusher {
                         seen_ops.insert(op.id());
                     }
                 })
-                .filter_map(|op| op.try_into().map_or(None, |op: DbOperation| Some(op)))
+                .filter_map(|op| op.try_into().map_or(None, |op| Some(op)))
                 .collect(),
         )?;
         log::debug!("flushed {} operations into db", inserted);
         Ok(inserted)
+    }
+}
+
+#[async_trait]
+impl OperationsProcesor for OperationsFlusher {
+    async fn process(
+        &self,
+        mut receiver: mpsc::Receiver<Operation>,
+        sender: Option<mpsc::Sender<Operation>>,
+    ) -> Result<()> {
+        log::info!("syncing operations to db...");
+        let mut batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
+        let mut num_ops = 0;
+        let mut num_fetched = 0;
+        while let Some(op) = receiver.recv().await {
+            batch.push(op.clone());
+            if batch.len() == OPS_RECEIVE_BATCH_SIZE {
+                num_ops += self.flush(batch)?;
+                num_fetched += OPS_RECEIVE_BATCH_SIZE;
+                batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
+            }
+            if let Some(sender) = sender.as_ref() {
+                sender.send(op).await?;
+            }
+        }
+
+        if batch.len() > 0 {
+            num_fetched += batch.len();
+            num_ops += self.flush(batch)?;
+        };
+        log::info!("fetched={} inserted={}", num_fetched, num_ops);
+        Ok(())
+    }
+}
+
+pub struct PricesFetcher;
+
+#[async_trait]
+impl OperationsProcesor for PricesFetcher {
+    async fn process(
+        &self,
+        mut receiver: mpsc::Receiver<Operation>,
+        sender: Option<mpsc::Sender<Operation>>,
+    ) -> Result<()> {
+        log::info!("syncing asset prices to db...");
+        let asset_prices = AssetPrices::new();
+        while let Some(op) = receiver.recv().await {
+            log::info!("processing op: {:?}", op);
+            // the `.price_at(..)` call will make the DB to populate with
+            // bucket of prices corresponding to each processed transaction.
+            match &op {
+                Operation::Cost { asset, time, .. } => {
+                    if asset.starts_with("USD") {
+                        continue;
+                    }
+                    log::debug!("fetching price for {}", format!("{}USDT", asset));
+                    asset_prices
+                        .price_at(&format!("{}USDT", asset), time)
+                        .await?;
+                }
+                Operation::Revenue { asset, time, .. } => {
+                    if asset.starts_with("USD") {
+                        continue;
+                    }
+                    log::debug!("fetching price for {}", format!("{}USDT", asset));
+                    asset_prices
+                        .price_at(&format!("{}USDT", asset), time)
+                        .await?;
+                }
+                _ => (),
+            }
+            if let Some(sender) = sender.as_ref() {
+                sender.send(op).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -627,7 +684,7 @@ impl AssetPrices {
         }
     }
 
-    async fn asset_price_at(&self, symbol: &str, datetime: DateTime<Utc>) -> Result<f64> {
+    async fn asset_price_at(&self, symbol: &str, datetime: &DateTime<Utc>) -> Result<f64> {
         // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
@@ -683,7 +740,7 @@ impl AssetPrices {
 
 #[async_trait]
 impl AssetsInfo for AssetPrices {
-    async fn price_at(&self, symbol: &str, time: DateTime<Utc>) -> Result<f64> {
+    async fn price_at(&self, symbol: &str, time: &DateTime<Utc>) -> Result<f64> {
         self.asset_price_at(symbol, time).await
     }
 }
@@ -1037,7 +1094,7 @@ mod tests {
 
         #[async_trait]
         impl AssetsInfo for TestAssetInfo {
-            async fn price_at(&self, _symbol: &str, time: DateTime<Utc>) -> Result<f64> {
+            async fn price_at(&self, _symbol: &str, time: &DateTime<Utc>) -> Result<f64> {
                 Ok(self.prices.lock().await.remove(0))
             }
         }

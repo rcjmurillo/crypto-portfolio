@@ -7,8 +7,10 @@ mod reports;
 
 use std::{convert::TryInto, sync::Arc};
 
+use futures::future::join_all;
 use anyhow::{anyhow, Result};
 use structopt::{self, StructOpt};
+use tokio::sync::mpsc;
 
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
@@ -19,6 +21,7 @@ use crate::{
     db::{create_tables, get_operations, Operation as DbOperation},
     operations::{
         fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, OperationsFlusher,
+        OperationsProcesor, PricesFetcher
     },
 };
 
@@ -99,10 +102,10 @@ pub async fn main() -> Result<()> {
             for op in ops {
                 // let ct = Arc::clone(&coin_tracker);
                 // handles.push(tokio::spawn(async move {
-                    // handles.push(coin_tracker.track_operation(op));
-                    if let Err(err) = coin_tracker.track_operation(op?).await {
-                        log::error!("couldn't process operation: {:?}", err);
-                    }
+                // handles.push(coin_tracker.track_operation(op));
+                if let Err(err) = coin_tracker.track_operation(op?).await {
+                    log::error!("couldn't process operation: {:?}", err);
+                }
                 // }));
             }
 
@@ -128,8 +131,14 @@ pub async fn main() -> Result<()> {
             };
 
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
-            let mut flusher = OperationsFlusher::with_receiver(receiver);
-            flusher.receive().await?;
+            let prices_fetcher = PricesFetcher;
+            let flusher = OperationsFlusher;
+
+            let (sender, receiver2) = mpsc::channel(100_000);
+            let f1 = prices_fetcher.process(receiver, Some(sender));
+            let f2 = flusher.process(receiver2, None);
+
+            join_all(vec![f1, f2]).await;
 
             log::info!("fetch done!");
         }
