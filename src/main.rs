@@ -131,6 +131,7 @@ pub async fn main() -> Result<()> {
             let prices_fetcher = PricesFetcher;
             let flusher = OperationsFlusher;
 
+            // pipeline to process operations
             let (sender, receiver2) = mpsc::channel(100_000);
             let f1 = prices_fetcher.process(receiver, Some(sender));
             let f2 = flusher.process(receiver2, None);
