@@ -7,8 +7,8 @@ mod reports;
 
 use std::{convert::TryInto, sync::Arc};
 
-use futures::future::join_all;
 use anyhow::{anyhow, Result};
+use futures::future::join_all;
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
@@ -21,7 +21,7 @@ use crate::{
     db::{create_tables, get_operations, Operation as DbOperation},
     operations::{
         fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, OperationsFlusher,
-        OperationsProcesor, PricesFetcher
+        OperationsProcesor, PricesFetcher,
     },
 };
 
@@ -78,7 +78,7 @@ fn mk_fetchers(
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     create_tables()?;
 
@@ -92,28 +92,25 @@ pub async fn main() -> Result<()> {
 
     match action {
         PortfolioAction::Balances => {
-            let coin_tracker = BalanceTracker::new(AssetPrices::new());
+            const BATCH_SIZE: usize = 1000;
             let ops = get_operations()?
                 .into_iter()
                 .map(|o: DbOperation| o.try_into());
-
-            // let mut handles = Vec::new();
-            // let coin_tracker = Arc::new(coin_tracker);
-            for op in ops {
-                // let ct = Arc::clone(&coin_tracker);
-                // handles.push(tokio::spawn(async move {
-                // handles.push(coin_tracker.track_operation(op));
-                if let Err(err) = coin_tracker.track_operation(op?).await {
-                    log::error!("couldn't process operation: {:?}", err);
+            let coin_tracker = BalanceTracker::new(AssetPrices::new());
+            let mut handles = Vec::new();
+            for (i, op) in ops.into_iter().enumerate() {
+                coin_tracker.batch_operation(op?).await;
+                if i % BATCH_SIZE == 0 {
+                    handles.push(coin_tracker.process_batch());
                 }
-                // }));
             }
+            handles.push(coin_tracker.process_batch());
 
-            // join_all(handles)
-            //     .await
-            //     .into_iter()
-            //     .map(|e| e.map_err(|err| anyhow!(err).context("")))
-            //     .collect::<Result<()>>()?;
+            join_all(handles)
+                .await
+                .into_iter()
+                .map(|op| op.map_err(|err| anyhow!(err).context("couldn't process batch")))
+                .collect::<Result<()>>()?;
 
             reports::asset_balances(&coin_tracker).await?;
             println!();

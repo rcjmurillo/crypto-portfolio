@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::sync::Arc;
+use tracing::{debug, span, Level};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
@@ -467,6 +467,7 @@ impl TryFrom<db::Operation> for Operation {
 pub struct BalanceTracker<T: AssetsInfo> {
     coin_balances: RwLock<HashMap<String, AssetBalance>>,
     operations_seen: RwLock<HashSet<String>>,
+    batch: RwLock<Vec<Operation>>,
     asset_info: T,
 }
 
@@ -475,34 +476,40 @@ impl<T: AssetsInfo> BalanceTracker<T> {
         BalanceTracker {
             coin_balances: RwLock::new(HashMap::new()),
             operations_seen: RwLock::new(HashSet::new()),
+            batch: RwLock::new(Vec::new()),
             asset_info,
         }
     }
 
-    pub async fn track_operation(&self, op: Operation) -> Result<()> {
-        if self.operations_seen.read().await.contains(&op.id()) {
-            log::info!("ignoring duplicate operation {:?}", op);
-            return Ok(());
-        }
-        self.operations_seen.write().await.insert(op.id());
+    async fn track_operation(
+        &self,
+        op: &Operation,
+        balance: &mut HashMap<String, AssetBalance>,
+    ) -> Result<()> {
         match op {
             Operation::BalanceIncrease { asset, amount, .. } => {
+                let span = span!(Level::DEBUG, "tracking balance increase");
+                let _enter = span.enter();
+                debug!("start");
                 assert!(
-                    amount >= 0.0,
+                    *amount >= 0.0,
                     "balance increase operation amount can't be negative"
                 );
-                let mut bal = self.coin_balances.write().await;
-                let coin_balance = bal.entry(asset).or_default();
+                let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.amount += amount;
+                debug!("end");
             }
             Operation::BalanceDecrease { asset, amount, .. } => {
+                let span = span!(Level::DEBUG, "tracking balance decrease");
+                let _enter = span.enter();
+                debug!("start");
                 assert!(
-                    amount >= 0.0,
+                    *amount >= 0.0,
                     "balance decrease operation amount can't be negative"
                 );
-                let mut bal = self.coin_balances.write().await;
-                let coin_balance = bal.entry(asset).or_default();
+                let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.amount -= amount;
+                debug!("end");
             }
             Operation::Cost {
                 asset,
@@ -510,6 +517,9 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 time,
                 ..
             } => {
+                let span = span!(Level::DEBUG, "tracking cost");
+                let _enter = span.enter();
+                debug!("start");
                 let usd_price = if asset.starts_with("USD") {
                     1.0
                 } else {
@@ -517,9 +527,9 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                         .price_at(&format!("{}USDT", asset), &time)
                         .await?
                 };
-                let mut bal = self.coin_balances.write().await;
-                let coin_balance = bal.entry(asset).or_default();
+                let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
+                debug!("end")
             }
             Operation::Revenue {
                 asset,
@@ -527,6 +537,9 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 time,
                 ..
             } => {
+                let span = span!(Level::DEBUG, "tracking revenue");
+                let _enter = span.enter();
+                debug!("start");
                 let usd_price = if asset.starts_with("USD") {
                     1.0
                 } else {
@@ -534,12 +547,30 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                         .price_at(&format!("{}USDT", asset), &time)
                         .await?
                 };
-                let mut bal = self.coin_balances.write().await;
-                let coin_balance = bal.entry(asset).or_default();
+                let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
+                debug!("end");
             }
         }
         Ok(())
+    }
+
+    pub async fn process_batch(&self) -> Result<()> {
+        let mut bal = self.coin_balances.write().await;
+        for op in self.batch.read().await.iter() {
+            self.track_operation(op, &mut *bal).await?;
+        }
+        self.batch.write().await.clear();
+        Ok(())
+    }
+
+    pub async fn batch_operation(&self, op: Operation) {
+        if self.operations_seen.read().await.contains(&op.id()) {
+            log::info!("ignoring duplicate operation {:?}", op);
+            return;
+        }
+        self.operations_seen.write().await.insert(op.id());
+        self.batch.write().await.push(op);
     }
 
     pub async fn get_balance(&self, asset: &str) -> Option<AssetBalance> {
@@ -1207,8 +1238,9 @@ mod tests {
         ];
 
         for op in ops {
-            coin_tracker.track_operation(op).await?;
+            coin_tracker.batch_operation(op).await;
         }
+        coin_tracker.process_batch().await?;
 
         let mut expected = vec![
             (
