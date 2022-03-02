@@ -106,11 +106,9 @@ pub async fn main() -> Result<()> {
             }
             handles.push(coin_tracker.process_batch());
 
-            join_all(handles)
-                .await
-                .into_iter()
-                .map(|op| op.map_err(|err| anyhow!(err).context("couldn't process batch")))
-                .collect::<Result<()>>()?;
+            join_all(handles).await.into_iter().try_for_each(|op| {
+                op.map_err(|err| anyhow!(err).context("couldn't process batch"))
+            })?;
 
             reports::asset_balances(&coin_tracker).await?;
             println!();

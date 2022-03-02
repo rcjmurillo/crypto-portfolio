@@ -37,7 +37,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
         } else {
             *all_prices
                 .get(&(String::from(symbol) + "USDT"))
-                .expect(&format!("couldn't get price for {}", symbol))
+                .unwrap_or_else(|| panic!("couldn't get price for {}", symbol))
         }
     };
 

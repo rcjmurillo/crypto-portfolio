@@ -96,24 +96,24 @@ impl Into<ops::Withdraw> for Transaction {
             source_id: self.id,
             source: "coinbase".to_string(),
             asset: subtotal.currency,
-            amount: subtotal.amount.parse::<f64>().expect(&format!(
-                "couldn't parse amount '{}' into f64",
-                subtotal.amount
-            )),
+            amount: subtotal
+                .amount
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("couldn't parse amount '{}' into f64", subtotal.amount)),
             fee: fee
                 .amount
                 .parse::<f64>()
-                .expect(&format!("couldn't parse amount '{}' into f64", fee.amount)),
+                .unwrap_or_else(|_| panic!("couldn't parse amount '{}' into f64", fee.amount)),
             time: payout_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", payout_at)),
+                .unwrap_or_else(|_| panic!("couldn't parse time '{}'", payout_at)),
         }
     }
 }
 
-impl Into<ops::TradeSide> for TransactionSide {
-    fn into(self) -> ops::TradeSide {
-        match self {
+impl From<TransactionSide> for ops::TradeSide {
+    fn from(ts: TransactionSide) -> ops::TradeSide {
+        match ts {
             TransactionSide::Buy => ops::TradeSide::Buy,
             TransactionSide::Sell => ops::TradeSide::Sell,
         }
@@ -125,7 +125,7 @@ impl Into<ops::Trade> for Transaction {
         let to_f64 = |amount_str: &str| {
             amount_str
                 .parse::<f64>()
-                .expect(&format!("couldn't parse amount '{}' into f64", amount_str))
+                .unwrap_or_else(|_| panic!("couldn't parse amount '{}' into f64", amount_str))
         };
 
         let base_asset = self.amount.currency;
@@ -147,7 +147,7 @@ impl Into<ops::Trade> for Transaction {
             time: self
                 .updated_at
                 .parse::<DateTime<Utc>>()
-                .expect(&format!("couldn't parse time '{}'", self.updated_at)),
+                .unwrap_or_else(|_| panic!("couldn't parse time '{}'", self.updated_at)),
             side: self.side.into(),
         }
     }
@@ -161,10 +161,7 @@ impl Into<Operations> for Transaction {
             .amount
             .amount
             .parse::<f64>()
-            .expect(&format!(
-                "couldn't parse amount '{}' into f64",
-                self.amount.amount
-            ))
+            .unwrap_or_else(|_| panic!("couldn't parse amount '{}' into f64", self.amount.amount))
             .abs();
         Operations(if amount > 0.0 {
             vec![
