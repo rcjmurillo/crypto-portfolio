@@ -8,7 +8,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::db::{self, get_asset_price_bucket, insert_asset_price_bucket, insert_operations};
+use crate::operations::{
+    db::{self, get_asset_price_bucket, insert_asset_price_bucket},
+    storage::Storage,
+};
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
 #[derive(Deserialize)]
@@ -23,9 +26,8 @@ pub enum OperationStatus {
 /// into known structs that can be correctly translated into operations.
 pub trait ExchangeDataFetcher {
     // Allows to express any transactions as a list of operations, this gives
-    // more freedom at the cost of trusting exchange client will correctly
-    // translate its data/transactions into operations that will keep the correct
-    // balance.
+    // more freedom at the cost of trusting the exchange client will correctly
+    // translate its data/transactions into operations that will keep consistency.
     async fn operations(&self) -> Result<Vec<Operation>>;
     async fn trades(&self) -> Result<Vec<Trade>>;
     async fn margin_trades(&self) -> Result<Vec<Trade>>;
@@ -291,7 +293,7 @@ pub struct AssetBalance {
     pub usd_position: f64,
 }
 
-/// Types of operations used to express any type of 
+/// Types of operations used to express any type of
 /// transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
@@ -360,67 +362,6 @@ impl Operation {
                 amount,
                 ..
             } => format!("revenue-{}-{}-{}-{}", source_id, source, asset, amount),
-        }
-    }
-}
-
-impl Into<db::Operation> for Operation {
-    fn into(self) -> db::Operation {
-        match self {
-            Operation::Cost {
-                source_id,
-                source,
-                asset,
-                amount,
-                time,
-            } => db::Operation {
-                source_id,
-                source,
-                op_type: "cost".to_string(),
-                asset,
-                amount,
-                timestamp: Some(time.timestamp()),
-            },
-            Operation::Revenue {
-                source_id,
-                source,
-                asset,
-                amount,
-                time,
-            } => db::Operation {
-                source_id,
-                source,
-                op_type: "revenue".to_string(),
-                asset,
-                amount,
-                timestamp: Some(time.timestamp()),
-            },
-            Operation::BalanceIncrease {
-                source_id,
-                source,
-                asset,
-                amount,
-            } => db::Operation {
-                source_id,
-                source,
-                op_type: "balance_increase".to_string(),
-                asset,
-                amount,
-                timestamp: None,
-            },
-            Operation::BalanceDecrease {
-                source_id,
-                source,
-                asset,
-                amount,
-            } => db::Operation {
-                source_id,
-                source,
-                op_type: "balance_decrease".to_string(),
-                asset,
-                amount,
-                timestamp: None,
-            },
         }
     }
 }
@@ -612,31 +553,39 @@ pub trait OperationsProcesor {
 const OPS_RECEIVE_BATCH_SIZE: usize = 1000;
 
 /// Flushes batched operations into the db
-pub struct OperationsFlusher;
+pub struct OperationsFlusher<S> {
+    ops_storage: S,
+}
 
-impl OperationsFlusher {
-    fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
+impl<S: Storage> OperationsFlusher<S> {
+    pub fn new(ops_storage: S) -> Self {
+        Self { ops_storage }
+    }
+    async fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
         let mut seen_ops = HashSet::new();
-        let inserted = insert_operations(
-            batch
-                .into_iter()
-                .inspect(|op| {
-                    if seen_ops.contains(&op.id()) {
-                        log::info!("duplicate op {} {:?}", op.id(), op);
-                    } else {
-                        seen_ops.insert(op.id());
-                    }
-                })
-                .filter_map(|op| op.try_into().map_or(None, |op| Some(op)))
-                .collect(),
-        )?;
+        let inserted = self
+            .ops_storage
+            .insert_ops(
+                batch
+                    .into_iter()
+                    .inspect(|op| {
+                        if seen_ops.contains(&op.id()) {
+                            log::info!("duplicate op {} {:?}", op.id(), op);
+                        } else {
+                            seen_ops.insert(op.id());
+                        }
+                    })
+                    .filter_map(|op| op.try_into().map_or(None, |op| Some(op)))
+                    .collect(),
+            )
+            .await?;
         log::debug!("flushed {} operations into db", inserted);
         Ok(inserted)
     }
 }
 
 #[async_trait]
-impl OperationsProcesor for OperationsFlusher {
+impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
     async fn process(
         &self,
         mut receiver: mpsc::Receiver<Operation>,
@@ -649,7 +598,7 @@ impl OperationsProcesor for OperationsFlusher {
         while let Some(op) = receiver.recv().await {
             batch.push(op.clone());
             if batch.len() == OPS_RECEIVE_BATCH_SIZE {
-                num_ops += self.flush(batch)?;
+                num_ops += self.flush(batch).await?;
                 num_fetched += OPS_RECEIVE_BATCH_SIZE;
                 batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
             }
@@ -660,14 +609,14 @@ impl OperationsProcesor for OperationsFlusher {
 
         if batch.len() > 0 {
             num_fetched += batch.len();
-            num_ops += self.flush(batch)?;
+            num_ops += self.flush(batch).await?;
         };
         log::info!("fetched={} inserted={}", num_fetched, num_ops);
         Ok(())
     }
 }
 
-/// Fetches prices for assets and stores on the db based on the processed 
+/// Fetches prices for assets and stores on the db based on the processed
 /// operations.
 pub struct PricesFetcher;
 

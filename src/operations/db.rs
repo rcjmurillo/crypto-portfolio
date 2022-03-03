@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
+
+use crate::operations::{ops::Operation as OperationType, storage::Storage};
 
 const DB_NAME: &'static str = "operations.db";
 
@@ -12,6 +15,67 @@ pub struct Operation {
     pub asset: String,
     pub amount: f64,
     pub timestamp: Option<i64>,
+}
+
+impl From<OperationType> for Operation {
+    fn from(op: OperationType) -> Operation {
+        match op {
+            OperationType::Cost {
+                source_id,
+                source,
+                asset,
+                amount,
+                time,
+            } => Operation {
+                source_id,
+                source,
+                op_type: "cost".to_string(),
+                asset,
+                amount,
+                timestamp: Some(time.timestamp()),
+            },
+            OperationType::Revenue {
+                source_id,
+                source,
+                asset,
+                amount,
+                time,
+            } => Operation {
+                source_id,
+                source,
+                op_type: "revenue".to_string(),
+                asset,
+                amount,
+                timestamp: Some(time.timestamp()),
+            },
+            OperationType::BalanceIncrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => Operation {
+                source_id,
+                source,
+                op_type: "balance_increase".to_string(),
+                asset,
+                amount,
+                timestamp: None,
+            },
+            OperationType::BalanceDecrease {
+                source_id,
+                source,
+                asset,
+                amount,
+            } => Operation {
+                source_id,
+                source,
+                op_type: "balance_decrease".to_string(),
+                asset,
+                amount,
+                timestamp: None,
+            },
+        }
+    }
 }
 
 pub fn create_tables() -> Result<()> {
@@ -146,5 +210,17 @@ pub fn get_asset_price_bucket(bucket: u16, asset: &str) -> Result<Option<Vec<(u6
         })?))
     } else {
         Ok(None)
+    }
+}
+
+pub struct Db;
+
+#[async_trait]
+impl Storage for Db {
+    async fn get_ops(&self) -> Result<Vec<OperationType>> {
+        get_operations()?.into_iter().map(|op| op.try_into()).collect()
+    }
+    async fn insert_ops(&self, ops: Vec<OperationType>) -> Result<usize> {
+        insert_operations(ops.into_iter().map(|op| op.into()).collect())
     }
 }

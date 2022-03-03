@@ -1,6 +1,5 @@
 mod cli;
 mod custom_ops;
-mod db;
 mod errors;
 mod operations;
 mod reports;
@@ -18,8 +17,8 @@ use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 use crate::{
     cli::{Args, PortfolioAction},
     custom_ops::FileDataFetcher,
-    db::{create_tables, get_operations, Operation as DbOperation},
     operations::{
+        db::{create_tables, get_operations, Db, Operation as DbOperation},
         fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, OperationsFlusher,
         OperationsProcesor, PricesFetcher,
     },
@@ -127,7 +126,7 @@ pub async fn main() -> Result<()> {
 
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
             let prices_fetcher = PricesFetcher;
-            let flusher = OperationsFlusher;
+            let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations
             let (sender, receiver2) = mpsc::channel(100_000);

@@ -1,6 +1,6 @@
-use std::{env, fmt, marker::PhantomData, sync::Arc};
+use std::{env, marker::PhantomData, sync::Arc};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
