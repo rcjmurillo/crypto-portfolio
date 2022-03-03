@@ -623,6 +623,7 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
         while let Some(op) = receiver.recv().await {
             batch.push(op.clone());
             if batch.len() == OPS_RECEIVE_BATCH_SIZE {
+                log::info!("batched {}", OPS_RECEIVE_BATCH_SIZE);
                 num_ops += self.flush(batch).await?;
                 num_fetched += OPS_RECEIVE_BATCH_SIZE;
                 batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
@@ -631,8 +632,9 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
                 sender.send(op).await?;
             }
         }
-
+        
         if batch.len() > 0 {
+            log::info!("batched {}", batch.len());
             num_fetched += batch.len();
             num_ops += self.flush(batch).await?;
         };
