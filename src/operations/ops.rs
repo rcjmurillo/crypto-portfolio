@@ -78,8 +78,10 @@ impl Into<Vec<Operation>> for Trade {
                 Operation::Cost {
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
-                    asset: self.base_asset,
-                    amount: self.amount,
+                    for_asset: self.base_asset.clone(),
+                    for_amount: self.amount,
+                    asset: self.quote_asset.clone(),
+                    amount: self.amount * self.price,
                     time: self.time,
                 },
                 Operation::BalanceDecrease {
@@ -91,7 +93,7 @@ impl Into<Vec<Operation>> for Trade {
                 Operation::Revenue {
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
-                    asset: self.quote_asset,
+                    asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                     time: self.time,
                 },
@@ -106,7 +108,7 @@ impl Into<Vec<Operation>> for Trade {
                 Operation::Revenue {
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
-                    asset: self.base_asset,
+                    asset: self.base_asset.clone(),
                     amount: self.amount,
                     time: self.time,
                 },
@@ -119,8 +121,10 @@ impl Into<Vec<Operation>> for Trade {
                 Operation::Cost {
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
-                    asset: self.quote_asset,
-                    amount: self.amount * self.price,
+                    for_asset: self.quote_asset.clone(),
+                    for_amount: self.amount * self.price,
+                    asset: self.base_asset.clone(),
+                    amount: self.amount,
                     time: self.time,
                 },
             ],
@@ -135,6 +139,11 @@ impl Into<Vec<Operation>> for Trade {
             ops.push(Operation::Cost {
                 source_id: format!("{}-fee", self.source_id),
                 source: self.source,
+                for_asset: match self.side {
+                    TradeSide::Buy => self.base_asset,
+                    TradeSide::Sell => self.quote_asset,
+                },
+                for_amount: 0.0,
                 asset: self.fee_asset,
                 amount: self.fee,
                 time: self.time,
@@ -176,6 +185,8 @@ impl Into<Vec<Operation>> for Deposit {
                 Operation::Cost {
                     source_id: self.source_id,
                     source: self.source,
+                    for_asset: self.asset.clone(),
+                    for_amount: 0.0,
                     asset: self.asset,
                     amount: fee,
                     time: self.time,
@@ -207,7 +218,7 @@ impl Into<Vec<Operation>> for Withdraw {
                 amount: self.amount,
             },
             Operation::BalanceDecrease {
-                source_id: format!("{}-fee", self.source_id.clone()),
+                source_id: format!("{}-fee", &self.source_id),
                 source: self.source.clone(),
                 asset: self.asset.clone(),
                 amount: self.fee,
@@ -215,6 +226,8 @@ impl Into<Vec<Operation>> for Withdraw {
             Operation::Cost {
                 source_id: self.source_id,
                 source: self.source,
+                for_asset: self.asset.clone(),
+                for_amount: 0.0,
                 asset: self.asset,
                 amount: self.fee,
                 time: self.time,
@@ -276,6 +289,8 @@ impl Into<Vec<Operation>> for Repay {
                     Operation::Cost {
                         source_id: self.source_id,
                         source: self.source,
+                        for_asset: self.asset.clone(),
+                        for_amount: 0.0,
                         asset: self.asset,
                         amount: self.interest,
                         time: self.time,
@@ -313,6 +328,9 @@ pub enum Operation {
     Cost {
         source_id: String,
         source: String,
+        // for which asset the cost was incurred
+        for_asset: String,
+        for_amount: f64,
         asset: String,
         amount: f64,
         time: DateTime<Utc>,
@@ -374,10 +392,17 @@ impl TryFrom<db::Operation> for Operation {
             "cost" => Ok(Operation::Cost {
                 source_id: op.source_id,
                 source: op.source,
+                for_asset: op
+                    .for_asset
+                    .ok_or_else(|| anyhow!("missing for_asset in cost operation"))?,
+                for_amount: op
+                    .for_amount
+                    .ok_or_else(|| anyhow!("missing for_amount in cost operation"))?,
                 asset: op.asset,
                 amount: op.amount,
                 time: Utc.timestamp(
-                    op.timestamp.expect("missing timestamp in cost operation"),
+                    op.timestamp
+                        .ok_or_else(|| anyhow!("missing timestamp in cost operation"))?,
                     0,
                 ),
             }),
@@ -388,7 +413,7 @@ impl TryFrom<db::Operation> for Operation {
                 amount: op.amount,
                 time: Utc.timestamp(
                     op.timestamp
-                        .expect("missing timestamp in revenue operation"),
+                        .ok_or_else(|| anyhow!("missing timestamp in revenue operation"))?,
                     0,
                 ),
             }),
@@ -881,7 +906,9 @@ mod tests {
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOT".into(),
+                for_asset: "DOT".into(),
+                for_amount: 1.5,
+                asset: "ETH".into(),
                 amount: 3.0,
                 time: Utc::now()
             }
@@ -919,6 +946,8 @@ mod tests {
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
+                for_asset: "DOT".into(),
+                for_amount: 0.0,
                 asset: "ETH".into(),
                 amount: 0.01,
                 time: Utc::now()
@@ -979,7 +1008,9 @@ mod tests {
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETH".into(),
+                for_asset: "ETH".into(),
+                for_amount: 1.5,
+                asset: "DOT".into(),
                 amount: 1.5,
                 time: Utc::now()
             }
@@ -998,6 +1029,8 @@ mod tests {
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
+                for_asset: "ETH".into(),
+                for_amount: 0.0,
                 asset: "XCOIN".into(),
                 amount: 0.01,
                 time: Utc::now(),
@@ -1039,7 +1072,9 @@ mod tests {
                 Operation::Cost {
                     source_id: "1".to_string(),
                     source: "test".to_string(),
-                    asset: "DOT".into(),
+                    for_asset: "DOT".into(),
+                    for_amount: 1.5,
+                    asset: "ETH".into(),
                     amount: 3.0,
                     time: Utc::now()
                 }
@@ -1094,27 +1129,31 @@ mod tests {
             Operation::BalanceIncrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "BTCUSD".into(),
+                asset: "BTC".into(),
                 amount: 0.03,
             },
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "BTCUSD".into(),
-                amount: 0.03,
+                for_asset: "BTC".to_string(),
+                for_amount: 0.03,
+                asset: "USD".into(),
+                amount: 8500.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "BTCUSD".into(),
+                asset: "BTC".into(),
                 amount: 0.1,
             },
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "BTCUSD".into(),
-                amount: 0.1,
+                for_asset: "BTC".into(),
+                for_amount: 0.1,
+                asset: "USD".into(),
+                amount: 8900.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
@@ -1126,72 +1165,78 @@ mod tests {
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
-                amount: 0.5,
+                for_asset: "ETH".into(),
+                for_amount: 0.5,
+                asset: "USD".into(),
+                amount: 2000.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
+                asset: "ETH".into(),
                 amount: 0.01,
             },
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
-                amount: 0.01,
+                for_asset: "ETH".into(),
+                for_amount: 0.01,
+                asset: "USD".into(),
+                amount: 2100.0,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
+                asset: "ETH".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
+                asset: "ETH".into(),
                 amount: 0.2,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
+                asset: "DOT".into(),
                 amount: 0.5,
             },
             Operation::Cost {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
-                amount: 0.5,
+                for_asset: "DOT".into(),
+                for_amount: 0.5,
+                asset: "USD".into(),
+                amount: 15.0,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
+                asset: "DOT".into(),
                 amount: 0.1,
             },
             Operation::Revenue {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
+                asset: "DOT".into(),
                 amount: 0.1,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
+                asset: "DOT".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "DOTUSD".into(),
+                asset: "DOT".into(),
                 amount: 0.2,
                 time: Utc::now(),
             },
@@ -1204,21 +1249,21 @@ mod tests {
 
         let mut expected = vec![
             (
-                "BTCUSD".to_string(),
+                "BTC".to_string(),
                 AssetBalance {
                     amount: 0.13,
                     usd_position: -1145.0,
                 },
             ),
             (
-                "ETHUSD".to_string(),
+                "ETH".to_string(),
                 AssetBalance {
                     amount: 0.31,
                     usd_position: 379.0,
                 },
             ),
             (
-                "DOTUSD".to_string(),
+                "DOT".to_string(),
                 AssetBalance {
                     amount: 0.2,
                     usd_position: 14.0,

@@ -156,12 +156,29 @@ impl Into<ops::Trade> for Transaction {
 struct Operations(Vec<ops::Operation>);
 
 impl Into<Operations> for Transaction {
+    // fixme: convert into TryFrom
     fn into(self) -> Operations {
-        let amount = self
+        let for_amount = self
             .amount
             .amount
             .parse::<f64>()
-            .unwrap_or_else(|_| panic!("couldn't parse amount '{}' into f64", self.amount.amount))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "couldn't parse for_amount '{}' into f64",
+                    self.amount.amount
+                )
+            })
+            .abs();
+        let amount = self
+            .native_amount
+            .amount
+            .parse::<f64>()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "couldn't parse amount '{}' into f64",
+                    self.native_amount.amount
+                )
+            })
             .abs();
         Operations(if amount > 0.0 {
             vec![
@@ -174,7 +191,9 @@ impl Into<Operations> for Transaction {
                 ops::Operation::Cost {
                     source_id: self.id.clone(),
                     source: "coinbase".to_string(),
-                    asset: self.amount.currency.clone(),
+                    for_asset: self.amount.currency.clone(),
+                    for_amount: for_amount,
+                    asset: self.native_amount.currency.clone(),
                     amount: amount,
                     time: self.update_time(),
                 },

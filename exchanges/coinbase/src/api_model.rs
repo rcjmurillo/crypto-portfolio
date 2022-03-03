@@ -76,6 +76,7 @@ pub struct Transaction {
     pub payout_at: Option<String>,
     pub fee: Option<Amount>,
     pub amount: Amount,
+    pub native_amount: Amount,
     pub subtotal: Option<Amount>,
 
     // computed

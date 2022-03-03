@@ -12,6 +12,8 @@ pub struct Operation {
     pub source_id: String,
     pub source: String,
     pub op_type: String,
+    pub for_asset: Option<String>,
+    pub for_amount: Option<f64>,
     pub asset: String,
     pub amount: f64,
     pub timestamp: Option<i64>,
@@ -23,6 +25,8 @@ impl From<OperationType> for Operation {
             OperationType::Cost {
                 source_id,
                 source,
+                for_asset,
+                for_amount,
                 asset,
                 amount,
                 time,
@@ -30,6 +34,8 @@ impl From<OperationType> for Operation {
                 source_id,
                 source,
                 op_type: "cost".to_string(),
+                for_asset: Some(for_asset),
+                for_amount: Some(for_amount),
                 asset,
                 amount,
                 timestamp: Some(time.timestamp()),
@@ -47,6 +53,8 @@ impl From<OperationType> for Operation {
                 asset,
                 amount,
                 timestamp: Some(time.timestamp()),
+                for_asset: None,
+                for_amount: None,
             },
             OperationType::BalanceIncrease {
                 source_id,
@@ -59,6 +67,8 @@ impl From<OperationType> for Operation {
                 op_type: "balance_increase".to_string(),
                 asset,
                 amount,
+                for_asset: None,
+                for_amount: None,
                 timestamp: None,
             },
             OperationType::BalanceDecrease {
@@ -72,6 +82,8 @@ impl From<OperationType> for Operation {
                 op_type: "balance_decrease".to_string(),
                 asset,
                 amount,
+                for_asset: None,
+                for_amount: None,
                 timestamp: None,
             },
         }
@@ -86,10 +98,12 @@ pub fn create_tables() -> Result<()> {
             source_id   VARCHAR(100), 
             source      VARCHAR(25),
             type        VARCHAR(20),
+            for_asset   VARCHAR(15),
+            for_amount  FLOAT,
             asset       VARCHAR(15),
             amount      FLOAT,
             timestamp   TIMESTAMP NULL,
-            PRIMARY KEY (source_id, source, type, asset, amount)
+            PRIMARY KEY (source_id, source, type, for_asset, for_amount, asset, amount)
         )",
         [],
     )?;
@@ -112,8 +126,8 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
 
     let mut stmt = conn.prepare_cached(
         "INSERT INTO 
-         operations (source_id, source, type, asset, amount, timestamp) 
-         VALUES (?, ?, ?, ?, ?, ?)",
+         operations (source_id, source, type, for_asset, for_amount, asset, amount, timestamp) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
 
     let mut inserted = 0;
@@ -122,6 +136,8 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
             op.source_id,
             op.source,
             op.op_type,
+            op.for_asset,
+            op.for_amount,
             op.asset,
             op.amount,
             op.timestamp,
@@ -149,7 +165,7 @@ pub fn get_operations() -> Result<Vec<Operation>> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt = conn.prepare(
-        "SELECT source_id, source,type, asset, amount, timestamp 
+        "SELECT source_id, source,type, for_asset, for_amount, asset, amount, timestamp 
          FROM operations",
     )?;
     let op_iter = stmt.query_map([], |row| {
@@ -157,9 +173,11 @@ pub fn get_operations() -> Result<Vec<Operation>> {
             source_id: row.get(0)?,
             source: row.get(1)?,
             op_type: row.get(2)?,
-            asset: row.get(3)?,
-            amount: row.get(4)?,
-            timestamp: row.get(5)?,
+            for_asset: row.get(3)?,
+            for_amount: row.get(4)?,
+            asset: row.get(5)?,
+            amount: row.get(6)?,
+            timestamp: row.get(7)?,
         })
     })?;
 
@@ -218,7 +236,10 @@ pub struct Db;
 #[async_trait]
 impl Storage for Db {
     async fn get_ops(&self) -> Result<Vec<OperationType>> {
-        get_operations()?.into_iter().map(|op| op.try_into()).collect()
+        get_operations()?
+            .into_iter()
+            .map(|op| op.try_into())
+            .collect()
     }
     async fn insert_ops(&self, ops: Vec<OperationType>) -> Result<usize> {
         insert_operations(ops.into_iter().map(|op| op.into()).collect())
