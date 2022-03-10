@@ -482,6 +482,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 debug!("end");
             }
             Operation::Cost {
+                for_asset,
                 asset,
                 amount,
                 time,
@@ -494,10 +495,10 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), &time)
-                        .await?
+                    .price_at(&format!("{}USDT", asset), &time)
+                    .await?
                 };
-                let coin_balance = balance.entry(asset.clone()).or_default();
+                let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
                 debug!("end")
             }
@@ -514,8 +515,8 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), &time)
-                        .await?
+                    .price_at(&format!("{}USDT", asset), &time)
+                    .await?
                 };
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
@@ -632,7 +633,6 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
                 sender.send(op).await?;
             }
         }
-        
         if batch.len() > 0 {
             log::info!("batched {}", batch.len());
             num_fetched += batch.len();
@@ -872,10 +872,55 @@ pub(crate) mod datetime_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickcheck::{Arbitrary, Gen};
     use tokio::sync::Mutex;
+
+    // impl Arbitrary for Utc {
+    //     fn arbitrary(g: &mut Gen) -> Self {
+    //         Utc::now()
+    //     }
+    // }
+
+    impl Arbitrary for Operation {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets: &[&str] = &["BTC", "ETH", "SOL", "AVAX", "USD"];
+            let choices = [
+                Operation::Cost {
+                    source_id: String::arbitrary(g),
+                    source: String::arbitrary(g),
+                    for_asset: g.choose(assets).unwrap().to_string(),
+                    for_amount: f64::arbitrary(g),
+                    asset: g.choose(assets).unwrap().to_string(),
+                    amount: f64::arbitrary(g),
+                    time: Utc::now(),
+                },
+                Operation::Revenue {
+                    source_id: String::arbitrary(g),
+                    source: String::arbitrary(g),
+                    asset: g.choose(assets).unwrap().to_string(),
+                    amount: f64::arbitrary(g),
+                    time: Utc::now(),
+                },
+                Operation::BalanceIncrease {
+                    source_id: String::arbitrary(g),
+                    source: String::arbitrary(g),
+                    asset: g.choose(assets).unwrap().to_string(),
+                    amount: f64::arbitrary(g),
+                },
+                Operation::BalanceDecrease {
+                    source_id: String::arbitrary(g),
+                    source: String::arbitrary(g),
+                    asset: g.choose(assets).unwrap().to_string(),
+                    amount: f64::arbitrary(g),
+                },
+            ];
+            g.choose(&choices).unwrap().clone()
+        }
+    }
 
     #[test]
     fn trade_buy_into() {
+        let now = Utc::now();
         let t1 = Trade {
             source_id: "1".to_string(),
             source: "test".to_string(),
@@ -886,7 +931,7 @@ mod tests {
             amount: 3.0,
             fee: 0.01,
             fee_asset: "ETH".into(),
-            time: Utc::now(),
+            time: now,
             side: TradeSide::Buy,
         };
 
@@ -909,10 +954,10 @@ mod tests {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 for_asset: "DOT".into(),
-                for_amount: 1.5,
+                for_amount: 3.0,
                 asset: "ETH".into(),
-                amount: 3.0,
-                time: Utc::now()
+                amount: 1.5,
+                time: now
             }
         );
         assert_eq!(
@@ -931,7 +976,7 @@ mod tests {
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 1.5,
-                time: Utc::now()
+                time: now
             }
         );
         assert_eq!(
@@ -946,19 +991,20 @@ mod tests {
         assert_eq!(
             ops[5],
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "1-fee".to_string(),
                 source: "test".to_string(),
                 for_asset: "DOT".into(),
                 for_amount: 0.0,
                 asset: "ETH".into(),
                 amount: 0.01,
-                time: Utc::now()
+                time: now
             }
         );
     }
 
     #[test]
     fn trade_sell_into() {
+        let now = Utc::now();
         let t1 = Trade {
             source_id: "1".to_string(),
             source: "test".to_string(),
@@ -969,7 +1015,7 @@ mod tests {
             amount: 3.0,
             fee: 0.01,
             fee_asset: "XCOIN".into(),
-            time: Utc::now(),
+            time: now,
             side: TradeSide::Sell,
         };
 
@@ -993,7 +1039,7 @@ mod tests {
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 3.0,
-                time: Utc::now(),
+                time: now,
             }
         );
         assert_eq!(
@@ -1013,8 +1059,8 @@ mod tests {
                 for_asset: "ETH".into(),
                 for_amount: 1.5,
                 asset: "DOT".into(),
-                amount: 1.5,
-                time: Utc::now()
+                amount: 3.0,
+                time: now
             }
         );
         assert_eq!(
@@ -1029,19 +1075,20 @@ mod tests {
         assert_eq!(
             ops[5],
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "1-fee".to_string(),
                 source: "test".to_string(),
                 for_asset: "ETH".into(),
                 for_amount: 0.0,
                 asset: "XCOIN".into(),
                 amount: 0.01,
-                time: Utc::now(),
+                time: now,
             }
         );
     }
 
     #[test]
     fn trade_into_no_fee() {
+        let now = Utc::now();
         let fee_cases = vec![(1.0, ""), (0.0, "ETH"), (0.0, "")];
         for (fee_amount, fee_asset) in fee_cases.into_iter() {
             let t = Trade {
@@ -1054,7 +1101,7 @@ mod tests {
                 amount: 3.0,
                 fee: fee_amount,
                 fee_asset: fee_asset.to_string(),
-                time: Utc::now(),
+                time: now,
                 side: TradeSide::Buy,
             };
             let ops: Vec<Operation> = t.into();
@@ -1075,10 +1122,10 @@ mod tests {
                     source_id: "1".to_string(),
                     source: "test".to_string(),
                     for_asset: "DOT".into(),
-                    for_amount: 1.5,
+                    for_amount: 3.0,
                     asset: "ETH".into(),
-                    amount: 3.0,
-                    time: Utc::now()
+                    amount: 1.5,
+                    time: now
                 }
             );
             assert_eq!(
@@ -1097,7 +1144,7 @@ mod tests {
                     source: "test".to_string(),
                     asset: "ETH".into(),
                     amount: 1.5,
-                    time: Utc::now()
+                    time: now
                 }
             );
         }
@@ -1113,7 +1160,7 @@ mod tests {
             fn new() -> Self {
                 Self {
                     prices: Mutex::new(vec![
-                        8500.0, 8900.0, 2000.0, 2100.0, 7000.0, 15.0, 25.0, 95.0,
+                        7000.0, 25.0, 95.0,
                     ]),
                 }
             }
@@ -1121,7 +1168,7 @@ mod tests {
 
         #[async_trait]
         impl AssetsInfo for TestAssetInfo {
-            async fn price_at(&self, _symbol: &str, time: &DateTime<Utc>) -> Result<f64> {
+            async fn price_at(&self, _symbol: &str, _time: &DateTime<Utc>) -> Result<f64> {
                 Ok(self.prices.lock().await.remove(0))
             }
         }
@@ -1135,46 +1182,46 @@ mod tests {
                 amount: 0.03,
             },
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "2".to_string(),
                 source: "test".to_string(),
                 for_asset: "BTC".to_string(),
                 for_amount: 0.03,
                 asset: "USD".into(),
-                amount: 8500.0,
+                amount: 255.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
-                source_id: "1".to_string(),
+                source_id: "3".to_string(),
                 source: "test".to_string(),
                 asset: "BTC".into(),
                 amount: 0.1,
             },
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "4".to_string(),
                 source: "test".to_string(),
                 for_asset: "BTC".into(),
                 for_amount: 0.1,
                 asset: "USD".into(),
-                amount: 8900.0,
+                amount: 890.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
-                source_id: "1".to_string(),
+                source_id: "5".to_string(),
                 source: "test".to_string(),
-                asset: "ETHUSD".into(),
+                asset: "ETH".into(),
                 amount: 0.5,
             },
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "6".to_string(),
                 source: "test".to_string(),
                 for_asset: "ETH".into(),
                 for_amount: 0.5,
                 asset: "USD".into(),
-                amount: 2000.0,
+                amount: 1000.0,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
-                source_id: "1".to_string(),
+                source_id: "7".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.01,
@@ -1185,58 +1232,58 @@ mod tests {
                 for_asset: "ETH".into(),
                 for_amount: 0.01,
                 asset: "USD".into(),
-                amount: 2100.0,
+                amount: 21.0,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
-                source_id: "1".to_string(),
+                source_id: "9".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
-                source_id: "1".to_string(),
+                source_id: "10".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.2,
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
-                source_id: "1".to_string(),
+                source_id: "11".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.5,
             },
             Operation::Cost {
-                source_id: "1".to_string(),
+                source_id: "12".to_string(),
                 source: "test".to_string(),
                 for_asset: "DOT".into(),
                 for_amount: 0.5,
                 asset: "USD".into(),
-                amount: 15.0,
+                amount: 7.5,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
-                source_id: "1".to_string(),
+                source_id: "13".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.1,
             },
             Operation::Revenue {
-                source_id: "1".to_string(),
+                source_id: "14".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.1,
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
-                source_id: "1".to_string(),
+                source_id: "15".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
-                source_id: "1".to_string(),
+                source_id: "16".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.2,
@@ -1279,8 +1326,9 @@ mod tests {
         balances.sort_by_key(|x| x.0.clone());
 
         for ((asset_a, balance_a), (asset_b, balance_b)) in expected.iter().zip(balances.iter()) {
-            assert_eq!(asset_a, *asset_b);
-            assert_eq!(balance_a, *balance_b);
+            assert_eq!(asset_a, asset_b);
+            println!("{}", asset_a);
+            assert_eq!(balance_a, balance_b);
         }
 
         Ok(())
