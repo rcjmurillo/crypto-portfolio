@@ -209,7 +209,7 @@ mod tests {
         fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
             let asset_prices = AssetPrices::new();
             let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &asset_prices);
-            stream.ops().iter().all(|op| if let Operation::Cost{..} = op { true } else { false })
+            stream.ops().iter().all(|op| matches!(op, Operation::Cost{..}))
         }
     }
 

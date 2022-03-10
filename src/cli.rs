@@ -83,6 +83,7 @@ impl Config {
 pub enum PortfolioAction {
     Balances,
     Sync,
+    RevenueReport,
 }
 
 #[derive(StructOpt)]

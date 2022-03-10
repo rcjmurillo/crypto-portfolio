@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[macro_use]
+extern crate quickcheck;
+
 mod cli;
 mod custom_ops;
 mod errors;
@@ -136,6 +140,9 @@ pub async fn main() -> Result<()> {
             join_all(vec![f1, f2]).await;
 
             log::info!("fetch done!");
+        }
+        PortfolioAction::RevenueReport => {
+
         }
     }
 
