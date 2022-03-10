@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 
 use crate::operations::{storage::Storage as OperationsStorage, AssetsInfo, Operation};
 
@@ -96,7 +96,11 @@ impl<'a> OperationsStream<'a> {
             },
         });
         Self {
-            ops: ops.into(),
+            ops: ops
+                .into_iter()
+                .filter(|op| matches!(op, Operation::Cost { .. }))
+                .collect::<Vec<Operation>>()
+                .into(),
             assets_info,
         }
     }
@@ -158,6 +162,11 @@ impl<'a> OperationsStream<'a> {
             },
         })
     }
+
+    #[cfg(test)]
+    fn ops(&self) -> Vec<&Operation> {
+        self.ops.iter().collect()
+    }
 }
 
 /// A matcher using the FIFO strategy for computing profit/loss of sale operations,
@@ -186,7 +195,37 @@ impl<'a> FifoMatcher<'a> {
 #[async_trait]
 impl<'a> SaleMatcher for FifoMatcher<'a> {
     async fn match_sale(&mut self, sale: &Sale) -> Result<MatchResult> {
-        // figure out the balance for the asset before the time of the sale
+        // consume purchase amounts from the stream to fulfill the sale amount
         self.purchases_stream.consume(sale).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operations::{AssetPrices, Operation};
+
+    quickcheck! {
+        fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
+            let asset_prices = AssetPrices::new();
+            let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &asset_prices);
+            stream.ops().iter().all(|op| if let Operation::Cost{..} = op { true } else { false })
+        }
+    }
+
+    #[test]
+    fn test_operations_stream_fifo() {
+        // let ops = vec![
+        //     Operation::Cost{
+        //         source_id: "test-1".into(),
+        //         source: "test".into(),
+        //         for_asset: "BTC".into(),
+        //         for_amount: 0.001,
+        //         asset: "USD".into(),
+        //         amount: 40.0,
+        //         time: Utc.ymd(2020, 1, 10).and_hms(6, 7, 8),
+        //     }
+        // ];
+        // let stream = OperationsStream::from_ops(mut ops: Vec<Operation>, strategy: ConsumeStrategy, assets_info: &'a (dyn AssetsInfo + Sync + Send))
     }
 }
