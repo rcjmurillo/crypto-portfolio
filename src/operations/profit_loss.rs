@@ -13,6 +13,7 @@ pub struct Sale {
     datetime: DateTime<Utc>,
 }
 
+#[derive(Debug)]
 pub struct Purchase {
     amount: f64,
     price: f64,
@@ -79,28 +80,28 @@ struct OperationsStream<'a> {
 
 impl<'a> OperationsStream<'a> {
     pub fn from_ops(
-        mut ops: Vec<Operation>,
+        ops: Vec<Operation>,
         strategy: ConsumeStrategy,
         assets_info: &'a (dyn AssetsInfo + Sync + Send),
     ) -> Self {
+        let mut ops = ops
+            .into_iter()
+            .filter(|op| matches!(op, Operation::Cost { .. }))
+            .collect::<Vec<Operation>>();
         ops.sort_by_key(|op| match strategy {
             // the oldest operations will appear first when consuming the queue
             ConsumeStrategy::Fifo => match op {
-                Operation::BalanceIncrease { .. } | Operation::BalanceDecrease { .. } => 0,
-                Operation::Cost { time, .. } | Operation::Revenue { time, .. } => time.timestamp(),
+                Operation::Cost { time, .. } => time.timestamp(),
+                _ => 0,
             },
             // the newest operations will appear first when consuming the queue
             ConsumeStrategy::Lifo => match op {
-                Operation::BalanceIncrease { .. } | Operation::BalanceDecrease { .. } => 0,
-                Operation::Cost { time, .. } | Operation::Revenue { time, .. } => -time.timestamp(),
+                Operation::Cost { time, .. } => -time.timestamp(),
+                _ => 0,
             },
         });
         Self {
-            ops: ops
-                .into_iter()
-                .filter(|op| matches!(op, Operation::Cost { .. }))
-                .collect::<Vec<Operation>>()
-                .into(),
+            ops: ops.into(),
             assets_info,
         }
     }
@@ -203,7 +204,124 @@ impl<'a> SaleMatcher for FifoMatcher<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::{AssetPrices, Operation};
+    use async_trait::async_trait;
+    use quickcheck::{quickcheck, Gen, TestResult};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use crate::operations::{AssetPrices, Operation::*};
+
+    struct DummyStorage {
+        ops: Vec<Operation>,
+    }
+
+    #[async_trait]
+    impl OperationsStorage for DummyStorage {
+        async fn get_ops(&self) -> Result<Vec<Operation>> {
+            Ok(self.ops.clone())
+        }
+        async fn insert_ops(&self, ops: Vec<Operation>) -> Result<usize> {
+            Ok(ops.len())
+        }
+    }
+
+    struct DummyAssetsInfo {
+        last_price: Arc<Mutex<f64>>,
+    }
+
+    impl DummyAssetsInfo {
+        pub fn new() -> Self {
+            Self {
+                last_price: Arc::new(Mutex::new(0.0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AssetsInfo for DummyAssetsInfo {
+        async fn price_at(&self, _symbol: &str, _time: &DateTime<Utc>) -> Result<f64> {
+            let nums: Vec<_> = (1usize..10).map(|n| n as f64).collect();
+            let mut gen = Gen::new(100);
+            let mut p: f64 = *gen.choose(&nums[..]).unwrap();
+            let mut last_price = self.last_price.lock().await;
+            while p == *last_price {
+                p = *gen.choose(&nums[..]).unwrap();
+            }
+            *last_price = p;
+            Ok(p)
+        }
+    }
+
+    fn valid_sequence(ops: &Vec<Operation>) -> bool {
+        // check that for every revenue operation there are enough prior purchase operations
+        // to cover the amount.
+        let mut filtered_ops: Vec<&Operation> = ops
+            .iter()
+            .filter(|op| matches!(op, Cost { .. }) || matches!(op, Revenue { .. }))
+            .collect();
+        // sort by time, cost and revenue operations are guaranteed to have a time
+        filtered_ops.sort_by_key(|op| op.time().unwrap());
+
+        // make sure we have at least one revenue op
+        if !filtered_ops.iter().any(|op| matches!(op, Revenue { .. })) {
+            return false;
+        }
+        for (i, op) in filtered_ops.iter().enumerate() {
+            if let Operation::Revenue {
+                amount,
+                asset: rev_asset,
+                ..
+            } = op
+            {
+                let mut prior_amount = 0.0;
+                // go through all the ops that are before this one and verify if
+                // they can cover amount sold.
+                for j in 0..i {
+                    match filtered_ops[j] {
+                        // cost ops increase the availble amount
+                        Cost {
+                            for_amount,
+                            ref for_asset,
+                            ..
+                        } if for_asset == rev_asset => {
+                            prior_amount += for_amount;
+                        }
+                        // previous revenue ops reduce the total available amount
+                        Revenue {
+                            amount, ref asset, ..
+                        } => {
+                            if asset == rev_asset {
+                                prior_amount -= amount;
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                if prior_amount < *amount {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn into_sales(ops: &Vec<Operation>) -> Vec<Sale> {
+        ops.iter()
+            .filter_map(|op| match op {
+                Operation::Revenue {
+                    asset,
+                    amount,
+                    time,
+                    ..
+                } => Some(Sale {
+                    asset: asset.clone(),
+                    amount: *amount,
+                    datetime: *time,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
 
     quickcheck! {
         fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
@@ -214,18 +332,124 @@ mod tests {
     }
 
     #[test]
-    fn test_operations_stream_fifo() {
-        // let ops = vec![
-        //     Operation::Cost{
-        //         source_id: "test-1".into(),
-        //         source: "test".into(),
-        //         for_asset: "BTC".into(),
-        //         for_amount: 0.001,
-        //         asset: "USD".into(),
-        //         amount: 40.0,
-        //         time: Utc.ymd(2020, 1, 10).and_hms(6, 7, 8),
-        //     }
-        // ];
-        // let stream = OperationsStream::from_ops(mut ops: Vec<Operation>, strategy: ConsumeStrategy, assets_info: &'a (dyn AssetsInfo + Sync + Send))
+    fn can_consume_from_fifo_operations_stream() {
+        fn prop(ops: Vec<Operation>) -> TestResult {
+            if !valid_sequence(&ops) {
+                return TestResult::discard();
+            }
+            let sales = into_sales(&ops);
+            let assets_info = DummyAssetsInfo::new();
+            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("could not build tokio runtime");
+            for s in sales {
+                if !rt.block_on(stream.consume(&s)).is_ok() {
+                    return TestResult::failed();
+                }
+            }
+            TestResult::passed()
+        }
+        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
+    }
+
+    #[test]
+    fn consume_at_least_one_or_more_cost_ops() {
+        fn prop(ops: Vec<Operation>) -> TestResult {
+            if ops.len() > 10 || !valid_sequence(&ops) {
+                return TestResult::discard();
+            }
+            let sales = into_sales(&ops);
+            let assets_info = DummyAssetsInfo::new();
+            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("could not build tokio runtime");
+            for s in sales {
+                match rt.block_on(stream.consume(&s)) {
+                    Ok(
+                        MatchResult::Profit { purchases, .. } | MatchResult::Loss { purchases, .. },
+                    ) => {
+                        if purchases.len() == 0 {
+                            return TestResult::failed();
+                        }
+                    }
+                    Err(_) => return TestResult::failed(),
+                }
+            }
+            TestResult::passed()
+        }
+        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
+    }
+
+    #[test]
+    fn consume_ops_stream_fifo() {
+        fn prop(ops: Vec<Operation>) -> TestResult {
+            if ops.len() != 3 || !valid_sequence(&ops) {
+                return TestResult::discard();
+            }
+            // op0 must be Cost
+            // op1 must be Cost
+            // op2 must be Revenue
+            // all three ops must be for the same asset
+            let valid = match (&ops[0], &ops[1], &ops[2]) {
+                (
+                    Cost { for_asset: a1, .. },
+                    Cost { for_asset: a2, .. },
+                    Revenue { asset: a3, .. },
+                ) => a1 == a2 && a2 == a3,
+                _ => false,
+            };
+            if !valid {
+                return TestResult::discard();
+            }
+
+            // check that the first cost op's amount has been partially or fully consumed
+            if let Revenue {
+                amount,
+                asset,
+                time,
+                ..
+            } = &ops[3]
+            {
+                let orig_amounts = [ops[0].amount(), ops[1].amount()];
+                let sale = Sale {
+                    amount: *amount,
+                    asset: asset.clone(),
+                    datetime: *time,
+                };
+                let assets_info = DummyAssetsInfo::new();
+                let mut stream =
+                    OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("could not build tokio runtime");
+
+                match rt.block_on(stream.consume(&sale)) {
+                    Ok(_) => {
+                        let ops = stream.ops();
+                        // if the sale consumed the whole amount, only one or none ops must remain
+                        if sale.amount >= orig_amounts[0] && ops.len() == 2 {
+                            return TestResult::failed();
+                        } else {
+                            // both ops must remain in the queue
+                            if ops.len() < 2
+                                || ops[0].amount() >= orig_amounts[0]
+                                || ops[1].amount() >= orig_amounts[1]
+                            {
+                                return TestResult::failed();
+                            }
+                        }
+                    }
+                    Err(_) => return TestResult::failed(),
+                }
+            }
+            TestResult::passed()
+        }
+
+        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
     }
 }

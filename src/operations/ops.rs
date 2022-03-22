@@ -382,6 +382,25 @@ impl Operation {
             } => format!("revenue-{}-{}-{}-{}", source_id, source, asset, amount),
         }
     }
+
+    pub fn time(&self) -> Option<&DateTime<Utc>> {
+        use Operation::*;
+        match self {
+            Cost { time, .. } => Some(time),
+            Revenue { time, .. } => Some(time),
+            _ => None,
+        }
+    }
+
+    pub fn amount(&self) -> f64 {
+        use Operation::*;
+        match self {
+            Cost { amount, .. } => *amount,
+            Revenue { amount, .. } => *amount,
+            BalanceIncrease { amount, .. } => *amount,
+            BalanceDecrease { amount, .. } => *amount,
+        }
+    }
 }
 
 impl TryFrom<db::Operation> for Operation {
@@ -495,8 +514,8 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                    .price_at(&format!("{}USDT", asset), &time)
-                    .await?
+                        .price_at(&format!("{}USDT", asset), &time)
+                        .await?
                 };
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
@@ -515,8 +534,8 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                    .price_at(&format!("{}USDT", asset), &time)
-                    .await?
+                        .price_at(&format!("{}USDT", asset), &time)
+                        .await?
                 };
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
@@ -875,43 +894,63 @@ mod tests {
     use quickcheck::{Arbitrary, Gen};
     use tokio::sync::Mutex;
 
-    // impl Arbitrary for Utc {
-    //     fn arbitrary(g: &mut Gen) -> Self {
-    //         Utc::now()
-    //     }
-    // }
+    impl Arbitrary for Trade {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets = ["ADA", "SOL", "MATIC"];
+            let quote_assets = ["BTC", "ETH", "AVAX"];
+            let base_asset = g.choose(&assets).take().unwrap();
+            let quote_asset = g.choose(&quote_assets).take().unwrap();
+            let sides = [TradeSide::Buy, TradeSide::Sell];
+            Trade {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
+                symbol: format!("{:?}{:?}", base_asset, quote_asset),
+                base_asset: base_asset.to_string(),
+                quote_asset: quote_asset.to_string(),
+                price: f64::arbitrary(g),
+                amount: f64::arbitrary(g),
+                fee: f64::arbitrary(g),
+                fee_asset: g.choose(&assets).take().unwrap().to_string(),
+                time: Utc::now(),
+                side: g.choose(&sides).unwrap().clone(),
+            }
+        }
+    }
 
     impl Arbitrary for Operation {
         fn arbitrary(g: &mut Gen) -> Self {
+            let source_ids: Vec<_> = (0..100).into_iter().map(|i| i.to_string()).collect();
+            let amounts: Vec<_> = (1..1000).into_iter().map(|i| i as f64).collect();
             let assets: &[&str] = &["BTC", "ETH", "SOL", "AVAX", "USD"];
+            let sources: &[&str] = &["binance", "FTX", "other-source"];
             let choices = [
                 Operation::Cost {
-                    source_id: String::arbitrary(g),
-                    source: String::arbitrary(g),
+                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
+                    source: g.choose(sources).unwrap().to_string(),
                     for_asset: g.choose(assets).unwrap().to_string(),
-                    for_amount: f64::arbitrary(g),
+                    for_amount: *g.choose(&amounts[..]).unwrap(),
                     asset: g.choose(assets).unwrap().to_string(),
-                    amount: f64::arbitrary(g),
+                    amount: *g.choose(&amounts[..]).unwrap(),
                     time: Utc::now(),
                 },
                 Operation::Revenue {
-                    source_id: String::arbitrary(g),
-                    source: String::arbitrary(g),
+                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
+                    source: g.choose(sources).unwrap().to_string(),
                     asset: g.choose(assets).unwrap().to_string(),
-                    amount: f64::arbitrary(g),
+                    amount: *g.choose(&amounts[..]).unwrap(),
                     time: Utc::now(),
                 },
                 Operation::BalanceIncrease {
-                    source_id: String::arbitrary(g),
-                    source: String::arbitrary(g),
+                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
+                    source: g.choose(sources).unwrap().to_string(),
                     asset: g.choose(assets).unwrap().to_string(),
-                    amount: f64::arbitrary(g),
+                    amount: *g.choose(&amounts[..]).unwrap(),
                 },
                 Operation::BalanceDecrease {
-                    source_id: String::arbitrary(g),
-                    source: String::arbitrary(g),
+                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
+                    source: g.choose(sources).unwrap().to_string(),
                     asset: g.choose(assets).unwrap().to_string(),
-                    amount: f64::arbitrary(g),
+                    amount: *g.choose(&amounts[..]).unwrap(),
                 },
             ];
             g.choose(&choices).unwrap().clone()
@@ -1159,9 +1198,7 @@ mod tests {
         impl TestAssetInfo {
             fn new() -> Self {
                 Self {
-                    prices: Mutex::new(vec![
-                        7000.0, 25.0, 95.0,
-                    ]),
+                    prices: Mutex::new(vec![7000.0, 25.0, 95.0]),
                 }
             }
         }

@@ -8,4 +8,3 @@ pub trait Storage {
     async fn get_ops(&self) -> Result<Vec<Operation>>;
     async fn insert_ops(&self, ops: Vec<Operation>) -> Result<usize>;
 }
-
