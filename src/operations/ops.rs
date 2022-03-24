@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn trade_buy_into_operations() {
         fn prop(trade: Trade) -> TestResult {
-            if trade.amount == 0.0 || trade.price == 0.0 || matches!(trade.side, TradeSide::Sell) {
+            if matches!(trade.side, TradeSide::Sell) {
                 return TestResult::discard();
             }
 
@@ -1110,7 +1110,7 @@ mod tests {
     #[test]
     fn trade_sell_into_operations() {
         fn prop(trade: Trade) -> TestResult {
-            if trade.amount == 0.0 || trade.price == 0.0 || matches!(trade.side, TradeSide::Buy) {
+            if matches!(trade.side, TradeSide::Buy) {
                 return TestResult::discard();
             }
 
