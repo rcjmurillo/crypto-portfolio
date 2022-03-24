@@ -174,7 +174,7 @@ impl Into<Vec<Operation>> for Deposit {
             asset: self.asset.clone(),
             amount: self.amount,
         }];
-        if let Some(fee) = self.fee {
+        if let Some(fee) = self.fee.filter(|f| f > &0.0) {
             ops.extend(vec![
                 Operation::BalanceDecrease {
                     source_id: self.source_id.clone(),
@@ -918,43 +918,66 @@ mod tests {
         }
     }
 
+    impl Arbitrary for Deposit {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
+            Deposit {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
+                asset: g.choose(&assets).take().unwrap().to_string(),
+                amount: u16::arbitrary(g).try_into().unwrap(),
+                fee: Option::arbitrary(g),
+                time: Utc::now(),
+                is_fiat: *g.choose(&[true, false]).take().unwrap(),
+            }
+        }
+    }
+
     impl Arbitrary for Operation {
         fn arbitrary(g: &mut Gen) -> Self {
-            let source_ids: Vec<_> = (0..100).into_iter().map(|i| i.to_string()).collect();
-            let amounts: Vec<_> = (1..1000).into_iter().map(|i| i as f64).collect();
             let assets: &[&str] = &["BTC", "ETH", "SOL", "AVAX", "USD"];
-            let sources: &[&str] = &["binance", "FTX", "other-source"];
-            let choices = [
-                Operation::Cost {
-                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
-                    source: g.choose(sources).unwrap().to_string(),
-                    for_asset: g.choose(assets).unwrap().to_string(),
-                    for_amount: *g.choose(&amounts[..]).unwrap(),
-                    asset: g.choose(assets).unwrap().to_string(),
-                    amount: *g.choose(&amounts[..]).unwrap(),
+            let source_id = u8::arbitrary(g).to_string();
+            let source = g
+                .choose(&["binance", "FTX", "other-source"])
+                .unwrap()
+                .to_string();
+            // non-zero amounts
+            let for_amount: f64 = 0.1 + u16::arbitrary(g) as f64;
+            let amount: f64 = 0.1 + u16::arbitrary(g) as f64;
+            let for_asset = g.choose(&assets).unwrap().to_string();
+            let asset = g.choose(&assets).unwrap().to_string();
+
+            match g.choose(&[0, 1, 2, 3]).unwrap() {
+                &0 => Operation::Cost {
+                    source_id,
+                    source,
+                    for_asset,
+                    for_amount,
+                    asset,
+                    amount,
                     time: Utc::now(),
                 },
-                Operation::Revenue {
-                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
-                    source: g.choose(sources).unwrap().to_string(),
-                    asset: g.choose(assets).unwrap().to_string(),
-                    amount: *g.choose(&amounts[..]).unwrap(),
+                &1 => Operation::Revenue {
+                    source_id,
+                    source,
+                    asset,
+                    amount,
                     time: Utc::now(),
                 },
-                Operation::BalanceIncrease {
-                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
-                    source: g.choose(sources).unwrap().to_string(),
-                    asset: g.choose(assets).unwrap().to_string(),
-                    amount: *g.choose(&amounts[..]).unwrap(),
+                &2 => Operation::BalanceIncrease {
+                    source_id,
+                    source,
+                    asset,
+                    amount,
                 },
-                Operation::BalanceDecrease {
-                    source_id: g.choose(&source_ids[..]).unwrap().to_string(),
-                    source: g.choose(sources).unwrap().to_string(),
-                    asset: g.choose(assets).unwrap().to_string(),
-                    amount: *g.choose(&amounts[..]).unwrap(),
+                &3 => Operation::BalanceDecrease {
+                    source_id,
+                    source,
+                    asset,
+                    amount,
                 },
-            ];
-            g.choose(&choices).unwrap().clone()
+                _ => panic!("unexpected index")
+            }
         }
     }
 
@@ -1204,6 +1227,85 @@ mod tests {
             return TestResult::passed();
         }
         quickcheck(prop as fn(Trade) -> TestResult);
+    }
+
+    #[test]
+    fn deposit_into_operations() {
+        fn prop(deposit: Deposit) -> TestResult {
+            if deposit.amount == 0.0 {
+                return TestResult::discard();
+            }
+
+            let d = deposit.clone();
+            let ops: Vec<Operation> = deposit.into();
+
+            let num_ops = if let Some(_) = d.fee.filter(|f| f > &0.0) {
+                3
+            } else {
+                1
+            };
+            if ops.len() != num_ops {
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
+                return TestResult::failed();
+            }
+
+            match &ops[0] {
+                BalanceIncrease { asset, amount, .. } => {
+                    if asset != &d.asset || amount != &d.amount {
+                        println!("non-matching fields for op 1");
+                        return TestResult::failed();
+                    }
+                }
+                _ => {
+                    println!("not matching op 1 type");
+                    return TestResult::failed();
+                }
+            }
+
+            if let Some(fee) = d.fee.filter(|f| f > &0.0) {
+                match &ops[1] {
+                    BalanceDecrease { asset, amount, .. } => {
+                        if asset != &d.asset && amount != &fee {
+                            println!("non-matching fields for op 2");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 2 type");
+                        return TestResult::failed();
+                    }
+                }
+                match &ops[2] {
+                    Cost {
+                        for_asset,
+                        for_amount,
+                        asset,
+                        amount,
+                        ..
+                    } => {
+                        if for_asset != &d.asset
+                            || for_amount != &0.0
+                            || asset != &d.asset
+                            || amount != &fee
+                        {
+                            println!("non-matching fields for op 6");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 6 type");
+                        return TestResult::failed();
+                    }
+                }
+            }
+
+            return TestResult::passed();
+        }
+        quickcheck(prop as fn(Deposit) -> TestResult);
     }
 
     #[tokio::test]
