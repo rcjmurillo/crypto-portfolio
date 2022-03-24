@@ -893,6 +893,7 @@ mod tests {
     use super::*;
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
+    use Operation::*;
 
     impl Arbitrary for Trade {
         fn arbitrary(g: &mut Gen) -> Self {
@@ -959,8 +960,6 @@ mod tests {
 
     #[test]
     fn trade_buy_into_operations() {
-        use Operation::*;
-
         fn prop(trade: Trade) -> TestResult {
             if trade.amount == 0.0 || trade.price == 0.0 || matches!(trade.side, TradeSide::Sell) {
                 return TestResult::discard();
@@ -971,21 +970,25 @@ mod tests {
 
             let num_ops = if t.fee > 0.0 { 6 } else { 4 };
             if ops.len() != num_ops {
-                println!("incorrect number of ops expected {} got {}", num_ops, ops.len());
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
                 return TestResult::failed();
             }
 
             match &ops[0] {
                 BalanceIncrease { asset, amount, .. } => {
-                    if asset != &t.base_asset && amount != &t.amount {
-                        println!("incorrect number of ops");
+                    if asset != &t.base_asset || amount != &t.amount {
+                        println!("non-matching fields for op 1");
                         return TestResult::failed();
                     }
                 }
                 _ => {
                     println!("not matching op 1 type");
                     return TestResult::failed();
-                },
+                }
             }
 
             match &ops[1] {
@@ -1001,20 +1004,20 @@ mod tests {
                         || asset != &t.quote_asset
                         || amount != &(t.price * t.amount)
                     {
-                        println!("non-matching fields for op 1");
+                        println!("non-matching fields for op 2");
                         return TestResult::failed();
                     }
                 }
                 _ => {
                     println!("not matching op 2 type");
                     return TestResult::failed();
-                },
+                }
             }
 
             match &ops[2] {
                 BalanceDecrease { asset, amount, .. } => {
-                    if asset != &t.quote_asset && amount != &(t.amount * t.price) {
-                        println!("non-matching fields for op 2");
+                    if asset != &t.quote_asset || amount != &(t.amount * t.price) {
+                        println!("non-matching fields for op 3");
                         return TestResult::failed();
                     }
                 }
@@ -1026,29 +1029,29 @@ mod tests {
 
             match &ops[3] {
                 Revenue { asset, amount, .. } => {
-                    if asset != &t.quote_asset && amount != &(t.amount * t.price) {
-                        println!("non-matching fields for op 3");
+                    if asset != &t.quote_asset || amount != &(t.amount * t.price) {
+                        println!("non-matching fields for op 4");
                         return TestResult::failed();
                     }
                 }
                 _ => {
-                    println!("not matching op 3 type");
+                    println!("not matching op 4 type");
                     return TestResult::failed();
-                },
+                }
             }
 
             if t.fee > 0.0 {
                 match &ops[4] {
                     BalanceDecrease { asset, amount, .. } => {
-                        if asset != &t.fee_asset && amount != &t.fee {
-                            println!("non-matching fields for op 4");
+                        if asset != &t.fee_asset || amount != &t.fee {
+                            println!("non-matching fields for op 5");
                             return TestResult::failed();
                         }
                     }
                     _ => {
-                        println!("not matching op 4 type");
+                        println!("not matching op 5 type");
                         return TestResult::failed();
-                    },
+                    }
                 }
                 match &ops[5] {
                     Cost {
@@ -1063,14 +1066,14 @@ mod tests {
                             || asset != &t.fee_asset
                             || amount != &t.fee
                         {
-                            println!("non-matching fields for op 5");
+                            println!("non-matching fields for op 6");
                             return TestResult::failed();
                         }
                     }
                     _ => {
-                        println!("not matching op 5 type");
+                        println!("not matching op 6 type");
                         return TestResult::failed();
-                    },
+                    }
                 }
             }
 
@@ -1080,151 +1083,127 @@ mod tests {
     }
 
     #[test]
-    fn trade_sell_into() {
-        let now = Utc::now();
-        let t1 = Trade {
-            source_id: "1".to_string(),
-            source: "test".to_string(),
-            symbol: "DOTETH".into(),
-            base_asset: "DOT".into(),
-            quote_asset: "ETH".into(),
-            price: 0.5,
-            amount: 3.0,
-            fee: 0.01,
-            fee_asset: "XCOIN".into(),
-            time: now,
-            side: TradeSide::Sell,
-        };
+    fn trade_sell_into_operations() {
+        fn prop(trade: Trade) -> TestResult {
+            if trade.amount == 0.0 || trade.price == 0.0 || matches!(trade.side, TradeSide::Buy) {
+                return TestResult::discard();
+            }
 
-        let ops: Vec<Operation> = t1.into();
+            let t = trade.clone();
+            let ops: Vec<Operation> = trade.into();
 
-        assert_eq!(6, ops.len(), "incorrect number of operations");
+            let num_ops = if t.fee > 0.0 { 6 } else { 4 };
+            if ops.len() != num_ops {
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
+                return TestResult::failed();
+            }
 
-        assert_eq!(
-            ops[0],
-            Operation::BalanceDecrease {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 3.0
-            }
-        );
-        assert_eq!(
-            ops[1],
-            Operation::Revenue {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 3.0,
-                time: now,
-            }
-        );
-        assert_eq!(
-            ops[2],
-            Operation::BalanceIncrease {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: "ETH".into(),
-                amount: 1.5
-            }
-        );
-        assert_eq!(
-            ops[3],
-            Operation::Cost {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                for_asset: "ETH".into(),
-                for_amount: 1.5,
-                asset: "DOT".into(),
-                amount: 3.0,
-                time: now
-            }
-        );
-        assert_eq!(
-            ops[4],
-            Operation::BalanceDecrease {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: "XCOIN".into(),
-                amount: 0.01,
-            }
-        );
-        assert_eq!(
-            ops[5],
-            Operation::Cost {
-                source_id: "1-fee".to_string(),
-                source: "test".to_string(),
-                for_asset: "ETH".into(),
-                for_amount: 0.0,
-                asset: "XCOIN".into(),
-                amount: 0.01,
-                time: now,
-            }
-        );
-    }
-
-    #[test]
-    fn trade_into_no_fee() {
-        let now = Utc::now();
-        let fee_cases = vec![(1.0, ""), (0.0, "ETH"), (0.0, "")];
-        for (fee_amount, fee_asset) in fee_cases.into_iter() {
-            let t = Trade {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                symbol: "DOTETH".into(),
-                base_asset: "DOT".into(),
-                quote_asset: "ETH".into(),
-                price: 0.5,
-                amount: 3.0,
-                fee: fee_amount,
-                fee_asset: fee_asset.to_string(),
-                time: now,
-                side: TradeSide::Buy,
-            };
-            let ops: Vec<Operation> = t.into();
-            assert_eq!(4, ops.len(), "incorrect number of operations");
-
-            assert_eq!(
-                ops[0],
-                Operation::BalanceIncrease {
-                    source_id: "1".to_string(),
-                    source: "test".to_string(),
-                    asset: "DOT".into(),
-                    amount: 3.0
+            match &ops[0] {
+                BalanceDecrease { asset, amount, .. } => {
+                    if asset != &t.base_asset || amount != &t.amount {
+                        println!("non-matching fields for op 1");
+                        return TestResult::failed();
+                    }
                 }
-            );
-            assert_eq!(
-                ops[1],
-                Operation::Cost {
-                    source_id: "1".to_string(),
-                    source: "test".to_string(),
-                    for_asset: "DOT".into(),
-                    for_amount: 3.0,
-                    asset: "ETH".into(),
-                    amount: 1.5,
-                    time: now
+                _ => {
+                    println!("not matching op 1 type");
+                    return TestResult::failed();
                 }
-            );
-            assert_eq!(
-                ops[2],
-                Operation::BalanceDecrease {
-                    source_id: "1".to_string(),
-                    source: "test".to_string(),
-                    asset: "ETH".into(),
-                    amount: 1.5,
+            }
+
+            match &ops[1] {
+                Revenue { asset, amount, .. } => {
+                    if asset != &t.base_asset || amount != &t.amount {
+                        println!("non-matching fields for op 2");
+                        return TestResult::failed();
+                    }
                 }
-            );
-            assert_eq!(
-                ops[3],
-                Operation::Revenue {
-                    source_id: "1".to_string(),
-                    source: "test".to_string(),
-                    asset: "ETH".into(),
-                    amount: 1.5,
-                    time: now
+                _ => {
+                    println!("not matching op 2 type");
+                    return TestResult::failed();
                 }
-            );
+            }
+
+            match &ops[2] {
+                BalanceIncrease { asset, amount, .. } => {
+                    if asset != &t.quote_asset || amount != &(t.amount * t.price) {
+                        println!("non-matching fields for op 3");
+                        return TestResult::failed();
+                    }
+                }
+                _ => {
+                    println!("not matching op 3 type");
+                    return TestResult::failed();
+                }
+            }
+
+            match &ops[3] {
+                Cost {
+                    for_asset,
+                    for_amount,
+                    asset,
+                    amount,
+                    ..
+                } => {
+                    if for_asset != &t.quote_asset
+                        || for_amount != &(t.amount * t.price)
+                        || asset != &t.base_asset
+                        || amount != &t.amount
+                    {
+                        println!("non-matching fields for op 4");
+                        return TestResult::failed();
+                    }
+                }
+                _ => {
+                    println!("not matching op 4 type");
+                    return TestResult::failed();
+                }
+            }
+
+            if t.fee > 0.0 {
+                match &ops[4] {
+                    BalanceDecrease { asset, amount, .. } => {
+                        if asset != &t.fee_asset && amount != &t.fee {
+                            println!("non-matching fields for op 5");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 5 type");
+                        return TestResult::failed();
+                    }
+                }
+                match &ops[5] {
+                    Cost {
+                        for_asset,
+                        for_amount,
+                        asset,
+                        amount,
+                        ..
+                    } => {
+                        if for_asset != &t.quote_asset
+                            || for_amount != &0.0
+                            || asset != &t.fee_asset
+                            || amount != &t.fee
+                        {
+                            println!("non-matching fields for op 6");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 6 type");
+                        return TestResult::failed();
+                    }
+                }
+            }
+
+            return TestResult::passed();
         }
+        quickcheck(prop as fn(Trade) -> TestResult);
     }
 
     #[tokio::test]
@@ -1248,7 +1227,7 @@ mod tests {
             }
         }
 
-        let mut coin_tracker = BalanceTracker::new(TestAssetInfo::new());
+        let coin_tracker = BalanceTracker::new(TestAssetInfo::new());
         let ops = vec![
             Operation::BalanceIncrease {
                 source_id: "1".to_string(),
