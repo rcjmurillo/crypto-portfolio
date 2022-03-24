@@ -908,8 +908,9 @@ mod tests {
                 symbol: format!("{}{}", base_asset, quote_asset),
                 base_asset: base_asset.to_string(),
                 quote_asset: quote_asset.to_string(),
-                price: u16::arbitrary(g).try_into().unwrap(),
-                amount: u16::arbitrary(g).try_into().unwrap(),
+                // non-zero price and amount
+                price: 0.1 + u16::arbitrary(g) as f64,
+                amount: 0.1 + u16::arbitrary(g) as f64,
                 fee: u16::arbitrary(g).try_into().unwrap(),
                 fee_asset: g.choose(&assets).take().unwrap().to_string(),
                 time: Utc::now(),
@@ -925,7 +926,8 @@ mod tests {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 asset: g.choose(&assets).take().unwrap().to_string(),
-                amount: u16::arbitrary(g).try_into().unwrap(),
+                // non-zero amount
+                amount: 0.1 + u16::arbitrary(g) as f64,
                 fee: Option::arbitrary(g),
                 time: Utc::now(),
                 is_fiat: *g.choose(&[true, false]).take().unwrap(),
