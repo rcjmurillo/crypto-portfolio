@@ -210,29 +210,32 @@ pub struct Withdraw {
 
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
-        vec![
-            Operation::BalanceDecrease {
-                source_id: self.source_id.clone(),
-                source: self.source.clone(),
-                asset: self.asset.clone(),
-                amount: self.amount,
-            },
-            Operation::BalanceDecrease {
-                source_id: format!("{}-fee", &self.source_id),
-                source: self.source.clone(),
-                asset: self.asset.clone(),
-                amount: self.fee,
-            },
-            Operation::Cost {
-                source_id: self.source_id,
-                source: self.source,
-                for_asset: self.asset.clone(),
-                for_amount: 0.0,
-                asset: self.asset,
-                amount: self.fee,
-                time: self.time,
-            },
-        ]
+        let mut ops = vec![Operation::BalanceDecrease {
+            source_id: self.source_id.clone(),
+            source: self.source.clone(),
+            asset: self.asset.clone(),
+            amount: self.amount,
+        }];
+        if self.fee > 0.0 {
+            ops.extend(vec![
+                Operation::BalanceDecrease {
+                    source_id: format!("{}-fee", &self.source_id),
+                    source: self.source.clone(),
+                    asset: self.asset.clone(),
+                    amount: self.fee,
+                },
+                Operation::Cost {
+                    source_id: self.source_id,
+                    source: self.source,
+                    for_asset: self.asset.clone(),
+                    for_amount: 0.0,
+                    asset: self.asset,
+                    amount: self.fee,
+                    time: self.time,
+                },
+            ]);
+        }
+        ops
     }
 }
 
@@ -935,6 +938,21 @@ mod tests {
         }
     }
 
+    impl Arbitrary for Withdraw {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
+            Withdraw {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
+                asset: g.choose(&assets).take().unwrap().to_string(),
+                // non-zero amount
+                amount: 0.1 + u16::arbitrary(g) as f64,
+                fee: u16::arbitrary(g) as f64,
+                time: Utc::now(),
+            }
+        }
+    }
+
     impl Arbitrary for Operation {
         fn arbitrary(g: &mut Gen) -> Self {
             let assets: &[&str] = &["BTC", "ETH", "SOL", "AVAX", "USD"];
@@ -978,7 +996,7 @@ mod tests {
                     asset,
                     amount,
                 },
-                _ => panic!("unexpected index")
+                _ => panic!("unexpected index"),
             }
         }
     }
@@ -1308,6 +1326,81 @@ mod tests {
             return TestResult::passed();
         }
         quickcheck(prop as fn(Deposit) -> TestResult);
+    }
+
+    #[test]
+    fn withdraw_into_operations() {
+        fn prop(withdraw: Withdraw) -> TestResult {
+            if withdraw.amount == 0.0 {
+                return TestResult::discard();
+            }
+
+            let d = withdraw.clone();
+            let ops: Vec<Operation> = withdraw.into();
+
+            let num_ops = if d.fee > 0.0 { 3 } else { 1 };
+            if ops.len() != num_ops {
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
+                return TestResult::failed();
+            }
+
+            match &ops[0] {
+                BalanceDecrease { asset, amount, .. } => {
+                    if asset != &d.asset || amount != &d.amount {
+                        println!("non-matching fields for op 1");
+                        return TestResult::failed();
+                    }
+                }
+                _ => {
+                    println!("not matching op 1 type");
+                    return TestResult::failed();
+                }
+            }
+
+            if d.fee > 0.0 {
+                match &ops[1] {
+                    BalanceDecrease { asset, amount, .. } => {
+                        if asset != &d.asset && amount != &d.fee {
+                            println!("non-matching fields for op 2");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 2 type");
+                        return TestResult::failed();
+                    }
+                }
+                match &ops[2] {
+                    Cost {
+                        for_asset,
+                        for_amount,
+                        asset,
+                        amount,
+                        ..
+                    } => {
+                        if for_asset != &d.asset
+                            || for_amount != &0.0
+                            || asset != &d.asset
+                            || amount != &d.fee
+                        {
+                            println!("non-matching fields for op 6");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 6 type");
+                        return TestResult::failed();
+                    }
+                }
+            }
+
+            return TestResult::passed();
+        }
+        quickcheck(prop as fn(Withdraw) -> TestResult);
     }
 
     #[tokio::test]
