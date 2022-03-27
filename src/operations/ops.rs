@@ -14,7 +14,7 @@ use crate::operations::{
 };
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub enum OperationStatus {
     Success,
     Failed,
@@ -239,7 +239,7 @@ impl Into<Vec<Operation>> for Withdraw {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Loan {
     pub source_id: String,
     pub source: String,
@@ -905,7 +905,7 @@ mod tests {
             let base_asset = g.choose(&assets).take().unwrap();
             let quote_asset = g.choose(&quote_assets).take().unwrap();
             let sides = [TradeSide::Buy, TradeSide::Sell];
-            Trade {
+            Self {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 symbol: format!("{}{}", base_asset, quote_asset),
@@ -925,7 +925,7 @@ mod tests {
     impl Arbitrary for Deposit {
         fn arbitrary(g: &mut Gen) -> Self {
             let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Deposit {
+            Self {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 asset: g.choose(&assets).take().unwrap().to_string(),
@@ -941,7 +941,7 @@ mod tests {
     impl Arbitrary for Withdraw {
         fn arbitrary(g: &mut Gen) -> Self {
             let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Withdraw {
+            Self {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 asset: g.choose(&assets).take().unwrap().to_string(),
@@ -950,6 +950,27 @@ mod tests {
                 fee: u16::arbitrary(g) as f64,
                 time: Utc::now(),
             }
+        }
+    }
+
+    impl Arbitrary for Loan {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
+            Self {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
+                asset: g.choose(&assets).unwrap().to_string(),
+                // non-zero amount
+                amount: 0.1 + u16::arbitrary(g) as f64,
+                time: Utc::now(),
+                status: OperationStatus::arbitrary(g),
+            }
+        }
+    }
+
+    impl Arbitrary for OperationStatus {
+        fn arbitrary(g: &mut Gen) -> Self {
+            g.choose(&[Self::Success, Self::Failed]).cloned().unwrap()
         }
     }
 
@@ -1401,6 +1422,48 @@ mod tests {
             return TestResult::passed();
         }
         quickcheck(prop as fn(Withdraw) -> TestResult);
+    }
+
+    #[test]
+    fn loan_into_operations() {
+        fn prop(loan: Loan) -> TestResult {
+            if loan.amount == 0.0 {
+                return TestResult::discard();
+            }
+
+            let d = loan.clone();
+            let ops: Vec<Operation> = loan.into();
+
+            let num_ops = match d.status {
+                OperationStatus::Success => 1,
+                OperationStatus::Failed => 0,
+            };
+            if ops.len() != num_ops {
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
+                return TestResult::failed();
+            }
+
+            if num_ops > 0 {
+                match &ops[0] {
+                    BalanceIncrease { asset, amount, .. } => {
+                        if asset != &d.asset || amount != &d.amount {
+                            println!("non-matching fields for op 1");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 1 type");
+                        return TestResult::failed();
+                    }
+                }
+            }
+            return TestResult::passed();
+        }
+        quickcheck(prop as fn(Loan) -> TestResult);
     }
 
     #[tokio::test]
