@@ -266,7 +266,7 @@ impl Into<Vec<Operation>> for Loan {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Repay {
     pub source_id: String,
     pub source: String,
@@ -968,6 +968,22 @@ mod tests {
         }
     }
 
+    impl Arbitrary for Repay {
+        fn arbitrary(g: &mut Gen) -> Self {
+            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
+            Self {
+                source_id: "1".to_string(),
+                source: "test".to_string(),
+                asset: g.choose(&assets).unwrap().to_string(),
+                // non-zero amount
+                amount: 0.1 + u16::arbitrary(g) as f64,
+                interest: 0.1 + u16::arbitrary(g) as f64,
+                time: Utc::now(),
+                status: OperationStatus::arbitrary(g),
+            }
+        }
+    }
+
     impl Arbitrary for OperationStatus {
         fn arbitrary(g: &mut Gen) -> Self {
             g.choose(&[Self::Success, Self::Failed]).cloned().unwrap()
@@ -1464,6 +1480,70 @@ mod tests {
             return TestResult::passed();
         }
         quickcheck(prop as fn(Loan) -> TestResult);
+    }
+
+    #[test]
+    fn repay_into_operations() {
+        fn prop(repay: Repay) -> TestResult {
+            if repay.amount == 0.0 {
+                return TestResult::discard();
+            }
+
+            let d = repay.clone();
+            let ops: Vec<Operation> = repay.into();
+
+            let num_ops = match d.status {
+                OperationStatus::Success => 2,
+                OperationStatus::Failed => 0,
+            };
+            if ops.len() != num_ops {
+                println!(
+                    "incorrect number of ops expected {} got {}",
+                    num_ops,
+                    ops.len()
+                );
+                return TestResult::failed();
+            }
+
+            if num_ops > 0 {
+                match &ops[0] {
+                    BalanceDecrease { asset, amount, .. } => {
+                        if asset != &d.asset || amount != &(d.amount + d.interest) {
+                            println!("non-matching fields for op 1");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 1 type");
+                        return TestResult::failed();
+                    }
+                }
+                match &ops[1] {
+                    Cost {
+                        for_asset,
+                        for_amount,
+                        asset,
+                        amount,
+                        ..
+                    } => {
+                        if for_asset != &d.asset
+                            || for_amount != &0.0
+                            || asset != &d.asset
+                            || amount != &d.interest
+                        {
+                            println!("non-matching fields for op 2");
+                            return TestResult::failed();
+                        }
+                    }
+                    _ => {
+                        println!("not matching op 2 type");
+                        return TestResult::failed();
+                    }
+                }
+            }
+            return TestResult::passed();
+        }
+        quickcheck(prop as fn(Repay) -> TestResult);
     }
 
     #[tokio::test]
