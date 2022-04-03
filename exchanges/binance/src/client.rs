@@ -333,9 +333,10 @@ impl<Region> BinanceFetcher<Region> {
                                 // available in the exchange, so we can just ignore it.
                                 ApiError::Api(ApiErrorKind::UnavailableSymbol) => continue,
                                 err => {
-                                    return Err(
-                                        anyhow::Error::msg("couldn't fetch prices").context(err)
-                                    )
+                                    return Err(anyhow!(err).context(format!(
+                                        "couldn't fetch prices for symbol: {}",
+                                        symbol
+                                    )))
                                 }
                             }
                         }

@@ -14,14 +14,15 @@ pub enum Error {
 pub enum ApiErrorKind {
     UnavailableSymbol,
     // add any other relevant error codes here
-    Other,
+    Other(i16),
 }
 
 impl From<Option<i16>> for ApiErrorKind {
     fn from(code: Option<i16>) -> Self {
         match code {
             Some(-11001) => ApiErrorKind::UnavailableSymbol,
-            _ => ApiErrorKind::Other,
+            Some(c) => ApiErrorKind::Other(c),
+            _ => ApiErrorKind::Other(0),
         }
     }
 }
