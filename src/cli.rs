@@ -20,6 +20,7 @@ impl TryFrom<&str> for PortfolioAction {
         match s {
             "balances" => Ok(PortfolioAction::Balances),
             "sync" => Ok(PortfolioAction::Sync),
+            "revenue-report" => Ok(PortfolioAction::RevenueReport),
             _ => Err(anyhow!("Invalid action".to_string()).context(Error::Cli))
         }
     }

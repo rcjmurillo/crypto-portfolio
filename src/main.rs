@@ -23,7 +23,10 @@ use crate::{
     custom_ops::FileDataFetcher,
     operations::{
         db::{create_tables, get_operations, Db, Operation as DbOperation},
-        fetch_ops, AssetPrices, BalanceTracker, ExchangeDataFetcher, OperationsFlusher,
+        fetch_ops,
+        profit_loss::{ConsumeStrategy, OperationsStream, Sale},
+        storage::Storage,
+        AssetPrices, BalanceTracker, ExchangeDataFetcher, Operation, OperationsFlusher,
         OperationsProcesor, PricesFetcher,
     },
 };
@@ -61,17 +64,17 @@ fn mk_fetchers(
     //     ));
     // }
 
-    if let Some(conf) = config.binance.clone() {
-        let config_binance: Config = conf.try_into().unwrap();
-        let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-        fetchers.push(("Binance Global", Box::new(binance_client)));
-    }
+    // if let Some(conf) = config.binance.clone() {
+    //     let config_binance: Config = conf.try_into().unwrap();
+    //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+    //     fetchers.push(("Binance Global", Box::new(binance_client)));
+    // }
 
-    if let Some(conf) = config.binance_us.clone() {
-        let config_binance_us: Config = conf.try_into().unwrap();
-        let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-        fetchers.push(("Binance US", Box::new(binance_client_us)));
-    }
+    // if let Some(conf) = config.binance_us.clone() {
+    //     let config_binance_us: Config = conf.try_into().unwrap();
+    //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
+    //     fetchers.push(("Binance US", Box::new(binance_client_us)));
+    // }
 
     if let Some(file_fetcher) = file_fetcher {
         fetchers.push(("Custom Operations", Box::new(file_fetcher)));
@@ -142,7 +145,34 @@ pub async fn main() -> Result<()> {
             log::info!("fetch done!");
         }
         PortfolioAction::RevenueReport => {
+            let ops_storage = Db;
+            let ops = ops_storage.get_ops().await?;
+            let asset_prices = AssetPrices::new();
 
+            let mut stream =
+                OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, &asset_prices);
+
+            for op in ops {
+                if let Operation::Revenue {
+                    asset,
+                    amount,
+                    time,
+                    ..
+                } = op
+                {
+                    if &asset == "EUR" || &asset == "USD" {
+                        continue;
+                    }
+                    let mr = stream
+                        .consume(&Sale {
+                            asset: asset.clone(),
+                            amount,
+                            datetime: time,
+                        })
+                        .await?;
+                    println!("match result for sale of {}: {:?}", asset, mr);
+                }
+            }
         }
     }
 

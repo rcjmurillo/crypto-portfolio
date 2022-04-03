@@ -9,6 +9,7 @@ const DB_NAME: &'static str = "operations.db";
 
 #[derive(Debug)]
 pub struct Operation {
+    pub op_id: u8,
     pub source_id: String,
     pub source: String,
     pub op_type: String,
@@ -23,6 +24,7 @@ impl From<OperationType> for Operation {
     fn from(op: OperationType) -> Operation {
         match op {
             OperationType::Cost {
+                id,
                 source_id,
                 source,
                 for_asset,
@@ -31,6 +33,7 @@ impl From<OperationType> for Operation {
                 amount,
                 time,
             } => Operation {
+                op_id: id,
                 source_id,
                 source,
                 op_type: "cost".to_string(),
@@ -41,12 +44,14 @@ impl From<OperationType> for Operation {
                 timestamp: Some(time.timestamp()),
             },
             OperationType::Revenue {
+                id,
                 source_id,
                 source,
                 asset,
                 amount,
                 time,
             } => Operation {
+                op_id: id,
                 source_id,
                 source,
                 op_type: "revenue".to_string(),
@@ -57,11 +62,13 @@ impl From<OperationType> for Operation {
                 for_amount: None,
             },
             OperationType::BalanceIncrease {
+                id,
                 source_id,
                 source,
                 asset,
                 amount,
             } => Operation {
+                op_id: id,
                 source_id,
                 source,
                 op_type: "balance_increase".to_string(),
@@ -72,11 +79,13 @@ impl From<OperationType> for Operation {
                 timestamp: None,
             },
             OperationType::BalanceDecrease {
+                id, 
                 source_id,
                 source,
                 asset,
                 amount,
             } => Operation {
+                op_id: id,
                 source_id,
                 source,
                 op_type: "balance_decrease".to_string(),
@@ -103,7 +112,7 @@ pub fn create_tables() -> Result<()> {
             asset       VARCHAR(15),
             amount      FLOAT,
             timestamp   TIMESTAMP NULL,
-            PRIMARY KEY (source_id, source, type, for_asset, for_amount, asset, amount)
+            PRIMARY KEY (source_id, source, type, asset, amount)
         )",
         [],
     )?;
@@ -121,7 +130,7 @@ pub fn create_tables() -> Result<()> {
     Ok(())
 }
 
-pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
+pub fn insert_operations(ops: Vec<Operation>) -> Result<(usize, usize)> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt = conn.prepare_cached(
@@ -131,6 +140,7 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
     )?;
 
     let mut inserted = 0;
+    let mut skipped = 0;
     for op in ops {
         inserted += match stmt.execute(params![
             op.source_id,
@@ -142,12 +152,15 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
             op.amount,
             op.timestamp,
         ]) {
-            Ok(inserted) => inserted,
+            Ok(inserted) => {
+                inserted
+            },
             Err(err) => match err {
                 Error::SqliteFailure(FfiError { code, .. }, ..) => {
                     match code {
                         ErrorCode::ConstraintViolation => {
                             // already exists, skip it
+                            skipped += 1;
                             continue;
                         }
                         _ => return Err(anyhow::Error::new(err)),
@@ -158,7 +171,7 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<usize> {
         };
     }
 
-    Ok(inserted)
+    Ok((inserted, skipped))
 }
 
 pub fn get_operations() -> Result<Vec<Operation>> {
@@ -170,14 +183,15 @@ pub fn get_operations() -> Result<Vec<Operation>> {
     )?;
     let op_iter = stmt.query_map([], |row| {
         Ok(Operation {
-            source_id: row.get(0)?,
-            source: row.get(1)?,
-            op_type: row.get(2)?,
-            for_asset: row.get(3)?,
-            for_amount: row.get(4)?,
-            asset: row.get(5)?,
-            amount: row.get(6)?,
-            timestamp: row.get(7)?,
+            op_id: row.get(0)?,
+            source_id: row.get(1)?,
+            source: row.get(2)?,
+            op_type: row.get(3)?,
+            for_asset: row.get(4)?,
+            for_amount: row.get(5)?,
+            asset: row.get(6)?,
+            amount: row.get(7)?,
+            timestamp: row.get(8)?,
         })
     })?;
 
@@ -241,7 +255,7 @@ impl Storage for Db {
             .map(|op| op.try_into())
             .collect()
     }
-    async fn insert_ops(&self, ops: Vec<OperationType>) -> Result<usize> {
+    async fn insert_ops(&self, ops: Vec<OperationType>) -> Result<(usize, usize)> {
         insert_operations(ops.into_iter().map(|op| op.into()).collect())
     }
 }

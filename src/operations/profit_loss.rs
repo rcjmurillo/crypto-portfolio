@@ -2,15 +2,15 @@ use std::collections::VecDeque;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
-use crate::operations::{storage::Storage as OperationsStorage, AssetsInfo, Operation};
+use crate::operations::{AssetsInfo, Operation};
 
 #[derive(Debug)]
 pub struct Sale {
-    asset: String,
-    amount: f64,
-    datetime: DateTime<Utc>,
+    pub asset: String,
+    pub amount: f64,
+    pub datetime: DateTime<Utc>,
 }
 
 #[derive(Debug)]
@@ -20,6 +20,7 @@ pub struct Purchase {
     datetime: DateTime<Utc>,
 }
 
+#[derive(Debug)]
 pub enum MatchResult {
     Profit {
         usd_amount: f64,
@@ -68,12 +69,22 @@ pub trait SaleMatcher {
     async fn match_sale(&mut self, sale: &Sale) -> Result<MatchResult>;
 }
 
-enum ConsumeStrategy {
+pub enum ConsumeStrategy {
     Fifo,
     Lifo,
 }
 
-struct OperationsStream<'a> {
+/// A stream of operations that can be consumed using a ConsumeStrategy for computing
+/// profit/loss of sale operations:
+/// - FIFO strategy:
+///     This strategy (first-in, first-out) works by using the oldest-to-newer purchase
+///     operations when there are a multiple operations which can be used to compute the
+///     profit/loss of a sale.
+/// - LIFO strategy:
+///     This strategy (Last-in, first-out) works by using the newer-to-oldest purchase
+///     operations when there are a multiple operations which can be used to compute the
+///     profit/loss of a sale.
+pub struct OperationsStream<'a> {
     ops: VecDeque<Operation>,
     assets_info: &'a (dyn AssetsInfo + Sync + Send),
 }
@@ -106,7 +117,7 @@ impl<'a> OperationsStream<'a> {
         }
     }
 
-    async fn consume(&mut self, sale: &Sale) -> Result<MatchResult> {
+    pub async fn consume(&mut self, sale: &Sale) -> Result<MatchResult> {
         // consume purchase operations until we fulfill this amount
         let mut fulfill_amount = sale.amount;
         let mut consumed_ops = Vec::new();
@@ -129,7 +140,7 @@ impl<'a> OperationsStream<'a> {
                 } else {
                     fulfill_amount
                 };
-                let price = self.assets_info.price_at(asset, time).await?;
+                let price = self.assets_info.price_at(&format!("{}USDT", asset), time).await?;
                 fulfill_amount -= amount_fulfilled;
                 cost += amount_fulfilled * price;
                 // update the amount used from this purchase to fulfill the
@@ -170,34 +181,11 @@ impl<'a> OperationsStream<'a> {
     }
 }
 
-/// A matcher using the FIFO strategy for computing profit/loss of sale operations,
-/// this strategy (first-in, first-out) works by using the oldest-to-newer purchase
-/// operations when there are a multiple operations which can be used to compute the
-/// profit/loss of a sale.
-struct FifoMatcher<'a> {
-    purchases_stream: OperationsStream<'a>,
-}
-
-impl<'a> FifoMatcher<'a> {
-    async fn new(
-        ops_storage: &'a (dyn OperationsStorage + Sync + Send),
-        assets_info: &'a (dyn AssetsInfo + Sync + Send),
-    ) -> Result<FifoMatcher<'a>> {
-        Ok(Self {
-            purchases_stream: OperationsStream::from_ops(
-                ops_storage.get_ops().await?,
-                ConsumeStrategy::Fifo,
-                assets_info,
-            ),
-        })
-    }
-}
-
 #[async_trait]
-impl<'a> SaleMatcher for FifoMatcher<'a> {
+impl<'a> SaleMatcher for OperationsStream<'a> {
     async fn match_sale(&mut self, sale: &Sale) -> Result<MatchResult> {
         // consume purchase amounts from the stream to fulfill the sale amount
-        self.purchases_stream.consume(sale).await
+        self.consume(sale).await
     }
 }
 
@@ -209,19 +197,19 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::operations::{AssetPrices, Operation::*};
+    use crate::operations::{AssetPrices, Operation::*, storage::Storage};
 
     struct DummyStorage {
         ops: Vec<Operation>,
     }
 
     #[async_trait]
-    impl OperationsStorage for DummyStorage {
+    impl Storage for DummyStorage {
         async fn get_ops(&self) -> Result<Vec<Operation>> {
             Ok(self.ops.clone())
         }
-        async fn insert_ops(&self, ops: Vec<Operation>) -> Result<usize> {
-            Ok(ops.len())
+        async fn insert_ops(&self, ops: Vec<Operation>) -> Result<(usize, usize)> {
+            Ok((ops.len(), 0))
         }
     }
 

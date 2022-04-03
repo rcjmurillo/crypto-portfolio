@@ -70,12 +70,14 @@ impl Into<Vec<Operation>> for Trade {
         let mut ops = match self.side {
             TradeSide::Buy => vec![
                 Operation::BalanceIncrease {
+                    id: 1,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
                 Operation::Cost {
+                    id: 2,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     for_asset: self.base_asset.clone(),
@@ -85,12 +87,14 @@ impl Into<Vec<Operation>> for Trade {
                     time: self.time,
                 },
                 Operation::BalanceDecrease {
+                    id: 3,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
                 Operation::Revenue {
+                    id: 4,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.quote_asset.clone(),
@@ -100,12 +104,14 @@ impl Into<Vec<Operation>> for Trade {
             ],
             TradeSide::Sell => vec![
                 Operation::BalanceDecrease {
+                    id: 1,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.base_asset.clone(),
                     amount: self.amount,
                 },
                 Operation::Revenue {
+                    id: 2,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.base_asset.clone(),
@@ -113,12 +119,14 @@ impl Into<Vec<Operation>> for Trade {
                     time: self.time,
                 },
                 Operation::BalanceIncrease {
+                    id: 3,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.quote_asset.clone(),
                     amount: self.amount * self.price,
                 },
                 Operation::Cost {
+                    id: 4,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     for_asset: self.quote_asset.clone(),
@@ -131,13 +139,15 @@ impl Into<Vec<Operation>> for Trade {
         };
         if self.fee_asset != "" && self.fee > 0.0 {
             ops.push(Operation::BalanceDecrease {
+                id: 5,
                 source_id: self.source_id.clone(),
                 source: self.source.clone(),
                 asset: self.fee_asset.clone(),
                 amount: self.fee,
             });
             ops.push(Operation::Cost {
-                source_id: format!("{}-fee", self.source_id),
+                id: 6,
+                source_id: self.source_id,
                 source: self.source,
                 for_asset: match self.side {
                     TradeSide::Buy => self.base_asset,
@@ -169,6 +179,7 @@ pub struct Deposit {
 impl Into<Vec<Operation>> for Deposit {
     fn into(self) -> Vec<Operation> {
         let mut ops = vec![Operation::BalanceIncrease {
+            id: 1,
             source_id: self.source_id.clone(),
             source: self.source.clone(),
             asset: self.asset.clone(),
@@ -177,12 +188,14 @@ impl Into<Vec<Operation>> for Deposit {
         if let Some(fee) = self.fee.filter(|f| f > &0.0) {
             ops.extend(vec![
                 Operation::BalanceDecrease {
+                    id: 2,
                     source_id: self.source_id.clone(),
                     source: self.source.clone(),
                     asset: self.asset.clone(),
                     amount: fee,
                 },
                 Operation::Cost {
+                    id: 3,
                     source_id: self.source_id,
                     source: self.source,
                     for_asset: self.asset.clone(),
@@ -211,6 +224,7 @@ pub struct Withdraw {
 impl Into<Vec<Operation>> for Withdraw {
     fn into(self) -> Vec<Operation> {
         let mut ops = vec![Operation::BalanceDecrease {
+            id: 1,
             source_id: self.source_id.clone(),
             source: self.source.clone(),
             asset: self.asset.clone(),
@@ -219,12 +233,14 @@ impl Into<Vec<Operation>> for Withdraw {
         if self.fee > 0.0 {
             ops.extend(vec![
                 Operation::BalanceDecrease {
+                    id: 2,
                     source_id: format!("{}-fee", &self.source_id),
                     source: self.source.clone(),
                     asset: self.asset.clone(),
                     amount: self.fee,
                 },
                 Operation::Cost {
+                    id: 3,
                     source_id: self.source_id,
                     source: self.source,
                     for_asset: self.asset.clone(),
@@ -255,6 +271,7 @@ impl Into<Vec<Operation>> for Loan {
         match self.status {
             OperationStatus::Success => {
                 vec![Operation::BalanceIncrease {
+                    id: 1,
                     source_id: self.source_id,
                     source: self.source,
                     asset: self.asset,
@@ -284,12 +301,14 @@ impl Into<Vec<Operation>> for Repay {
             OperationStatus::Success => {
                 vec![
                     Operation::BalanceDecrease {
+                        id: 1,
                         source_id: self.source_id.clone(),
                         source: self.source.clone(),
                         asset: self.asset.clone(),
                         amount: self.amount + self.interest,
                     },
                     Operation::Cost {
+                        id: 2,
                         source_id: self.source_id,
                         source: self.source,
                         for_asset: self.asset.clone(),
@@ -316,12 +335,14 @@ pub struct AssetBalance {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
     BalanceIncrease {
+        id: u8,
         source_id: String,
         source: String,
         asset: String,
         amount: f64,
     },
     BalanceDecrease {
+        id: u8,
         source_id: String,
         source: String,
         asset: String,
@@ -329,6 +350,7 @@ pub enum Operation {
     },
     // Cost of acquiring an asset
     Cost {
+        id: u8,
         source_id: String,
         source: String,
         // for which asset the cost was incurred
@@ -340,6 +362,7 @@ pub enum Operation {
     },
     // Revenue generated by selling an asset
     Revenue {
+        id: u8,
         source_id: String,
         source: String,
         asset: String,
@@ -352,37 +375,17 @@ impl Operation {
     fn id(&self) -> String {
         match self {
             Self::BalanceIncrease {
-                source_id,
-                source,
-                asset,
-                amount,
-            } => format!(
-                "balance_increase-{}-{}-{}-{}",
-                source_id, source, asset, amount
-            ),
+                id, source_id, ..
+            } => format!("balance_increase-{}-{}", source_id, id),
             Self::BalanceDecrease {
-                source_id,
-                source,
-                asset,
-                amount,
-            } => format!(
-                "balance_decrease-{}-{}-{}-{}",
-                source_id, source, asset, amount
-            ),
+                id, source_id, ..
+            } => format!("balance_decrease-{}-{}", source_id, id,),
             Self::Cost {
-                source_id,
-                source,
-                asset,
-                amount,
-                ..
-            } => format!("cost-{}-{}-{}-{}", source_id, source, asset, amount),
+                id, source_id, ..
+            } => format!("cost-{}-{}", source_id, id),
             Self::Revenue {
-                source_id,
-                source,
-                asset,
-                amount,
-                ..
-            } => format!("revenue-{}-{}-{}-{}", source_id, source, asset, amount),
+                id, source_id, ..
+            } => format!("revenue-{}-{}", source_id, id),
         }
     }
 
@@ -412,6 +415,7 @@ impl TryFrom<db::Operation> for Operation {
     fn try_from(op: db::Operation) -> Result<Operation> {
         match op.op_type.as_str() {
             "cost" => Ok(Operation::Cost {
+                id: op.op_id,
                 source_id: op.source_id,
                 source: op.source,
                 for_asset: op
@@ -429,6 +433,7 @@ impl TryFrom<db::Operation> for Operation {
                 ),
             }),
             "revenue" => Ok(Operation::Revenue {
+                id: op.op_id,
                 source_id: op.source_id,
                 source: op.source,
                 asset: op.asset,
@@ -440,12 +445,14 @@ impl TryFrom<db::Operation> for Operation {
                 ),
             }),
             "balance_increase" => Ok(Operation::BalanceIncrease {
+                id: op.op_id,
                 source_id: op.source_id,
                 source: op.source,
                 asset: op.asset,
                 amount: op.amount,
             }),
             "balance_decrease" => Ok(Operation::BalanceDecrease {
+                id: op.op_id,
                 source_id: op.source_id,
                 source: op.source,
                 asset: op.asset,
@@ -611,7 +618,7 @@ impl<S: Storage> OperationsFlusher<S> {
     }
     async fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
         let mut seen_ops = HashSet::new();
-        let inserted = self
+        let (inserted, skipped) = self
             .ops_storage
             .insert_ops(
                 batch
@@ -627,7 +634,11 @@ impl<S: Storage> OperationsFlusher<S> {
                     .collect(),
             )
             .await?;
-        log::debug!("flushed {} operations into db", inserted);
+        log::debug!(
+            "flushed {} operations into db, skipped = {}",
+            inserted,
+            skipped
+        );
         Ok(inserted)
     }
 }
@@ -655,6 +666,7 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
                 sender.send(op).await?;
             }
         }
+        log::debug!("channel for receiving ops closed in operations flusher");
         if batch.len() > 0 {
             log::info!("batched {}", batch.len());
             num_fetched += batch.len();
@@ -706,6 +718,7 @@ impl OperationsProcesor for PricesFetcher {
                 sender.send(op).await?;
             }
         }
+        debug!("channel for receiving ops closed in prices fetcher");
         Ok(())
     }
 }
@@ -857,6 +870,7 @@ pub async fn fetch_ops<'a>(
                     Err(err) => error!("could not send operation: {}", err),
                 }
             }
+            log::debug!("finished sending ops for fetcher {}", name);
         });
     }
 
@@ -1006,6 +1020,7 @@ mod tests {
 
             match g.choose(&[0, 1, 2, 3]).unwrap() {
                 &0 => Operation::Cost {
+                    id: u8::arbitrary(g),
                     source_id,
                     source,
                     for_asset,
@@ -1015,6 +1030,7 @@ mod tests {
                     time: Utc::now(),
                 },
                 &1 => Operation::Revenue {
+                    id: u8::arbitrary(g),
                     source_id,
                     source,
                     asset,
@@ -1022,12 +1038,14 @@ mod tests {
                     time: Utc::now(),
                 },
                 &2 => Operation::BalanceIncrease {
+                    id: u8::arbitrary(g),
                     source_id,
                     source,
                     asset,
                     amount,
                 },
                 &3 => Operation::BalanceDecrease {
+                    id: u8::arbitrary(g),
                     source_id,
                     source,
                     asset,
@@ -1570,12 +1588,14 @@ mod tests {
         let coin_tracker = BalanceTracker::new(TestAssetInfo::new());
         let ops = vec![
             Operation::BalanceIncrease {
+                id: 1,
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 asset: "BTC".into(),
                 amount: 0.03,
             },
             Operation::Cost {
+                id: 2,
                 source_id: "2".to_string(),
                 source: "test".to_string(),
                 for_asset: "BTC".to_string(),
@@ -1585,12 +1605,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                id: 3,
                 source_id: "3".to_string(),
                 source: "test".to_string(),
                 asset: "BTC".into(),
                 amount: 0.1,
             },
             Operation::Cost {
+                id: 4,
                 source_id: "4".to_string(),
                 source: "test".to_string(),
                 for_asset: "BTC".into(),
@@ -1600,12 +1622,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                id: 5,
                 source_id: "5".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.5,
             },
             Operation::Cost {
+                id: 6,
                 source_id: "6".to_string(),
                 source: "test".to_string(),
                 for_asset: "ETH".into(),
@@ -1615,12 +1639,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                id: 7,
                 source_id: "7".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.01,
             },
             Operation::Cost {
+                id: 8,
                 source_id: "1".to_string(),
                 source: "test".to_string(),
                 for_asset: "ETH".into(),
@@ -1630,12 +1656,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                id: 9,
                 source_id: "9".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
+                id: 10,
                 source_id: "10".to_string(),
                 source: "test".to_string(),
                 asset: "ETH".into(),
@@ -1643,12 +1671,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceIncrease {
+                id: 11,
                 source_id: "11".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.5,
             },
             Operation::Cost {
+                id: 12,
                 source_id: "12".to_string(),
                 source: "test".to_string(),
                 for_asset: "DOT".into(),
@@ -1658,12 +1688,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                id: 13,
                 source_id: "13".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.1,
             },
             Operation::Revenue {
+                id: 14,
                 source_id: "14".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
@@ -1671,12 +1703,14 @@ mod tests {
                 time: Utc::now(),
             },
             Operation::BalanceDecrease {
+                id: 15,
                 source_id: "15".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),
                 amount: 0.2,
             },
             Operation::Revenue {
+                id: 16,
                 source_id: "16".to_string(),
                 source: "test".to_string(),
                 asset: "DOT".into(),

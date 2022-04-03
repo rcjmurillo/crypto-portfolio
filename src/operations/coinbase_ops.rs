@@ -183,12 +183,14 @@ impl Into<Operations> for Transaction {
         Operations(if amount > 0.0 {
             vec![
                 ops::Operation::BalanceIncrease {
+                    id: 1,
                     source_id: self.id.clone(),
                     source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
                 ops::Operation::Cost {
+                    id: 2,
                     source_id: self.id.clone(),
                     source: "coinbase".to_string(),
                     for_asset: self.amount.currency.clone(),
@@ -201,12 +203,14 @@ impl Into<Operations> for Transaction {
         } else {
             vec![
                 ops::Operation::BalanceDecrease {
+                    id: 1,
                     source_id: self.id.clone(),
                     source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
                     amount: amount,
                 },
                 ops::Operation::Revenue {
+                    id: 2,
                     source_id: self.id.clone(),
                     source: "coinbase".to_string(),
                     asset: self.amount.currency.clone(),
