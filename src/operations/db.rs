@@ -104,6 +104,7 @@ pub fn create_tables() -> Result<()> {
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS operations (
+            op_id       INTEGER, 
             source_id   VARCHAR(100), 
             source      VARCHAR(25),
             type        VARCHAR(20),
@@ -112,7 +113,7 @@ pub fn create_tables() -> Result<()> {
             asset       VARCHAR(15),
             amount      FLOAT,
             timestamp   TIMESTAMP NULL,
-            PRIMARY KEY (source_id, source, type, asset, amount)
+            PRIMARY KEY (op_id, source_id, source, type, asset)
         )",
         [],
     )?;
@@ -135,14 +136,15 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<(usize, usize)> {
 
     let mut stmt = conn.prepare_cached(
         "INSERT INTO 
-         operations (source_id, source, type, for_asset, for_amount, asset, amount, timestamp) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         operations (op_id, source_id, source, type, for_asset, for_amount, asset, amount, timestamp) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
 
     let mut inserted = 0;
     let mut skipped = 0;
     for op in ops {
         inserted += match stmt.execute(params![
+            op.op_id,
             op.source_id,
             op.source,
             op.op_type,
@@ -178,8 +180,9 @@ pub fn get_operations() -> Result<Vec<Operation>> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt = conn.prepare(
-        "SELECT source_id, source,type, for_asset, for_amount, asset, amount, timestamp 
-         FROM operations",
+        "SELECT op_id, source_id, source,type, for_asset, for_amount, asset, amount, timestamp 
+         FROM operations
+         ORDER BY timestamp ASC",
     )?;
     let op_iter = stmt.query_map([], |row| {
         Ok(Operation {
