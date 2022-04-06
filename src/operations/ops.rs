@@ -698,7 +698,6 @@ impl OperationsProcesor for PricesFetcher {
                     if asset.starts_with("USD") {
                         continue;
                     }
-                    debug!("fetching price for {}", format!("{}USDT", asset));
                     asset_prices
                         .price_at(&format!("{}USDT", asset), time)
                         .await?;
@@ -707,7 +706,6 @@ impl OperationsProcesor for PricesFetcher {
                     if asset.starts_with("USD") {
                         continue;
                     }
-                    debug!("fetching price for {}", format!("{}USDT", asset));
                     asset_prices
                         .price_at(&format!("{}USDT", asset), time)
                         .await?;
