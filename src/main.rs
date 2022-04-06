@@ -163,14 +163,20 @@ pub async fn main() -> Result<()> {
                     if &asset == "EUR" || &asset == "USD" {
                         continue;
                     }
-                    let mr = stream
+                    match stream
                         .consume(&Sale {
                             asset: asset.clone(),
                             amount,
                             datetime: time,
                         })
-                        .await?;
-                    println!("match result for sale of {}: {:?}", asset, mr);
+                        .await
+                    {
+                        Ok(mr) => println!(
+                            "match result for sale of {} {} at {}: {:?}",
+                            amount, asset, time, mr
+                        ),
+                        Err(err) => println!("error when consuming of {} {} at {}: {}", amount, asset, time, err),
+                    }
                 }
             }
         }

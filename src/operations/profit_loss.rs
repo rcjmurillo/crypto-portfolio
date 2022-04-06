@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -16,7 +14,10 @@ pub struct Sale {
 #[derive(Debug)]
 pub struct Purchase {
     amount: f64,
+    cost: f64,
     price: f64,
+    paid_with: String,
+    paid_with_amount: f64,
     datetime: DateTime<Utc>,
 }
 
@@ -85,7 +86,7 @@ pub enum ConsumeStrategy {
 ///     operations when there are a multiple operations which can be used to compute the
 ///     profit/loss of a sale.
 pub struct OperationsStream<'a> {
-    ops: VecDeque<Operation>,
+    ops: Vec<Operation>,
     assets_info: &'a (dyn AssetsInfo + Sync + Send),
 }
 
@@ -100,12 +101,12 @@ impl<'a> OperationsStream<'a> {
             .filter(|op| matches!(op, Operation::Cost { .. }))
             .collect::<Vec<Operation>>();
         ops.sort_by_key(|op| match strategy {
-            // the oldest operations will appear first when consuming the queue
+            // the oldest operations will appear first when iterating
             ConsumeStrategy::Fifo => match op {
                 Operation::Cost { time, .. } => time.timestamp(),
                 _ => 0,
             },
-            // the newest operations will appear first when consuming the queue
+            // the newest operations will appear first when iterating
             ConsumeStrategy::Lifo => match op {
                 Operation::Cost { time, .. } => -time.timestamp(),
                 _ => 0,
@@ -123,47 +124,80 @@ impl<'a> OperationsStream<'a> {
         let mut consumed_ops = Vec::new();
         // the total cost of purchasing the amount from the sale
         let mut cost = 0.0;
+
+        let mut ops_iter = self.ops.iter_mut().filter(|op| {
+            if let Operation::Cost {
+                for_amount,
+                for_asset,
+                ..
+            } = op
+            {
+                for_asset == &sale.asset && for_amount > &0.0
+            } else {
+                false
+            }
+        });
         while fulfill_amount > 0.0 {
-            if let Some(mut purchase) = self.ops.front_mut() {
-                let (purchase_amount, asset, time) = match &mut purchase {
+            if let Some(mut purchase) = ops_iter.next() {
+                let (purchased_amount, paid_amount, asset, time) = match &mut purchase {
                     Operation::Cost {
                         ref mut for_amount,
+                        ref mut amount,
                         ref asset,
                         ref time,
                         ..
-                    } => (for_amount, asset, time),
+                    } => (for_amount, amount, asset, time),
                     _ => continue,
                 };
-                // pick the amount that will be used to fulfill the sale
-                let amount_fulfilled = if *purchase_amount < fulfill_amount {
-                    *purchase_amount
+                // purchased_amount that will be used to fulfill the sale
+                let (amount_fulfilled, paid_amount_used) = if *purchased_amount < fulfill_amount {
+                    (*purchased_amount, *paid_amount)
                 } else {
-                    fulfill_amount
+                    (
+                        fulfill_amount,
+                        *paid_amount * (fulfill_amount / *purchased_amount),
+                    )
                 };
-                let price = self.assets_info.price_at(&format!("{}USDT", asset), time).await?;
+                let price = self
+                    .assets_info
+                    .price_at(&format!("{}USDT", asset), time)
+                    .await?;
                 fulfill_amount -= amount_fulfilled;
-                cost += amount_fulfilled * price;
+                cost += paid_amount_used * price;
                 // update the amount used from this purchase to fulfill the
                 // sale, if there is an amount left, it could be still to
                 // fulfill more sales.
-                *purchase_amount -= amount_fulfilled;
+                *purchased_amount -= amount_fulfilled;
+                *paid_amount -= paid_amount_used;
+
                 consumed_ops.push(Purchase {
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
-                    price,
+                    cost: paid_amount_used * price,
+                    price: self
+                        .assets_info
+                        .price_at(&format!("{}USDT", sale.asset), time)
+                        .await?,
+                    paid_with: asset.to_string(),
+                    paid_with_amount: paid_amount_used,
                     datetime: *time,
                 });
                 // if the whole amount from the purchase was used, remove it
                 // from the queue as we can't use it anymore to fulfill more sales.
-                if *purchase_amount == 0.0 {
-                    self.ops.pop_front();
+                if *purchased_amount == 0.0 {
+                    // TODO: delete op from vec
                 }
             } else {
                 return Err(anyhow!("inconsistency found!!! there are not enough purchase operations to fulfill this sale operation: {:?}", sale));
             }
         }
 
-        Ok(match (sale.amount, cost) {
+        let sale_asset_price = self
+            .assets_info
+            .price_at(&format!("{}USDT", sale.asset), &sale.datetime)
+            .await?;
+        let revenue = sale.amount * sale_asset_price;
+        Ok(match (revenue, cost) {
             (r, c) if r >= c => MatchResult::Profit {
                 usd_amount: r - c,
                 purchases: consumed_ops,
@@ -197,7 +231,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::operations::{AssetPrices, Operation::*, storage::Storage};
+    use crate::operations::{storage::Storage, AssetPrices, Operation::*};
 
     struct DummyStorage {
         ops: Vec<Operation>,
