@@ -155,6 +155,7 @@ impl<'a> OperationsStream<'a> {
                 } else {
                     (
                         fulfill_amount,
+                        // compute the partial amount paid for the amount used from the purchase
                         *paid_amount * (fulfill_amount / *purchased_amount),
                     )
                 };
