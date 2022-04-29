@@ -1,5 +1,4 @@
 use std::{
-    convert::{TryFrom, TryInto},
     ffi::{OsStr, OsString},
     fs::{read_to_string, File},
     path::PathBuf,
@@ -12,23 +11,6 @@ use structopt::{self, StructOpt};
 use toml;
 
 use crate::errors::Error;
-
-impl TryFrom<&str> for PortfolioAction {
-    type Error = anyhow::Error;
-
-    fn try_from(s: &str) -> Result<PortfolioAction> {
-        match s {
-            "balances" => Ok(PortfolioAction::Balances),
-            "sync" => Ok(PortfolioAction::Sync),
-            "revenue-report" => Ok(PortfolioAction::RevenueReport),
-            _ => Err(anyhow!("Invalid action".to_string()).context(Error::Cli))
-        }
-    }
-}
-
-fn validate_portfolio_action(action: &str) -> Result<PortfolioAction> {
-    action.try_into()
-}
 
 fn read_config_file(path: &OsStr) -> std::result::Result<Config, OsString> {
     match Config::from_file_path(path.into()) {
@@ -81,10 +63,14 @@ impl Config {
     }
 }
 
+#[derive(StructOpt)]
 pub enum PortfolioAction {
     Balances,
     Sync,
-    RevenueReport,
+    RevenueReport {
+        #[structopt(long)]
+        asset: Option<String>
+    },
 }
 
 #[derive(StructOpt)]
@@ -92,7 +78,7 @@ pub enum PortfolioAction {
 pub enum Args {
     Portfolio {
         /// Action to run
-        #[structopt(parse(try_from_str = validate_portfolio_action))]
+        #[structopt(subcommand)]
         action: PortfolioAction,
         /// Configuration file
         #[structopt(short, long, parse(try_from_os_str = read_config_file))]
