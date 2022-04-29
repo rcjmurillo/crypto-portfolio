@@ -144,7 +144,7 @@ pub async fn main() -> Result<()> {
 
             log::info!("fetch done!");
         }
-        PortfolioAction::RevenueReport => {
+        PortfolioAction::RevenueReport { asset: report_asset } => {
             let ops_storage = Db;
             let ops = ops_storage.get_ops().await?;
             let asset_prices = AssetPrices::new();
@@ -160,7 +160,7 @@ pub async fn main() -> Result<()> {
                     ..
                 } = op
                 {
-                    if &asset == "EUR" || &asset == "USD" {
+                    if &asset == "EUR" || asset.starts_with("USD") || report_asset.as_ref().map_or(false, |a| a != &asset) {
                         continue;
                     }
                     match stream
@@ -172,7 +172,7 @@ pub async fn main() -> Result<()> {
                         .await
                     {
                         Ok(mr) => println!(
-                            "match result for sale of {} {} at {}: {:?}",
+                            "\nSale of {} {} at {}:\n> {}",
                             amount, asset, time, mr
                         ),
                         Err(err) => println!("error when consuming of {} {} at {}: {}", amount, asset, time, err),

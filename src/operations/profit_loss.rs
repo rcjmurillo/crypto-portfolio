@@ -1,3 +1,5 @@
+use std::fmt;
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -31,6 +33,43 @@ pub enum MatchResult {
         usd_amount: f64,
         purchases: Vec<Purchase>,
     },
+}
+
+impl fmt::Display for MatchResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MatchResult::Profit {
+                usd_amount,
+                purchases,
+            } => {
+                write!(
+                    f,
+                    "Profit of ${}:\n> Purchases:\n{}",
+                    usd_amount,
+                    purchases
+                        .iter()
+                        .map(|p| format!("\t{:?}", p))
+                        .collect::<Vec<String>>()
+                        .join("\n")
+                )
+            }
+            MatchResult::Loss {
+                usd_amount,
+                purchases,
+            } => {
+                write!(
+                    f,
+                    "Loss of ${}:\n> Purchases:\n{}",
+                    usd_amount,
+                    purchases
+                        .iter()
+                        .map(|p| format!("\t{:?}", p))
+                        .collect::<Vec<String>>()
+                        .join("\n")
+                )
+            }
+        }
+    }
 }
 
 /// A way to define a matcher that for any given sale of an asset will find
@@ -157,7 +196,7 @@ impl<'a> OperationsStream<'a> {
                         *paid_amount * (fulfill_amount / *purchased_amount),
                     )
                 };
-                let price = if asset == "USD" {
+                let price = if asset.starts_with("USD") {
                     1.0
                 } else {
                     self.assets_info
@@ -194,10 +233,13 @@ impl<'a> OperationsStream<'a> {
             }
         }
 
-        let sale_asset_price = self
-            .assets_info
-            .price_at(&format!("{}USDT", sale.asset), &sale.datetime)
-            .await?;
+        let sale_asset_price = if sale.asset.starts_with("USD") {
+            1.0
+        } else {
+            self.assets_info
+                .price_at(&format!("{}USDT", sale.asset), &sale.datetime)
+                .await?
+        };
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
             (r, c) if r >= c => MatchResult::Profit {
