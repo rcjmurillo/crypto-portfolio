@@ -374,18 +374,14 @@ pub enum Operation {
 impl Operation {
     fn id(&self) -> String {
         match self {
-            Self::BalanceIncrease {
-                id, source_id, ..
-            } => format!("balance_increase-{}-{}", source_id, id),
-            Self::BalanceDecrease {
-                id, source_id, ..
-            } => format!("balance_decrease-{}-{}", source_id, id,),
-            Self::Cost {
-                id, source_id, ..
-            } => format!("cost-{}-{}", source_id, id),
-            Self::Revenue {
-                id, source_id, ..
-            } => format!("revenue-{}-{}", source_id, id),
+            Self::BalanceIncrease { id, source_id, .. } => {
+                format!("balance_increase-{}-{}", source_id, id)
+            }
+            Self::BalanceDecrease { id, source_id, .. } => {
+                format!("balance_decrease-{}-{}", source_id, id,)
+            }
+            Self::Cost { id, source_id, .. } => format!("cost-{}-{}", source_id, id),
+            Self::Revenue { id, source_id, .. } => format!("revenue-{}-{}", source_id, id),
         }
     }
 
@@ -694,21 +690,12 @@ impl OperationsProcesor for PricesFetcher {
             // the `.price_at(..)` call will make the DB to populate with
             // bucket of prices corresponding to each processed transaction.
             match &op {
-                Operation::Cost { asset, time, .. } => {
-                    if asset.starts_with("USD") {
-                        continue;
+                Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
+                    if !asset.starts_with("USD") {
+                        asset_prices
+                            .price_at(&format!("{}USDT", asset), time)
+                            .await?;
                     }
-                    asset_prices
-                        .price_at(&format!("{}USDT", asset), time)
-                        .await?;
-                }
-                Operation::Revenue { asset, time, .. } => {
-                    if asset.starts_with("USD") {
-                        continue;
-                    }
-                    asset_prices
-                        .price_at(&format!("{}USDT", asset), time)
-                        .await?;
                 }
                 _ => (),
             }

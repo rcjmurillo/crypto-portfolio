@@ -126,13 +126,8 @@ impl<'a> OperationsStream<'a> {
         let mut cost = 0.0;
 
         let mut ops_iter = self.ops.iter_mut().filter(|op| {
-            if let Operation::Cost {
-                for_amount,
-                for_asset,
-                ..
-            } = op
-            {
-                for_asset == &sale.asset && for_amount > &0.0
+            if let Operation::Cost { for_asset, .. } = op {
+                for_asset == &sale.asset
             } else {
                 false
             }
@@ -149,6 +144,9 @@ impl<'a> OperationsStream<'a> {
                     } => (for_amount, amount, asset, time),
                     _ => continue,
                 };
+                if *purchased_amount == 0.0 {
+                    continue;
+                }
                 // purchased_amount that will be used to fulfill the sale
                 let (amount_fulfilled, paid_amount_used) = if *purchased_amount < fulfill_amount {
                     (*purchased_amount, *paid_amount)
@@ -159,10 +157,13 @@ impl<'a> OperationsStream<'a> {
                         *paid_amount * (fulfill_amount / *purchased_amount),
                     )
                 };
-                let price = self
-                    .assets_info
-                    .price_at(&format!("{}USDT", asset), time)
-                    .await?;
+                let price = if asset == "USD" {
+                    1.0
+                } else {
+                    self.assets_info
+                        .price_at(&format!("{}USDT", asset), time)
+                        .await?
+                };
                 fulfill_amount -= amount_fulfilled;
                 cost += paid_amount_used * price;
                 // update the amount used from this purchase to fulfill the
