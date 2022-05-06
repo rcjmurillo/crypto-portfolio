@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
 
-use crate::operations::{ops::Operation as OperationType, storage::Storage};
+use crate::{storage::Storage, Operation as OperationType};
+use exchange::{AssetPair, Candle};
 
 const DB_NAME: &'static str = "operations.db";
 
@@ -79,7 +80,7 @@ impl From<OperationType> for Operation {
                 timestamp: None,
             },
             OperationType::BalanceDecrease {
-                id, 
+                id,
                 source_id,
                 source,
                 asset,
@@ -154,9 +155,7 @@ pub fn insert_operations(ops: Vec<Operation>) -> Result<(usize, usize)> {
             op.amount,
             op.timestamp,
         ]) {
-            Ok(inserted) => {
-                inserted
-            },
+            Ok(inserted) => inserted,
             Err(err) => match err {
                 Error::SqliteFailure(FfiError { code, .. }, ..) => {
                     match code {
@@ -203,7 +202,11 @@ pub fn get_operations() -> Result<Vec<Operation>> {
         .collect()
 }
 
-pub fn insert_asset_price_bucket(bucket: u16, asset: &str, prices: Vec<(u64, f64)>) -> Result<()> {
+pub fn insert_asset_price_bucket(
+    bucket: u16,
+    asset_pair: &AssetPair,
+    prices: Vec<Candle>,
+) -> Result<()> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt =
@@ -211,7 +214,7 @@ pub fn insert_asset_price_bucket(bucket: u16, asset: &str, prices: Vec<(u64, f64
 
     match stmt.execute(params![
         bucket,
-        asset,
+        asset_pair.join("-"),
         serde_json::to_string(&prices).context("error while converting prices into JSON")?
     ]) {
         Ok(_) => (),
@@ -229,12 +232,12 @@ pub fn insert_asset_price_bucket(bucket: u16, asset: &str, prices: Vec<(u64, f64
     Ok(())
 }
 
-pub fn get_asset_price_bucket(bucket: u16, asset: &str) -> Result<Option<Vec<(u64, f64)>>> {
+pub fn get_asset_price_bucket(bucket: u16, asset: &AssetPair) -> Result<Option<Vec<Candle>>> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt =
         conn.prepare("SELECT prices FROM asset_price_buckets WHERE bucket = ?1 AND asset = ?2")?;
-    let mut iter = stmt.query_map(params![bucket, asset], |row| {
+    let mut iter = stmt.query_map(params![bucket, asset.join("-")], |row| {
         let prices: String = row.get(0)?;
         Ok(prices)
     })?;

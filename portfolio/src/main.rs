@@ -5,7 +5,6 @@ extern crate quickcheck;
 mod cli;
 mod custom_ops;
 mod errors;
-mod operations;
 mod reports;
 
 use std::{convert::TryInto, sync::Arc};
@@ -18,18 +17,19 @@ use tokio::sync::mpsc;
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
+use operations::{
+    db::{create_tables, get_operations, Db, Operation as DbOperation},
+    fetch_ops,
+    profit_loss::{ConsumeStrategy, OperationsStream, Sale},
+    storage::Storage,
+    AssetPrices, BalanceTracker, Operation, OperationsFlusher, OperationsProcesor, PricesFetcher,
+};
+
 use crate::{
     cli::{Args, PortfolioAction},
     custom_ops::FileDataFetcher,
-    operations::{
-        db::{create_tables, get_operations, Db, Operation as DbOperation},
-        fetch_ops,
-        profit_loss::{ConsumeStrategy, OperationsStream, Sale},
-        storage::Storage,
-        AssetPrices, BalanceTracker, ExchangeDataFetcher, Operation, OperationsFlusher,
-        OperationsProcesor, PricesFetcher,
-    },
 };
+use exchange::ExchangeDataFetcher;
 
 fn mk_fetchers(
     config: &cli::Config,
@@ -102,7 +102,8 @@ pub async fn main() -> Result<()> {
             let ops = get_operations()?
                 .into_iter()
                 .map(|o: DbOperation| o.try_into());
-            let coin_tracker = BalanceTracker::new(AssetPrices::new());
+            let coin_tracker =
+                BalanceTracker::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
             let mut handles = Vec::new();
             for (i, op) in ops.into_iter().enumerate() {
                 coin_tracker.batch_operation(op?).await;
@@ -132,7 +133,8 @@ pub async fn main() -> Result<()> {
             };
 
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
-            let prices_fetcher = PricesFetcher;
+            let prices_fetcher =
+                PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
             let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations
@@ -144,10 +146,12 @@ pub async fn main() -> Result<()> {
 
             log::info!("fetch done!");
         }
-        PortfolioAction::RevenueReport { asset: report_asset } => {
+        PortfolioAction::RevenueReport {
+            asset: report_asset,
+        } => {
             let ops_storage = Db;
             let ops = ops_storage.get_ops().await?;
-            let asset_prices = AssetPrices::new();
+            let asset_prices = AssetPrices::new(BinanceFetcher::<RegionGlobal>::new());
 
             let mut stream =
                 OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, &asset_prices);
@@ -160,7 +164,10 @@ pub async fn main() -> Result<()> {
                     ..
                 } = op
                 {
-                    if &asset == "EUR" || asset.starts_with("USD") || report_asset.as_ref().map_or(false, |a| a != &asset) {
+                    if &asset == "EUR"
+                        || asset.starts_with("USD")
+                        || report_asset.as_ref().map_or(false, |a| a != &asset)
+                    {
                         continue;
                     }
                     match stream
@@ -171,11 +178,11 @@ pub async fn main() -> Result<()> {
                         })
                         .await
                     {
-                        Ok(mr) => println!(
-                            "\nSale of {} {} at {}:\n> {}",
-                            amount, asset, time, mr
+                        Ok(mr) => println!("\nSale of {} {} at {}:\n> {}", amount, asset, time, mr),
+                        Err(err) => println!(
+                            "error when consuming of {} {} at {}: {}",
+                            amount, asset, time, err
                         ),
-                        Err(err) => println!("error when consuming of {} {} at {}: {}", amount, asset, time, err),
                     }
                 }
             }

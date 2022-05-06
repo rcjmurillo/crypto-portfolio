@@ -4,13 +4,15 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Result, Error as AnyhowError};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use structopt::{self, StructOpt};
 use toml;
 
 use crate::errors::Error;
+use binance::Config as BinanceConfig;
+use coinbase::Config as CoinbaseConfig;
 
 fn read_config_file(path: &OsStr) -> std::result::Result<Config, OsString> {
     match Config::from_file_path(path.into()) {
@@ -28,7 +30,7 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
 
 #[derive(Clone, Deserialize)]
 pub struct ExchangeConfig {
-    // all the symbols to work with, only symbols included here will
+    // all the asset pairs to work with, only asset pairs included here will
     // appear in the report.
     pub symbols: Vec<String>,
     // How far back to look for transactions
@@ -60,6 +62,26 @@ impl Config {
             .map_err(|e| anyhow!("couldn't read config file: {}", e).context(Error::Cli))?;
         toml::from_str(contents.as_str())
             .map_err(|e| anyhow!("couldn't parse config file: {}", e).context(Error::Cli))
+    }
+}
+
+impl TryFrom<ExchangeConfig> for BinanceConfig {
+    type Error = AnyhowError;
+    fn try_from(c: ExchangeConfig) -> Result<Self> {
+        Ok(Self {
+            start_date: c.start_date()?,
+            symbols: c.symbols.clone(),
+        })
+    }
+}
+
+impl TryFrom<ExchangeConfig> for CoinbaseConfig {
+    type Error = AnyhowError;
+    fn try_from(c: ExchangeConfig) -> Result<Self> {
+        Ok(Self {
+            start_date: c.start_date()?,
+            symbols: c.symbols.clone(),
+        })
     }
 }
 

@@ -13,6 +13,7 @@ use serde_json::Value;
 use sha2::Sha256;
 
 use api_client::{errors::Error as ClientError, ApiClient, QueryParams};
+use exchange::Candle;
 
 use crate::{
     api_model::*,
@@ -260,7 +261,7 @@ impl<Region> BinanceFetcher<Region> {
         symbol: &str,
         start_ts: u64,
         end_ts: u64,
-    ) -> Result<Vec<(u64, f64)>> {
+    ) -> Result<Vec<Candle>> {
         // Fetch the prices' 30m-candles from `start_ts` to `end_ts`.
         // The API only returns at max 1000 entries per request, thus the full
         // range needs to be split into buckets of 1000 30m-candles.
@@ -316,13 +317,11 @@ impl<Region> BinanceFetcher<Region> {
             match resp {
                 Ok(resp) => {
                     let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
-                    all_prices.extend(klines.iter().map(|x| {
-                        let high = x[2].as_str().unwrap().parse::<f64>().unwrap();
-                        let low = x[3].as_str().unwrap().parse::<f64>().unwrap();
-                        (
-                            x[6].as_u64().unwrap(), // close time
-                            (high + low) / 2.0,     // avg
-                        )
+                    all_prices.extend(klines.iter().map(|x| Candle {
+                        open_time: x[0].as_u64().unwrap(),
+                        close_time: x[6].as_u64().unwrap(),
+                        open_price: x[1].as_str().unwrap().parse::<f64>().unwrap(),
+                        close_price: x[4].as_str().unwrap().parse::<f64>().unwrap(),
                     }));
                 }
                 Err(err) => {
@@ -345,7 +344,7 @@ impl<Region> BinanceFetcher<Region> {
                 }
             }
         }
-        all_prices.sort_by_key(|x| x.0);
+        all_prices.sort_by_key(|c| c.close_time);
         Ok(all_prices)
     }
 

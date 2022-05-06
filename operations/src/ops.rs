@@ -1,327 +1,28 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use tracing::{debug, error, span, Level};
 
 use anyhow::{anyhow, Error, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, error, span, Level};
 
-use crate::operations::{
+use crate::{
     db::{self, get_asset_price_bucket, insert_asset_price_bucket},
     storage::Storage,
+    Operations,
 };
-use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
+
+use exchange::{
+    AssetPair, AssetsInfo, Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay,
+    Trade, TradeSide, Withdraw,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 pub enum OperationStatus {
     Success,
     Failed,
-}
-
-#[async_trait]
-/// Layer of abstraction on how to fetch data from exchanges.
-/// This allow to handle any incoming transactions/operations and convert them
-/// into known structs that can be correctly translated into operations.
-pub trait ExchangeDataFetcher {
-    // Allows to express any transactions as a list of operations, this gives
-    // more freedom at the cost of trusting the exchange client will correctly
-    // translate its data/transactions into operations that will keep consistency.
-    async fn operations(&self) -> Result<Vec<Operation>>;
-    async fn trades(&self) -> Result<Vec<Trade>>;
-    async fn margin_trades(&self) -> Result<Vec<Trade>>;
-    async fn loans(&self) -> Result<Vec<Loan>>;
-    async fn repays(&self) -> Result<Vec<Repay>>;
-    async fn deposits(&self) -> Result<Vec<Deposit>>;
-    async fn withdraws(&self) -> Result<Vec<Withdraw>>;
-}
-
-#[async_trait]
-pub trait AssetsInfo {
-    async fn price_at(&self, symbol: &str, time: &DateTime<Utc>) -> Result<f64>;
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum TradeSide {
-    Buy,
-    Sell,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Trade {
-    pub source_id: String,
-    pub source: String,
-    pub symbol: String,
-    pub base_asset: String,
-    pub quote_asset: String,
-    pub amount: f64,
-    pub price: f64,
-    pub fee: f64,
-    pub fee_asset: String,
-    #[serde(with = "datetime_from_str")]
-    pub time: DateTime<Utc>,
-    pub side: TradeSide,
-}
-
-impl Into<Vec<Operation>> for Trade {
-    fn into(self) -> Vec<Operation> {
-        let mut ops = match self.side {
-            TradeSide::Buy => vec![
-                Operation::BalanceIncrease {
-                    id: 1,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.base_asset.clone(),
-                    amount: self.amount,
-                },
-                Operation::Cost {
-                    id: 2,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    for_asset: self.base_asset.clone(),
-                    for_amount: self.amount,
-                    asset: self.quote_asset.clone(),
-                    amount: self.amount * self.price,
-                    time: self.time,
-                },
-                Operation::BalanceDecrease {
-                    id: 3,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.quote_asset.clone(),
-                    amount: self.amount * self.price,
-                },
-                Operation::Revenue {
-                    id: 4,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.quote_asset.clone(),
-                    amount: self.amount * self.price,
-                    time: self.time,
-                },
-            ],
-            TradeSide::Sell => vec![
-                Operation::BalanceDecrease {
-                    id: 1,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.base_asset.clone(),
-                    amount: self.amount,
-                },
-                Operation::Revenue {
-                    id: 2,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.base_asset.clone(),
-                    amount: self.amount,
-                    time: self.time,
-                },
-                Operation::BalanceIncrease {
-                    id: 3,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.quote_asset.clone(),
-                    amount: self.amount * self.price,
-                },
-                Operation::Cost {
-                    id: 4,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    for_asset: self.quote_asset.clone(),
-                    for_amount: self.amount * self.price,
-                    asset: self.base_asset.clone(),
-                    amount: self.amount,
-                    time: self.time,
-                },
-            ],
-        };
-        if self.fee_asset != "" && self.fee > 0.0 {
-            ops.push(Operation::BalanceDecrease {
-                id: 5,
-                source_id: self.source_id.clone(),
-                source: self.source.clone(),
-                asset: self.fee_asset.clone(),
-                amount: self.fee,
-            });
-            ops.push(Operation::Cost {
-                id: 6,
-                source_id: self.source_id,
-                source: self.source,
-                for_asset: match self.side {
-                    TradeSide::Buy => self.base_asset,
-                    TradeSide::Sell => self.quote_asset,
-                },
-                for_amount: 0.0,
-                asset: self.fee_asset,
-                amount: self.fee,
-                time: self.time,
-            });
-        }
-
-        ops
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Deposit {
-    pub source_id: String,
-    pub source: String,
-    pub asset: String,
-    pub amount: f64,
-    #[serde(with = "datetime_from_str")]
-    pub time: DateTime<Utc>,
-    pub fee: Option<f64>,
-    pub is_fiat: bool,
-}
-
-impl Into<Vec<Operation>> for Deposit {
-    fn into(self) -> Vec<Operation> {
-        let mut ops = vec![Operation::BalanceIncrease {
-            id: 1,
-            source_id: self.source_id.clone(),
-            source: self.source.clone(),
-            asset: self.asset.clone(),
-            amount: self.amount,
-        }];
-        if let Some(fee) = self.fee.filter(|f| f > &0.0) {
-            ops.extend(vec![
-                Operation::BalanceDecrease {
-                    id: 2,
-                    source_id: self.source_id.clone(),
-                    source: self.source.clone(),
-                    asset: self.asset.clone(),
-                    amount: fee,
-                },
-                Operation::Cost {
-                    id: 3,
-                    source_id: self.source_id,
-                    source: self.source,
-                    for_asset: self.asset.clone(),
-                    for_amount: 0.0,
-                    asset: self.asset,
-                    amount: fee,
-                    time: self.time,
-                },
-            ]);
-        }
-        ops
-    }
-}
-
-#[derive(Deserialize, Debug, Clone)]
-pub struct Withdraw {
-    pub source_id: String,
-    pub source: String,
-    pub asset: String,
-    pub amount: f64,
-    #[serde(with = "datetime_from_str")]
-    pub time: DateTime<Utc>,
-    pub fee: f64,
-}
-
-impl Into<Vec<Operation>> for Withdraw {
-    fn into(self) -> Vec<Operation> {
-        let mut ops = vec![Operation::BalanceDecrease {
-            id: 1,
-            source_id: self.source_id.clone(),
-            source: self.source.clone(),
-            asset: self.asset.clone(),
-            amount: self.amount,
-        }];
-        if self.fee > 0.0 {
-            ops.extend(vec![
-                Operation::BalanceDecrease {
-                    id: 2,
-                    source_id: format!("{}-fee", &self.source_id),
-                    source: self.source.clone(),
-                    asset: self.asset.clone(),
-                    amount: self.fee,
-                },
-                Operation::Cost {
-                    id: 3,
-                    source_id: self.source_id,
-                    source: self.source,
-                    for_asset: self.asset.clone(),
-                    for_amount: 0.0,
-                    asset: self.asset,
-                    amount: self.fee,
-                    time: self.time,
-                },
-            ]);
-        }
-        ops
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Loan {
-    pub source_id: String,
-    pub source: String,
-    pub asset: String,
-    pub amount: f64,
-    #[serde(with = "datetime_from_str")]
-    pub time: DateTime<Utc>,
-    pub status: OperationStatus,
-}
-
-impl Into<Vec<Operation>> for Loan {
-    fn into(self) -> Vec<Operation> {
-        match self.status {
-            OperationStatus::Success => {
-                vec![Operation::BalanceIncrease {
-                    id: 1,
-                    source_id: self.source_id,
-                    source: self.source,
-                    asset: self.asset,
-                    amount: self.amount,
-                }]
-            }
-            OperationStatus::Failed => vec![],
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Repay {
-    pub source_id: String,
-    pub source: String,
-    pub asset: String,
-    pub amount: f64,
-    pub interest: f64,
-    #[serde(with = "datetime_from_str")]
-    pub time: DateTime<Utc>,
-    pub status: OperationStatus,
-}
-
-impl Into<Vec<Operation>> for Repay {
-    fn into(self) -> Vec<Operation> {
-        match self.status {
-            OperationStatus::Success => {
-                vec![
-                    Operation::BalanceDecrease {
-                        id: 1,
-                        source_id: self.source_id.clone(),
-                        source: self.source.clone(),
-                        asset: self.asset.clone(),
-                        amount: self.amount + self.interest,
-                    },
-                    Operation::Cost {
-                        id: 2,
-                        source_id: self.source_id,
-                        source: self.source,
-                        for_asset: self.asset.clone(),
-                        for_amount: 0.0,
-                        asset: self.asset,
-                        amount: self.interest,
-                        time: self.time,
-                    },
-                ]
-            }
-            OperationStatus::Failed => vec![],
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -520,7 +221,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), &time)
+                        .price_at(&AssetPair::new(asset, "USDT"), &time)
                         .await?
                 };
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
@@ -540,7 +241,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                     1.0
                 } else {
                     self.asset_info
-                        .price_at(&format!("{}USDT", asset), &time)
+                        .price_at(&AssetPair::new(asset, "USDT"), &time)
                         .await?
                 };
                 let coin_balance = balance.entry(asset.clone()).or_default();
@@ -675,25 +376,32 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
 
 /// Fetches prices for assets and stores on the db based on the processed
 /// operations.
-pub struct PricesFetcher;
+pub struct PricesFetcher<T> {
+    asset_prices: AssetPrices<T>,
+}
+
+impl<T> PricesFetcher<T> {
+    pub fn new(asset_prices: AssetPrices<T>) -> Self {
+        Self { asset_prices }
+    }
+}
 
 #[async_trait]
-impl OperationsProcesor for PricesFetcher {
+impl<T: ExchangeClient + Send + Sync> OperationsProcesor for PricesFetcher<T> {
     async fn process(
         &self,
         mut receiver: mpsc::Receiver<Operation>,
         sender: Option<mpsc::Sender<Operation>>,
     ) -> Result<()> {
         log::info!("syncing asset prices to db...");
-        let asset_prices = AssetPrices::new();
         while let Some(op) = receiver.recv().await {
             // the `.price_at(..)` call will make the DB to populate with
             // bucket of prices corresponding to each processed transaction.
             match &op {
                 Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
                     if !asset.starts_with("USD") {
-                        asset_prices
-                            .price_at(&format!("{}USDT", asset), time)
+                        self.asset_prices
+                            .price_at(&AssetPair::new(asset, "USDT"), time)
                             .await?;
                     }
                 }
@@ -710,18 +418,20 @@ impl OperationsProcesor for PricesFetcher {
 
 /// stores buckets to prices in the db, buckets are periods of time
 /// defined by number of days of span.
-pub struct AssetPrices {
-    fetcher: BinanceFetcher<RegionGlobal>,
+pub struct AssetPrices<T> {
+    client: T,
 }
 
-impl AssetPrices {
-    pub fn new() -> Self {
-        Self {
-            fetcher: BinanceFetcher::<RegionGlobal>::new(),
-        }
+impl<T: ExchangeClient> AssetPrices<T> {
+    pub fn new(client: T) -> Self {
+        Self { client }
     }
 
-    async fn asset_price_at(&self, symbol: &str, datetime: &DateTime<Utc>) -> Result<f64> {
+    async fn asset_price_at(
+        &self,
+        asset_pair: &AssetPair,
+        datetime: &DateTime<Utc>,
+    ) -> Result<f64> {
         // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
@@ -732,43 +442,42 @@ impl AssetPrices {
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size_millis) as u16;
 
-        if let Some(prices) = get_asset_price_bucket(bucket, symbol)? {
+        if let Some(prices) = get_asset_price_bucket(bucket, asset_pair)? {
             Ok(self.find_price_at(&prices, time))
         } else {
-            let symbol_prices = self.fetch_prices_for(symbol, time).await?;
-            let price = self.find_price_at(&symbol_prices, time);
-            insert_asset_price_bucket(bucket, symbol, symbol_prices)?;
+            let asset_pair_prices = self.fetch_prices_for(asset_pair, time).await?;
+            let price = self.find_price_at(&asset_pair_prices, time);
+            insert_asset_price_bucket(bucket, asset_pair, asset_pair_prices)?;
             Ok(price)
         }
     }
 
-    async fn fetch_prices_for(&self, symbol: &str, time: u64) -> Result<Vec<(u64, f64)>> {
+    async fn fetch_prices_for(&self, asset_pair: &AssetPair, time: u64) -> Result<Vec<Candle>> {
         // fetch prices from the start time of the bucket not `time` so other calls
         // can reuse the data for transactions that fall into the same bucket. Also this
         // way it's assured fetched data won't overlap.
         let period_days = 180;
-        let bucket_size_millis = 24 * 3600 * 1000 * period_days;
-        let start_ts = time - (time % bucket_size_millis);
-        let end_ts = start_ts + bucket_size_millis;
-        self.fetcher
-            .fetch_prices_in_range(
-                &EndpointsGlobal::Klines.to_string(),
-                symbol,
-                start_ts,
-                end_ts,
+        let bucket_size = 24 * 3600 * period_days;
+        let start_ts = time - (time % bucket_size);
+        let end_ts = start_ts + bucket_size;
+        self.client
+            .prices(
+                asset_pair,
+                Utc.timestamp(start_ts.try_into()?, 0),
+                Utc.timestamp(end_ts.try_into()?, 0),
             )
             .await
     }
 
-    fn find_price_at(&self, prices: &Vec<(u64, f64)>, time: u64) -> f64 {
+    fn find_price_at(&self, prices: &Vec<Candle>, time: u64) -> f64 {
         // find the price at `time` in the vector of candles, it's assumed
-        // that the time is the close time of the candle and the data is sorted.
-        // With those invariants then the first candle which time is greater than
+        // the data is sorted.
+        // With that invariant then the first candle which time is greater than
         // the provided `time` is the one that holds the most accurate price.
         prices
             .iter()
-            .find_map(|p| match p.0 > time {
-                true => Some(p.1),
+            .find_map(|c| match c.close_time > time {
+                true => Some(c.close_price),
                 false => None,
             })
             .unwrap_or(0.0)
@@ -776,9 +485,9 @@ impl AssetPrices {
 }
 
 #[async_trait]
-impl AssetsInfo for AssetPrices {
-    async fn price_at(&self, symbol: &str, time: &DateTime<Utc>) -> Result<f64> {
-        self.asset_price_at(symbol, time).await
+impl<T: ExchangeClient + Send + Sync> AssetsInfo for AssetPrices<T> {
+    async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
+        self.asset_price_at(asset_pair, time).await
     }
 }
 
@@ -793,7 +502,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
     log::info!("[{}] fetching margin trades...", prefix);
     all_ops.extend(
@@ -801,7 +510,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
     log::info!("[{}] fetching loans...", prefix);
     all_ops.extend(
@@ -809,7 +518,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
     log::info!("[{}] fetching repays...", prefix);
     all_ops.extend(
@@ -817,7 +526,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
     log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
@@ -825,7 +534,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
     log::info!("[{}] fetching withdraws...", prefix);
     all_ops.extend(
@@ -833,10 +542,10 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
+            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
     );
-    log::info!("[{}] fetching operations...", prefix);
-    all_ops.extend(c.operations().await.unwrap());
+    // log::info!("[{}] fetching operations...", prefix);
+    // all_ops.extend(c.operations().await.unwrap());
     log::info!("[{}] ALL DONE!!!", prefix);
     all_ops
 }
@@ -862,126 +571,12 @@ pub async fn fetch_ops<'a>(
     rx
 }
 
-pub(crate) mod datetime_from_str {
-    use chrono::{DateTime, TimeZone, Utc};
-    use serde::{de, Deserialize, Deserializer};
-    use std::convert::TryInto;
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum TimestampOrString {
-            Timestamp(u64),
-            String(String),
-        }
-
-        match TimestampOrString::deserialize(deserializer)? {
-            // timestamps from the API are in milliseconds
-            TimestampOrString::Timestamp(ts) => {
-                Ok(Utc.timestamp_millis(ts.try_into().map_err(de::Error::custom)?))
-            }
-            TimestampOrString::String(s) => Utc
-                .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
-                .map_err(de::Error::custom),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
     use Operation::*;
-
-    impl Arbitrary for Trade {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets = ["ADA", "SOL", "MATIC"];
-            let quote_assets = ["BTC", "ETH", "AVAX"];
-            let base_asset = g.choose(&assets).take().unwrap();
-            let quote_asset = g.choose(&quote_assets).take().unwrap();
-            let sides = [TradeSide::Buy, TradeSide::Sell];
-            Self {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                symbol: format!("{}{}", base_asset, quote_asset),
-                base_asset: base_asset.to_string(),
-                quote_asset: quote_asset.to_string(),
-                // non-zero price and amount
-                price: 0.1 + u16::arbitrary(g) as f64,
-                amount: 0.1 + u16::arbitrary(g) as f64,
-                fee: u16::arbitrary(g).try_into().unwrap(),
-                fee_asset: g.choose(&assets).take().unwrap().to_string(),
-                time: Utc::now(),
-                side: g.choose(&sides).unwrap().clone(),
-            }
-        }
-    }
-
-    impl Arbitrary for Deposit {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Self {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: g.choose(&assets).take().unwrap().to_string(),
-                // non-zero amount
-                amount: 0.1 + u16::arbitrary(g) as f64,
-                fee: Option::arbitrary(g),
-                time: Utc::now(),
-                is_fiat: *g.choose(&[true, false]).take().unwrap(),
-            }
-        }
-    }
-
-    impl Arbitrary for Withdraw {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Self {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: g.choose(&assets).take().unwrap().to_string(),
-                // non-zero amount
-                amount: 0.1 + u16::arbitrary(g) as f64,
-                fee: u16::arbitrary(g) as f64,
-                time: Utc::now(),
-            }
-        }
-    }
-
-    impl Arbitrary for Loan {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Self {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: g.choose(&assets).unwrap().to_string(),
-                // non-zero amount
-                amount: 0.1 + u16::arbitrary(g) as f64,
-                time: Utc::now(),
-                status: OperationStatus::arbitrary(g),
-            }
-        }
-    }
-
-    impl Arbitrary for Repay {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets = ["ADA", "SOL", "MATIC", "BTC", "ETH", "AVAX"];
-            Self {
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                asset: g.choose(&assets).unwrap().to_string(),
-                // non-zero amount
-                amount: 0.1 + u16::arbitrary(g) as f64,
-                interest: 0.1 + u16::arbitrary(g) as f64,
-                time: Utc::now(),
-                status: OperationStatus::arbitrary(g),
-            }
-        }
-    }
 
     impl Arbitrary for OperationStatus {
         fn arbitrary(g: &mut Gen) -> Self {
@@ -1049,7 +644,7 @@ mod tests {
             }
 
             let t = trade.clone();
-            let ops: Vec<Operation> = trade.into();
+            let ops: Vec<Operation> = Into::<Operations>::into(trade).into();
 
             let num_ops = if t.fee > 0.0 { 6 } else { 4 };
             if ops.len() != num_ops {
@@ -1565,7 +1160,11 @@ mod tests {
 
         #[async_trait]
         impl AssetsInfo for TestAssetInfo {
-            async fn price_at(&self, _symbol: &str, _time: &DateTime<Utc>) -> Result<f64> {
+            async fn price_at(
+                &self,
+                _assest_pair: &AssetPair,
+                _time: &DateTime<Utc>,
+            ) -> Result<f64> {
                 Ok(self.prices.lock().await.remove(0))
             }
         }

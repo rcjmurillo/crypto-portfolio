@@ -99,6 +99,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "exchange",
  "futures",
  "hex",
  "hmac",
@@ -106,7 +107,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tokio",
 ]
 
 [[package]]
@@ -227,6 +227,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "exchange",
  "futures",
  "hex",
  "hmac",
@@ -234,7 +235,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tokio",
 ]
 
 [[package]]
@@ -333,6 +333,24 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
+]
+
+[[package]]
+name = "exchange"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "hex",
+ "hmac",
+ "quickcheck",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -703,9 +721,9 @@ checksum = "1bf2e165bb3457c8e098ea76f3e3bc9db55f87aa90d52d0e6be741470916aaa4"
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.23.2"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2cafc7c74096c336d9d27145f7ebd4f4b6f95ba16aa5a282387267e6925cb58"
+checksum = "898745e570c7d0453cc1fbc4a701eb6c662ed54e8fec8b7d14be137ebeeb9d14"
 dependencies = [
  "pkg-config",
  "vcpkg",
@@ -871,6 +889,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "operations"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "env_logger 0.9.0",
+ "exchange",
+ "log",
+ "quickcheck",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -949,10 +986,11 @@ dependencies = [
  "cli-table",
  "coinbase",
  "env_logger 0.9.0",
+ "exchange",
  "futures",
  "log",
+ "operations",
  "quickcheck",
- "rusqlite",
  "serde",
  "serde_json",
  "structopt",
@@ -1154,9 +1192,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.26.3"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba4d3462c8b2e4d7f4fcfcf2b296dc6b65404fbbc7b63daa37fd485c149daf7"
+checksum = "85127183a999f7db96d1a976a309eebbfb6ea3b0b400ddd8340190129de6eb7a"
 dependencies = [
  "bitflags",
  "fallible-iterator",

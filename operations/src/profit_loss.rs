@@ -4,7 +4,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::operations::{AssetsInfo, Operation};
+use crate::Operation;
+use exchange::{AssetPair, AssetsInfo};
 
 #[derive(Debug)]
 pub struct Sale {
@@ -200,7 +201,7 @@ impl<'a> OperationsStream<'a> {
                     1.0
                 } else {
                     self.assets_info
-                        .price_at(&format!("{}USDT", asset), time)
+                        .price_at(&AssetPair::new(asset, "USDT"), time)
                         .await?
                 };
                 fulfill_amount -= amount_fulfilled;
@@ -217,7 +218,7 @@ impl<'a> OperationsStream<'a> {
                     cost: paid_amount_used * price,
                     price: self
                         .assets_info
-                        .price_at(&format!("{}USDT", sale.asset), time)
+                        .price_at(&AssetPair::new(&sale.asset, "USDT"), time)
                         .await?,
                     paid_with: asset.to_string(),
                     paid_with_amount: paid_amount_used,
@@ -237,7 +238,7 @@ impl<'a> OperationsStream<'a> {
             1.0
         } else {
             self.assets_info
-                .price_at(&format!("{}USDT", sale.asset), &sale.datetime)
+                .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
                 .await?
         };
         let revenue = sale.amount * sale_asset_price;
@@ -275,7 +276,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::operations::{storage::Storage, AssetPrices, Operation::*};
+    use crate::{storage::Storage, AssetPrices, Operation::*};
 
     struct DummyStorage {
         ops: Vec<Operation>,
@@ -305,7 +306,7 @@ mod tests {
 
     #[async_trait]
     impl AssetsInfo for DummyAssetsInfo {
-        async fn price_at(&self, _symbol: &str, _time: &DateTime<Utc>) -> Result<f64> {
+        async fn price_at(&self, _asset_pair: &AssetPair, _time: &DateTime<Utc>) -> Result<f64> {
             let nums: Vec<_> = (1usize..10).map(|n| n as f64).collect();
             let mut gen = Gen::new(100);
             let mut p: f64 = *gen.choose(&nums[..]).unwrap();

@@ -5,10 +5,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json;
 
-use crate::{
-    errors::Error,
-    operations::{Deposit, ExchangeDataFetcher, Loan, Operation, Repay, Trade, Withdraw},
-};
+use crate::errors::Error;
+use exchange::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
@@ -34,9 +32,6 @@ impl FileDataFetcher {
 
 #[async_trait]
 impl ExchangeDataFetcher for FileDataFetcher {
-    async fn operations(&self) -> Result<Vec<Operation>> {
-        Ok(Vec::new())
-    }
     async fn trades(&self) -> Result<Vec<Trade>> {
         Ok(self.data.trades.clone())
     }

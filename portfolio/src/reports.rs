@@ -5,7 +5,8 @@ use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
 
-use crate::operations::{AssetsInfo, BalanceTracker};
+use operations::{BalanceTracker};
+use exchange::AssetsInfo;
 
 pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
     let binance_client = BinanceFetcher::<RegionGlobal>::new();
