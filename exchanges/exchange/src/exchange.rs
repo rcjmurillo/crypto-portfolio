@@ -23,7 +23,7 @@ pub trait AssetsInfo {
     async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64>;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Candle {
     pub open_time: u64,
     pub close_time: u64,
