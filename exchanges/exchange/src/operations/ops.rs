@@ -463,8 +463,8 @@ impl<T: ExchangeClient> AssetPrices<T> {
         self.client
             .prices(
                 asset_pair,
-                Utc.timestamp(start_ts.try_into()?, 0),
-                Utc.timestamp(end_ts.try_into()?, 0),
+                Utc.timestamp_millis(start_ts.try_into()?),
+                Utc.timestamp_millis(end_ts.try_into()?),
             )
             .await
     }
