@@ -103,6 +103,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac 0.12.1",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
