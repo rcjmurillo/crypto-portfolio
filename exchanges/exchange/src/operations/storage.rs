@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::Operation;
+use crate::operations::Operation;
 
 #[async_trait]
 pub trait Storage {

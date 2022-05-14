@@ -1,4 +1,6 @@
-use anyhow::{anyhow, Result};
+use std::convert::TryFrom;
+
+use anyhow::{anyhow, Result, Error};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,13 +33,21 @@ pub struct Candle {
 
 #[async_trait]
 pub trait ExchangeClient {
-    async fn prices(&self, asset_pair: &AssetPair, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Candle>>;
+    async fn prices(
+        &self,
+        asset_pair: &AssetPair,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<Candle>>;
 }
 
 pub type Asset = String;
 
 #[derive(Clone)]
-pub struct AssetPair(Asset, Asset);
+pub struct AssetPair {
+    pub base: Asset,
+    pub quote: Asset,
+}
 
 impl AssetPair {
     pub fn new<A, B>(asset_a: A, asset_b: B) -> Self
@@ -45,22 +55,37 @@ impl AssetPair {
         A: ToString,
         B: ToString,
     {
-        Self(asset_a.to_string(), asset_b.to_string())
+        Self {
+            base: asset_a.to_string(),
+            quote: asset_b.to_string(),
+        }
     }
     /// try to create the string from an incoming string expected to be0
     /// a pair of assets joined by '-'.
     pub fn try_from_str(assets: &str) -> Result<Self> {
         let parts: Vec<&str> = assets.split("-").collect();
         if parts.len() == 2 {
-            Ok(Self(parts[0].to_string(), parts[1].to_string()))
+            Ok(Self {
+                base: parts[0].to_string(),
+                quote: parts[1].to_string(),
+            })
         } else {
             Err(anyhow!("couldn't parse '{}' into assets", assets))
         }
     }
 
     pub fn join(&self, sep: &str) -> String {
-        format!("{}{}{}", self.0, sep, self.1)
+        format!("{}{}{}", self.base, sep, self.quote)
     }
+}
+
+impl TryFrom<String> for AssetPair {
+    type Error = Error;
+
+    fn try_from(assets: String) -> Result<Self> {
+        Self::try_from_str(&assets)
+    }
+
 }
 
 #[derive(Debug, Deserialize, Clone)]

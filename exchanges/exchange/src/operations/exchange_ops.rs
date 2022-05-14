@@ -1,7 +1,9 @@
 use std::ops::Deref;
 
-use crate::Operation;
-use exchange::{Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw};
+use crate::{
+    operations::Operation,
+    {Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw}
+};
 
 pub struct Operations(Vec<Operation>);
 

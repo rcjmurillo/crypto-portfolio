@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
 
-use crate::{storage::Storage, Operation as OperationType};
-use exchange::{AssetPair, Candle};
+use crate::operations::{storage::Storage, Operation as OperationType};
+use crate::{AssetPair, Candle};
 
 const DB_NAME: &'static str = "operations.db";
 

@@ -8,13 +8,13 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, span, Level};
 
-use crate::{
+use crate::operations::{
     db::{self, get_asset_price_bucket, insert_asset_price_bucket},
     storage::Storage,
     Operations,
 };
 
-use exchange::{
+use crate::{
     AssetPair, AssetsInfo, Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay,
     Trade, TradeSide, Withdraw,
 };

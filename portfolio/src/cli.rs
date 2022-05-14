@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Result, Error as AnyhowError};
+use anyhow::{anyhow, Context, Error as AnyhowError, Result};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use structopt::{self, StructOpt};
@@ -13,6 +13,7 @@ use toml;
 use crate::errors::Error;
 use binance::Config as BinanceConfig;
 use coinbase::Config as CoinbaseConfig;
+use exchange::{Asset, AssetPair};
 
 fn read_config_file(path: &OsStr) -> std::result::Result<Config, OsString> {
     match Config::from_file_path(path.into()) {
@@ -28,11 +29,12 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeConfig {
     // all the asset pairs to work with, only asset pairs included here will
     // appear in the report.
-    pub symbols: Vec<String>,
+    pub symbols: Option<Vec<String>>,
+    pub assets: Option<Vec<Asset>>,
     // How far back to look for transactions
     start_date: toml::Value,
 }
@@ -58,10 +60,18 @@ pub struct Config {
 
 impl Config {
     pub fn from_file_path(file_path: PathBuf) -> Result<Self> {
-        let contents = read_to_string(file_path)
-            .map_err(|e| anyhow!("couldn't read config file: {}", e).context(Error::Cli))?;
-        toml::from_str(contents.as_str())
-            .map_err(|e| anyhow!("couldn't parse config file: {}", e).context(Error::Cli))
+        let contents = read_to_string(file_path.clone()).map_err(|e| {
+            anyhow!(Error::Cli).context(format!(
+                "couldn't read config file: {:?} error: {}",
+                file_path, e
+            ))
+        })?;
+        toml::from_str(contents.as_str()).map_err(|e| {
+            anyhow!(Error::Cli).context(format!(
+                "couldn't parse config file: {:?} error: {}",
+                file_path, e
+            ))
+        })
     }
 }
 
@@ -70,7 +80,12 @@ impl TryFrom<ExchangeConfig> for BinanceConfig {
     fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
             start_date: c.start_date()?,
-            symbols: c.symbols.clone(),
+            symbols: c
+                .symbols
+                .ok_or_else(|| anyhow!("missing symbols in binance config"))?
+                .iter()
+                .map(|s| AssetPair::try_from_str(&s))
+                .collect::<Result<Vec<AssetPair>>>()?,
         })
     }
 }
@@ -80,7 +95,11 @@ impl TryFrom<ExchangeConfig> for CoinbaseConfig {
     fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
             start_date: c.start_date()?,
-            symbols: c.symbols.clone(),
+            // fixme: decide which one to use by check if c.symbols or c.assets is present
+            symbols: c
+                .assets
+                .ok_or_else(|| anyhow!("missing assets in binance config"))?
+                .clone(),
         })
     }
 }
@@ -91,7 +110,7 @@ pub enum PortfolioAction {
     Sync,
     RevenueReport {
         #[structopt(long)]
-        asset: Option<String>
+        asset: Option<String>,
     },
 }
 

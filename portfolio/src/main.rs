@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
-use operations::{
+use exchange::operations::{
     db::{create_tables, get_operations, Db, Operation as DbOperation},
     fetch_ops,
     profit_loss::{ConsumeStrategy, OperationsStream, Sale},

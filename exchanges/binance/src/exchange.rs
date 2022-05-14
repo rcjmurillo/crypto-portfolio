@@ -137,8 +137,8 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
         let mut handles = Vec::new();
         for symbol in self.symbols().iter() {
-            if all_symbols.contains(&symbol) {
-                handles.push(self.fetch_trades(&endpoint, symbol.clone()));
+            if all_symbols.contains(&symbol.join("")) {
+                handles.push(self.fetch_trades(&endpoint, symbol));
                 if handles.len() >= 10 {
                     trades.extend(join_all(handles).await);
                     handles = Vec::new();
@@ -162,8 +162,8 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
         let mut handles = Vec::new();
         for symbol in self.symbols().iter() {
-            if all_symbols.contains(&symbol) {
-                handles.push(self.fetch_margin_trades(symbol.clone()));
+            if all_symbols.contains(&symbol.join("")) {
+                handles.push(self.fetch_margin_trades(symbol));
             }
         }
         flatten_results(join_all(handles).await)
@@ -178,15 +178,14 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
         let mut processed_assets = HashSet::new();
         for symbol in self.symbols().iter() {
-            if all_symbols.contains(&symbol) {
-                let (asset, _) = symbol_into_assets(&symbol, &exchange_symbols);
-                if !processed_assets.contains(&asset) {
+            if all_symbols.contains(&symbol.join("")) {
+                if !processed_assets.contains(&symbol.base) {
                     // fetch cross-margin loans
-                    handles.push(self.fetch_margin_loans(asset.clone(), None));
-                    processed_assets.insert(asset.clone());
+                    handles.push(self.fetch_margin_loans(&symbol.base, None));
+                    processed_assets.insert(&symbol.base);
                 }
                 // fetch margin isolated loans
-                handles.push(self.fetch_margin_loans(asset, Some(symbol)));
+                handles.push(self.fetch_margin_loans(&symbol.base, Some(symbol)));
             }
         }
         flatten_results(join_all(handles).await)
@@ -201,15 +200,14 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 
         let mut processed_assets = HashSet::new();
         for symbol in self.symbols().iter() {
-            if all_symbols.contains(&symbol) {
-                let (asset, _) = symbol_into_assets(&symbol, &exchange_symbols);
-                if !processed_assets.contains(&asset) {
+            if all_symbols.contains(&symbol.join("")) {
+                if !processed_assets.contains(&symbol.base) {
                     // fetch cross-margin repays
-                    handles.push(self.fetch_margin_repays(asset.clone(), None));
-                    processed_assets.insert(asset.clone());
+                    handles.push(self.fetch_margin_repays(&symbol.base, None));
+                    processed_assets.insert(symbol.base.clone());
                 }
                 // fetch margin isolated repays
-                handles.push(self.fetch_margin_repays(asset, Some(symbol)));
+                handles.push(self.fetch_margin_repays(&symbol.base, Some(symbol)));
             }
         }
         flatten_results(join_all(handles).await)
@@ -290,8 +288,8 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
         let endpoint = EndpointsUs::Trades.to_string();
         let mut handles = Vec::new();
         for symbol in self.symbols().iter() {
-            if all_symbols.contains(&symbol) {
-                handles.push(self.fetch_trades(&endpoint, symbol.clone()));
+            if all_symbols.contains(&symbol.join("")) {
+                handles.push(self.fetch_trades(&endpoint, &symbol));
             }
         }
         flatten_results(join_all(handles).await)

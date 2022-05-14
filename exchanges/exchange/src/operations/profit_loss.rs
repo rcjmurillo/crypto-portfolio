@@ -4,8 +4,8 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::Operation;
-use exchange::{AssetPair, AssetsInfo};
+use crate::operations::Operation;
+use crate::{AssetPair, AssetsInfo};
 
 #[derive(Debug)]
 pub struct Sale {

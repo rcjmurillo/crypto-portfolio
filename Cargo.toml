@@ -1,10 +1,6 @@
 [workspace]
 
 members = [
-    "portfolio",
-    "operations",
-    "exchanges/exchange",
-    "exchanges/api-client",
-    "exchanges/binance",
-    "exchanges/coinbase",
+    "./portfolio",
+    "exchanges/*",
 ]

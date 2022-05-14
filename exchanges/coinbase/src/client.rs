@@ -17,6 +17,7 @@ use api_client::{
 };
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
+use exchange::AssetPair;
 
 const ENDPOINT_CONCURRENCY: usize = 2;
 

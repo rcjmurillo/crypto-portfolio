@@ -6,14 +6,14 @@ use bytes::Bytes;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use futures::future::join_all;
 use hex::encode as hex_encode;
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
 
 use api_client::{errors::Error as ClientError, ApiClient, QueryParams};
-use exchange::Candle;
+use exchange::{Candle, AssetPair};
 
 use crate::{
     api_model::*,
@@ -123,7 +123,7 @@ impl ToString for EndpointsGlobal {
 
 pub struct Config {
     pub start_date: NaiveDate,
-    pub symbols: Vec<String>,
+    pub symbols: Vec<AssetPair>,
 }
 
 impl Config {
@@ -160,7 +160,7 @@ impl<Region> BinanceFetcher<Region> {
             .start_date
     }
 
-    pub fn symbols(&self) -> &Vec<String> {
+    pub fn symbols(&self) -> &Vec<AssetPair> {
         &self
             .config
             .as_ref()
@@ -350,7 +350,7 @@ impl<Region> BinanceFetcher<Region> {
 
     async fn fetch_trades_from_endpoint(
         &self,
-        symbol: &str,
+        symbol: &AssetPair,
         endpoint: &str,
         extra_params: Option<QueryParams>,
     ) -> Result<Vec<Trade>> {
@@ -363,7 +363,7 @@ impl<Region> BinanceFetcher<Region> {
 
         loop {
             let mut query = QueryParams::new();
-            query.add("symbol", symbol, true);
+            query.add("symbol", symbol.join(""), true);
             query.add("fromId", last_id, true);
             query.add("limit", 1000, true);
             query.add("recvWindow", 60000, true);
@@ -424,8 +424,8 @@ impl<Region> BinanceFetcher<Region> {
         Ok(trades)
     }
 
-    pub async fn fetch_trades(&self, endpoint: &str, symbol: String) -> Result<Vec<Trade>> {
-        self.fetch_trades_from_endpoint(&symbol, endpoint, None)
+    pub async fn fetch_trades(&self, endpoint: &str, symbol: &AssetPair) -> Result<Vec<Trade>> {
+        self.fetch_trades_from_endpoint(symbol, endpoint, None)
             .await
     }
 }
@@ -512,7 +512,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_fiat_orders("1").await
     }
 
-    pub async fn fetch_margin_trades(&self, symbol: String) -> Result<Vec<Trade>> {
+    pub async fn fetch_margin_trades(&self, symbol: &AssetPair) -> Result<Vec<Trade>> {
         let mut trades = Vec::<Trade>::new();
 
         for is_isolated in vec!["TRUE", "FALSE"] {
@@ -520,7 +520,7 @@ impl BinanceFetcher<RegionGlobal> {
             extra_params.add("isIsolated", is_isolated, true);
             let result_trades = self
                 .fetch_trades_from_endpoint(
-                    &symbol,
+                    symbol,
                     &EndpointsGlobal::MarginTrades.to_string(),
                     Some(extra_params),
                 )
@@ -533,8 +533,8 @@ impl BinanceFetcher<RegionGlobal> {
 
     pub async fn fetch_margin_loans(
         &self,
-        asset: String,
-        isolated_symbol: Option<&String>,
+        asset: &String,
+        isolated_symbol: Option<&AssetPair>,
     ) -> Result<Vec<MarginLoan>> {
         #[derive(Deserialize)]
         struct Response {
@@ -557,7 +557,7 @@ impl BinanceFetcher<RegionGlobal> {
                     let mut query = QueryParams::new();
                     query.add("asset", &asset, true);
                     if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s, true);
+                        query.add("isolatedSymbol", s.join(""), true);
                     }
                     query.add("startTime", curr_start.timestamp_millis(), true);
                     query.add("endTime", end.timestamp_millis(), true);
@@ -603,8 +603,8 @@ impl BinanceFetcher<RegionGlobal> {
 
     pub async fn fetch_margin_repays(
         &self,
-        asset: String,
-        isolated_symbol: Option<&String>,
+        asset: &String,
+        isolated_symbol: Option<&AssetPair>,
     ) -> Result<Vec<MarginRepay>> {
         #[derive(Deserialize)]
         struct Response {
@@ -627,7 +627,7 @@ impl BinanceFetcher<RegionGlobal> {
                     let mut query = QueryParams::new();
                     query.add("asset", &asset, true);
                     if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s, true);
+                        query.add("isolatedSymbol", s.join(""), true);
                     }
                     query.add("startTime", curr_start.timestamp_millis(), true);
                     query.add("endTime", end.timestamp_millis(), true);
