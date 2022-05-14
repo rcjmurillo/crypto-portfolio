@@ -305,8 +305,6 @@ impl<Region> BinanceFetcher<Region> {
             query.add("endTime", end, true);
             query.add("limit", limit, true);
 
-            log::info!("query params: {:?}", query);
-
             handles.push(self.api_client.make_request(
                 &endpoint,
                 Some(query),
@@ -318,7 +316,6 @@ impl<Region> BinanceFetcher<Region> {
         for resp in join_all(handles).await {
             match resp {
                 Ok(resp) => {
-                    log::info!("prices for symbol: {} -> {:?}", symbol, resp.as_ref());
                     let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
                     all_prices.extend(klines.iter().map(|x| Candle {
                         open_time: x[0].as_u64().unwrap(),
