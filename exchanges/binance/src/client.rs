@@ -230,8 +230,8 @@ impl<Region> BinanceFetcher<Region> {
         datetime: &DateTime<Utc>,
     ) -> Result<f64> {
         let time = datetime.timestamp_millis();
-        let start_time = time - 30 * 60 * 1000;
-        let end_time = time + 30 * 60 * 1000;
+        let start_time = time - 30 * 60;
+        let end_time = time + 30 * 60;
 
         let mut query = QueryParams::new();
         query.add("symbol", symbol, true);
@@ -267,8 +267,8 @@ impl<Region> BinanceFetcher<Region> {
         // range needs to be split into buckets of 1000 30m-candles.
 
         // Shift the start and end times a bit to include both in the first and last buckets.
-        let start_time = start_ts - 30 * 60 * 1000 * 2;
-        let end_time = end_ts + 30 * 60 * 1000 * 2;
+        let start_time = start_ts - 30 * 60 * 2;
+        let end_time = end_ts + 30 * 60 * 2;
 
         let limit = 1000; // API response size limit
 
