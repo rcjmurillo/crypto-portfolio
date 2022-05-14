@@ -10,7 +10,7 @@ use crate::{errors::Error as ApiError, sync::ValueSemaphore};
 
 type Cache = HashMap<String, Arc<Bytes>>;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct QueryParams(Vec<(&'static str, String, bool)>);
 
 impl QueryParams {
