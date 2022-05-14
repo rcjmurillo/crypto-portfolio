@@ -21,7 +21,7 @@ use crate::{
 };
 
 const ENDPOINT_CONCURRENCY: usize = 10;
-const API_DOMAIN_GLOBAL: &str = "https://api3.binance.com";
+const API_DOMAIN_GLOBAL: &str = "https://api.binance.com";
 const API_DOMAIN_US: &str = "https://api.binance.us";
 
 #[derive(Copy, Clone)]
@@ -267,8 +267,8 @@ impl<Region> BinanceFetcher<Region> {
         // range needs to be split into buckets of 1000 30m-candles.
 
         // Shift the start and end times a bit to include both in the first and last buckets.
-        let start_time = start_ts - 30 * 60 * 2;
-        let end_time = end_ts + 30 * 60 * 2;
+        let start_time = start_ts - 30 * 60 * 1000 * 2;
+        let end_time = end_ts + 30 * 60 * 1000 * 2;
 
         let limit = 1000; // API response size limit
 
@@ -305,6 +305,8 @@ impl<Region> BinanceFetcher<Region> {
             query.add("endTime", end, true);
             query.add("limit", limit, true);
 
+            log::info!("query params: {:?}", query);
+
             handles.push(self.api_client.make_request(
                 &endpoint,
                 Some(query),
@@ -316,6 +318,7 @@ impl<Region> BinanceFetcher<Region> {
         for resp in join_all(handles).await {
             match resp {
                 Ok(resp) => {
+                    log::info!("prices for symbol: {} -> {:?}", symbol, resp.as_ref());
                     let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
                     all_prices.extend(klines.iter().map(|x| Candle {
                         open_time: x[0].as_u64().unwrap(),
