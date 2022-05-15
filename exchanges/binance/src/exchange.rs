@@ -8,7 +8,6 @@ use futures::future::join_all;
 use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
     client::{BinanceFetcher, EndpointsGlobal, EndpointsUs, RegionGlobal, RegionUs},
-    symbol_into_assets,
 };
 use exchange::{self, AssetPair, AssetsInfo, ExchangeDataFetcher, ExchangeClient, Candle};
 

@@ -393,9 +393,8 @@ impl<Region> BinanceFetcher<Region> {
                         last_id = binance_trades.iter().last().unwrap().id + 1;
                     };
                     for mut t in binance_trades.into_iter() {
-                        let (b, q) = symbol_into_assets(&t.symbol, &exchange_symbols);
-                        t.base_asset = b;
-                        t.quote_asset = q;
+                        t.base_asset = symbol.base.clone();
+                        t.quote_asset = symbol.quote.clone();
                         trades.push(t);
                     }
                     if !fetch_more {
@@ -915,22 +914,5 @@ impl BinanceFetcher<RegionUs> {
             }
         }
         Ok(withdraws)
-    }
-}
-
-pub fn symbol_into_assets(symbol: &str, exchange_symbols: &Vec<Symbol>) -> (String, String) {
-    let mut iter = exchange_symbols.iter();
-    loop {
-        if let Some(s) = iter.next() {
-            if symbol.starts_with(&s.base_asset) {
-                let (base, quote) = symbol.split_at(s.base_asset.len());
-                break (base.to_string(), quote.to_string());
-            } else if symbol.starts_with(&s.quote_asset) {
-                let (base, quote) = symbol.split_at(s.quote_asset.len());
-                break (base.to_string(), quote.to_string());
-            }
-        } else {
-            println!("could not find a asset for symbol {:?}", symbol);
-        }
     }
 }
