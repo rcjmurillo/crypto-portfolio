@@ -22,54 +22,39 @@ pub struct Purchase {
     paid_with: String,
     paid_with_amount: f64,
     datetime: DateTime<Utc>,
+    sale_result: OperationResult,
 }
 
 #[derive(Debug)]
-pub enum MatchResult {
-    Profit {
-        usd_amount: f64,
-        purchases: Vec<Purchase>,
-    },
-    Loss {
-        usd_amount: f64,
-        purchases: Vec<Purchase>,
-    },
+pub enum OperationResult {
+    Profit(f64),
+    Loss(f64),
+}
+
+#[derive(Debug)]
+pub struct MatchResult {
+    result: OperationResult,
+    purchases: Vec<Purchase>,
 }
 
 impl fmt::Display for MatchResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MatchResult::Profit {
-                usd_amount,
-                purchases,
-            } => {
-                write!(
-                    f,
-                    "Profit of ${}:\n> Purchases:\n{}",
-                    usd_amount,
-                    purchases
-                        .iter()
-                        .map(|p| format!("\t{:?}", p))
-                        .collect::<Vec<String>>()
-                        .join("\n")
-                )
-            }
-            MatchResult::Loss {
-                usd_amount,
-                purchases,
-            } => {
-                write!(
-                    f,
-                    "Loss of ${}:\n> Purchases:\n{}",
-                    usd_amount,
-                    purchases
-                        .iter()
-                        .map(|p| format!("\t{:?}", p))
-                        .collect::<Vec<String>>()
-                        .join("\n")
-                )
-            }
-        }
+        let Self { result, purchases } = self;
+        let (result_str, usd_amount) = match result {
+            OperationResult::Profit(usd_amount) => ("Profit", usd_amount),
+            OperationResult::Loss(usd_amount) => ("Profit", usd_amount),
+        };
+        write!(
+            f,
+            "{} of ${}:\n> Purchases:\n{}",
+            result_str,
+            usd_amount,
+            purchases
+                .iter()
+                .map(|p| format!("\t{:?}", p))
+                .collect::<Vec<String>>()
+                .join("\n")
+        )
     }
 }
 
@@ -164,7 +149,6 @@ impl<'a> OperationsStream<'a> {
         let mut consumed_ops = Vec::new();
         // the total cost of purchasing the amount from the sale
         let mut cost = 0.0;
-
         let mut ops_iter = self.ops.iter_mut().filter(|op| {
             if let Operation::Cost { for_asset, .. } = op {
                 for_asset == &sale.asset
@@ -205,13 +189,23 @@ impl<'a> OperationsStream<'a> {
                         .await?
                 };
                 fulfill_amount -= amount_fulfilled;
-                cost += paid_amount_used * price;
+                let purchase_cost = paid_amount_used * price;
+                cost += purchase_cost;
                 // update the amount used from this purchase to fulfill the
                 // sale, if there is an amount left, it could be still to
                 // fulfill more sales.
                 *purchased_amount -= amount_fulfilled;
                 *paid_amount -= paid_amount_used;
 
+                let price_at_sale = if sale.asset.starts_with("USD") {
+                    1.0
+                } else {
+                    self.assets_info
+                        .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
+                        .await?
+                };
+
+                let sale_revenue = amount_fulfilled * price_at_sale;
                 consumed_ops.push(Purchase {
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
@@ -223,6 +217,11 @@ impl<'a> OperationsStream<'a> {
                     paid_with: asset.to_string(),
                     paid_with_amount: paid_amount_used,
                     datetime: *time,
+                    sale_result: match (sale_revenue, purchase_cost) {
+                        (r, c) if r >= c => OperationResult::Profit(r - c),
+                        (r, c) => OperationResult::Loss(c - r),
+                    }
+
                 });
                 // if the whole amount from the purchase was used, remove it
                 // from the queue as we can't use it anymore to fulfill more sales.
@@ -243,12 +242,12 @@ impl<'a> OperationsStream<'a> {
         };
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
-            (r, c) if r >= c => MatchResult::Profit {
-                usd_amount: r - c,
+            (r, c) if r >= c => MatchResult {
+                result: OperationResult::Profit(r - c),
                 purchases: consumed_ops,
             },
-            (r, c) => MatchResult::Loss {
-                usd_amount: c - r,
+            (r, c) => MatchResult {
+                result: OperationResult::Loss(c - r),
                 purchases: consumed_ops,
             },
         })
