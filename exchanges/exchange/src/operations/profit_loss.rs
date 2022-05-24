@@ -16,6 +16,7 @@ pub struct Sale {
 
 #[derive(Debug)]
 pub struct Purchase {
+    source: String,
     amount: f64,
     cost: f64,
     price: f64,
@@ -42,7 +43,7 @@ impl fmt::Display for MatchResult {
         let Self { result, purchases } = self;
         let (result_str, usd_amount) = match result {
             OperationResult::Profit(usd_amount) => ("Profit", usd_amount),
-            OperationResult::Loss(usd_amount) => ("Profit", usd_amount),
+            OperationResult::Loss(usd_amount) => ("Loss", usd_amount),
         };
         write!(
             f,
@@ -158,17 +159,18 @@ impl<'a> OperationsStream<'a> {
         });
         while fulfill_amount > 0.0 {
             if let Some(mut purchase) = ops_iter.next() {
-                let (purchased_amount, paid_amount, asset, time) = match &mut purchase {
+                let (source, purchased_amount, paid_amount, asset, time) = match &mut purchase {
                     Operation::Cost {
+                        ref source,
                         ref mut for_amount,
                         ref mut amount,
                         ref asset,
                         ref time,
                         ..
-                    } => (for_amount, amount, asset, time),
+                    } => (source, for_amount, amount, asset, time),
                     _ => continue,
                 };
-                if *purchased_amount == 0.0 {
+                if *purchased_amount == 0.0 && *paid_amount == 0.0 {
                     continue;
                 }
                 // purchased_amount that will be used to fulfill the sale
@@ -181,13 +183,10 @@ impl<'a> OperationsStream<'a> {
                         *paid_amount * (fulfill_amount / *purchased_amount),
                     )
                 };
-                let price = if asset.starts_with("USD") {
-                    1.0
-                } else {
-                    self.assets_info
-                        .price_at(&AssetPair::new(asset, "USDT"), time)
-                        .await?
-                };
+                let price = self
+                    .assets_info
+                    .price_at(&AssetPair::new(asset, "USDT"), time)
+                    .await?;
                 fulfill_amount -= amount_fulfilled;
                 let purchase_cost = paid_amount_used * price;
                 cost += purchase_cost;
@@ -197,16 +196,14 @@ impl<'a> OperationsStream<'a> {
                 *purchased_amount -= amount_fulfilled;
                 *paid_amount -= paid_amount_used;
 
-                let price_at_sale = if sale.asset.starts_with("USD") {
-                    1.0
-                } else {
-                    self.assets_info
-                        .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
-                        .await?
-                };
+                let price_at_sale = self
+                    .assets_info
+                    .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
+                    .await?;
 
                 let sale_revenue = amount_fulfilled * price_at_sale;
                 consumed_ops.push(Purchase {
+                    source: source.clone(),
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
                     cost: paid_amount_used * price,
@@ -220,8 +217,7 @@ impl<'a> OperationsStream<'a> {
                     sale_result: match (sale_revenue, purchase_cost) {
                         (r, c) if r >= c => OperationResult::Profit(r - c),
                         (r, c) => OperationResult::Loss(c - r),
-                    }
-
+                    },
                 });
                 // if the whole amount from the purchase was used, remove it
                 // from the queue as we can't use it anymore to fulfill more sales.
@@ -233,13 +229,10 @@ impl<'a> OperationsStream<'a> {
             }
         }
 
-        let sale_asset_price = if sale.asset.starts_with("USD") {
-            1.0
-        } else {
-            self.assets_info
-                .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
-                .await?
-        };
+        let sale_asset_price = self
+            .assets_info
+            .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
+            .await?;
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
             (r, c) if r >= c => MatchResult {

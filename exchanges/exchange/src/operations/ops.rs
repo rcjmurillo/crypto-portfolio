@@ -217,13 +217,10 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = if asset.starts_with("USD") {
-                    1.0
-                } else {
-                    self.asset_info
-                        .price_at(&AssetPair::new(asset, "USDT"), &time)
-                        .await?
-                };
+                let usd_price = self
+                    .asset_info
+                    .price_at(&AssetPair::new(asset, "USDT"), &time)
+                    .await?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
                 debug!("end")
@@ -237,13 +234,10 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = if asset.starts_with("USD") {
-                    1.0
-                } else {
-                    self.asset_info
-                        .price_at(&AssetPair::new(asset, "USDT"), &time)
-                        .await?
-                };
+                let usd_price = self
+                    .asset_info
+                    .price_at(&AssetPair::new(asset, "USDT"), &time)
+                    .await?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
                 debug!("end");
@@ -432,6 +426,13 @@ impl<T: ExchangeClient> AssetPrices<T> {
         asset_pair: &AssetPair,
         datetime: &DateTime<Utc>,
     ) -> Result<f64> {
+        // special case: USD - USDT - USDC
+        // not all exchanges have the (USDT|USDC)USD martek, so for now just return 1.0.
+        match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
+            ("USD" | "USDT" | "USDC", "USD" | "USDT" | "USDC") => return Ok(1.0),
+            _ => (),
+        };
+
         // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
@@ -442,12 +443,12 @@ impl<T: ExchangeClient> AssetPrices<T> {
         let bucket_size_millis = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size_millis) as u16;
 
-        if let Some(prices) = get_asset_price_bucket(bucket, asset_pair)? {
+        if let Some(prices) = get_asset_price_bucket(bucket, &asset_pair)? {
             Ok(self.find_price_at(&prices, time))
         } else {
-            let asset_pair_prices = self.fetch_prices_for(asset_pair, time).await?;
+            let asset_pair_prices = self.fetch_prices_for(&asset_pair, time).await?;
             let price = self.find_price_at(&asset_pair_prices, time);
-            insert_asset_price_bucket(bucket, asset_pair, asset_pair_prices)?;
+            insert_asset_price_bucket(bucket, &asset_pair, asset_pair_prices)?;
             Ok(price)
         }
     }

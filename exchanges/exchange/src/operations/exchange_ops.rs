@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use crate::{
     operations::Operation,
-    {Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw}
+    {Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw},
 };
 
 pub struct Operations(Vec<Operation>);
@@ -212,27 +212,25 @@ impl From<Loan> for Operations {
 impl From<Repay> for Operations {
     fn from(repay: Repay) -> Self {
         match repay.status {
-            Status::Success => {
-                Self(vec![
-                    Operation::BalanceDecrease {
-                        id: 1,
-                        source_id: repay.source_id.clone(),
-                        source: repay.source.clone(),
-                        asset: repay.asset.clone(),
-                        amount: repay.amount + repay.interest,
-                    },
-                    Operation::Cost {
-                        id: 2,
-                        source_id: repay.source_id,
-                        source: repay.source,
-                        for_asset: repay.asset.clone(),
-                        for_amount: 0.0,
-                        asset: repay.asset,
-                        amount: repay.interest,
-                        time: repay.time,
-                    },
-                ])
-            }
+            Status::Success => Self(vec![
+                Operation::BalanceDecrease {
+                    id: 1,
+                    source_id: repay.source_id.clone(),
+                    source: repay.source.clone(),
+                    asset: repay.asset.clone(),
+                    amount: repay.amount + repay.interest,
+                },
+                Operation::Cost {
+                    id: 2,
+                    source_id: repay.source_id,
+                    source: repay.source,
+                    for_asset: repay.asset.clone(),
+                    for_amount: 0.0,
+                    asset: repay.asset,
+                    amount: repay.interest,
+                    time: repay.time,
+                },
+            ]),
             Status::Failure => Self(vec![]),
         }
     }
