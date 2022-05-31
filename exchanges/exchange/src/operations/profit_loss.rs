@@ -146,52 +146,61 @@ impl<'a> OperationsStream<'a> {
 
     pub async fn consume(&mut self, sale: &Sale) -> Result<MatchResult> {
         // consume purchase operations until we fulfill this amount
-        let mut fulfill_amount = sale.amount;
+        let mut amount_to_fulfill = sale.amount;
         let mut consumed_ops = Vec::new();
         // the total cost of purchasing the amount from the sale
         let mut cost = 0.0;
-        let mut ops_iter = self.ops.iter_mut().filter(|op| {
-            if let Operation::Cost { for_asset, .. } = op {
-                for_asset == &sale.asset
-            } else {
-                false
-            }
-        });
-        while fulfill_amount > 0.0 {
+        let mut ops_iter = self.ops.iter_mut();
+        // .filter(|op| {
+        //     if let Operation::Cost { for_asset, .. } = op {
+        //         for_asset == &sale.asset
+        //     } else {
+        //         false
+        //     }
+        // });
+        while amount_to_fulfill > 0.0 {
             if let Some(mut purchase) = ops_iter.next() {
                 let (source, purchased_amount, paid_amount, asset, time) = match &mut purchase {
                     Operation::Cost {
                         ref source,
                         ref mut for_amount,
                         ref mut amount,
+                        ref for_asset,
                         ref asset,
                         ref time,
                         ..
-                    } => (source, for_amount, amount, asset, time),
+                    } => {
+                        if for_asset == &sale.asset {
+                            (source, for_amount, amount, asset, time)
+                        } else {
+                            continue;
+                        }
+                    }
                     _ => continue,
                 };
                 if *purchased_amount == 0.0 && *paid_amount == 0.0 {
                     continue;
                 }
                 // purchased_amount that will be used to fulfill the sale
-                let (amount_fulfilled, paid_amount_used) = if *purchased_amount < fulfill_amount {
+                let (amount_fulfilled, paid_amount_used) = if *purchased_amount < amount_to_fulfill
+                {
                     (*purchased_amount, *paid_amount)
                 } else {
                     (
-                        fulfill_amount,
+                        amount_to_fulfill,
                         // compute the partial amount paid for the amount used from the purchase
-                        *paid_amount * (fulfill_amount / *purchased_amount),
+                        *paid_amount * (amount_to_fulfill / *purchased_amount),
                     )
                 };
                 let price = self
                     .assets_info
                     .price_at(&AssetPair::new(asset, "USDT"), time)
                     .await?;
-                fulfill_amount -= amount_fulfilled;
+                amount_to_fulfill -= amount_fulfilled;
                 let purchase_cost = paid_amount_used * price;
                 cost += purchase_cost;
                 // update the amount used from this purchase to fulfill the
-                // sale, if there is an amount left, it could be still to
+                // sale, if there is an amount left, it could be still used to
                 // fulfill more sales.
                 *purchased_amount -= amount_fulfilled;
                 *paid_amount -= paid_amount_used;
@@ -268,7 +277,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::{storage::Storage, AssetPrices, Operation::*};
+    use crate::operations::{storage::Storage, AssetPrices, Operation::*};
 
     struct DummyStorage {
         ops: Vec<Operation>,
@@ -384,7 +393,7 @@ mod tests {
 
     quickcheck! {
         fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
-            let asset_prices = AssetPrices::new();
+            let asset_prices = DummyAssetsInfo::new();
             let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &asset_prices);
             stream.ops().iter().all(|op| matches!(op, Operation::Cost{..}))
         }
@@ -429,7 +438,7 @@ mod tests {
             for s in sales {
                 match rt.block_on(stream.consume(&s)) {
                     Ok(
-                        MatchResult::Profit { purchases, .. } | MatchResult::Loss { purchases, .. },
+                        MatchResult { purchases, .. },
                     ) => {
                         if purchases.len() == 0 {
                             return TestResult::failed();

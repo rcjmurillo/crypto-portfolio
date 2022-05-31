@@ -1,33 +1,31 @@
-use std::ops::Deref;
-
 use crate::{
     operations::Operation,
     {Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw},
 };
 
-pub struct Operations(Vec<Operation>);
+// pub struct Vec<Operation>(Vec<Operation>);
 
-impl Operations {
-    pub fn new() -> Self {
-        Self(vec![])
-    }
-}
+// impl Vec<Operation> {
+//     pub fn new() -> Self {
+//         Self(vec![])
+//     }
+// }
 
-impl From<Operations> for Vec<Operation> {
-    fn from(ops: Operations) -> Self {
-        ops.0
-    }
-}
+// impl From<Vec<Operation>> for Vec<Operation> {
+//     fn from(ops: Vec<Operation>) -> Self {
+//         ops.0
+//     }
+// }
 
-impl Deref for Operations {
-    type Target = Vec<Operation>;
+// impl Deref for Vec<Operation> {
+//     type Target = Vec<Operation>;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
 
-impl From<Trade> for Operations {
+impl From<Trade> for Vec<Operation> {
     fn from(trade: Trade) -> Self {
         let mut ops = match trade.side {
             TradeSide::Buy => vec![
@@ -122,11 +120,11 @@ impl From<Trade> for Operations {
             });
         }
 
-        Self(ops)
+        ops
     }
 }
 
-impl From<Deposit> for Operations {
+impl From<Deposit> for Vec<Operation> {
     fn from(deposit: Deposit) -> Self {
         let mut ops = vec![Operation::BalanceIncrease {
             id: 1,
@@ -156,11 +154,11 @@ impl From<Deposit> for Operations {
                 },
             ]);
         }
-        Self(ops)
+        ops
     }
 }
 
-impl From<Withdraw> for Operations {
+impl From<Withdraw> for Vec<Operation> {
     fn from(withdraw: Withdraw) -> Self {
         let mut ops = vec![Operation::BalanceDecrease {
             id: 1,
@@ -190,29 +188,29 @@ impl From<Withdraw> for Operations {
                 },
             ]);
         }
-        Self(ops)
+        ops
     }
 }
 
-impl From<Loan> for Operations {
+impl From<Loan> for Vec<Operation> {
     fn from(loan: Loan) -> Self {
         match loan.status {
-            Status::Success => Self(vec![Operation::BalanceIncrease {
+            Status::Success => vec![Operation::BalanceIncrease {
                 id: 1,
                 source_id: loan.source_id,
                 source: loan.source,
                 asset: loan.asset,
                 amount: loan.amount,
-            }]),
-            Status::Failure => Self(vec![]),
+            }],
+            Status::Failure => vec![],
         }
     }
 }
 
-impl From<Repay> for Operations {
+impl From<Repay> for Vec<Operation> {
     fn from(repay: Repay) -> Self {
         match repay.status {
-            Status::Success => Self(vec![
+            Status::Success => vec![
                 Operation::BalanceDecrease {
                     id: 1,
                     source_id: repay.source_id.clone(),
@@ -230,8 +228,8 @@ impl From<Repay> for Operations {
                     amount: repay.interest,
                     time: repay.time,
                 },
-            ]),
-            Status::Failure => Self(vec![]),
+            ],
+            Status::Failure => vec![],
         }
     }
 }

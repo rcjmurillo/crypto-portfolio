@@ -11,7 +11,6 @@ use tracing::{debug, error, span, Level};
 use crate::operations::{
     db::{self, get_asset_price_bucket, insert_asset_price_bucket},
     storage::Storage,
-    Operations,
 };
 
 use crate::{
@@ -503,7 +502,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching margin trades...", prefix);
     all_ops.extend(
@@ -511,7 +510,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching loans...", prefix);
     all_ops.extend(
@@ -519,7 +518,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching repays...", prefix);
     all_ops.extend(
@@ -527,7 +526,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
@@ -535,7 +534,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching withdraws...", prefix);
     all_ops.extend(
@@ -543,7 +542,7 @@ async fn ops_from_fetcher<'a>(
             .await
             .unwrap()
             .into_iter()
-            .flat_map(|t| -> Vec<Operation> { Into::<Operations>::into(t).into() }),
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     // log::info!("[{}] fetching operations...", prefix);
     // all_ops.extend(c.operations().await.unwrap());
@@ -575,6 +574,7 @@ pub async fn fetch_ops<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Status;
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
     use Operation::*;
@@ -645,7 +645,7 @@ mod tests {
             }
 
             let t = trade.clone();
-            let ops: Vec<Operation> = Into::<Operations>::into(trade).into();
+            let ops: Vec<Operation> = trade.into();
 
             let num_ops = if t.fee > 0.0 { 6 } else { 4 };
             if ops.len() != num_ops {
@@ -1050,8 +1050,8 @@ mod tests {
             let ops: Vec<Operation> = loan.into();
 
             let num_ops = match d.status {
-                OperationStatus::Success => 1,
-                OperationStatus::Failed => 0,
+                Status::Success => 1,
+                Status::Failure => 0,
             };
             if ops.len() != num_ops {
                 println!(
@@ -1092,8 +1092,8 @@ mod tests {
             let ops: Vec<Operation> = repay.into();
 
             let num_ops = match d.status {
-                OperationStatus::Success => 2,
-                OperationStatus::Failed => 0,
+                Status::Success => 2,
+                Status::Failure => 0,
             };
             if ops.len() != num_ops {
                 println!(
@@ -1161,12 +1161,11 @@ mod tests {
 
         #[async_trait]
         impl AssetsInfo for TestAssetInfo {
-            async fn price_at(
-                &self,
-                _assest_pair: &AssetPair,
-                _time: &DateTime<Utc>,
-            ) -> Result<f64> {
-                Ok(self.prices.lock().await.remove(0))
+            async fn price_at(&self, asset_pair: &AssetPair, _time: &DateTime<Utc>) -> Result<f64> {
+                Ok(match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
+                    ("USDT" | "USD", "USDT" | "USD") => 1.0,
+                    _ => self.prices.lock().await.remove(0),
+                })
             }
         }
 
