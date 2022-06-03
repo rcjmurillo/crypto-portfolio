@@ -439,8 +439,8 @@ impl<T: ExchangeClient> AssetPrices<T> {
         // determine the price of the symbol at `time`.
         let time = datetime.timestamp_millis().try_into()?;
         let period_days = 180;
-        let bucket_size_millis = 24 * 3600 * 1000 * period_days;
-        let bucket = (time / bucket_size_millis) as u16;
+        let bucket_size = 24 * 3600 * 1000 * period_days;
+        let bucket = (time / bucket_size) as u16;
 
         if let Some(prices) = get_asset_price_bucket(bucket, &asset_pair)? {
             Ok(self.find_price_at(&prices, time))
@@ -457,7 +457,7 @@ impl<T: ExchangeClient> AssetPrices<T> {
         // can reuse the data for transactions that fall into the same bucket. Also this
         // way it's assured fetched data won't overlap.
         let period_days = 180;
-        let bucket_size = 24 * 3600 * period_days;
+        let bucket_size = 24 * 3600 * 1000 * period_days;
         let start_ts = time - (time % bucket_size);
         let end_ts = start_ts + bucket_size;
         self.client
