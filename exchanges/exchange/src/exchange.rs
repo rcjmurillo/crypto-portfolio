@@ -21,6 +21,7 @@ pub trait ExchangeDataFetcher {
 #[async_trait]
 pub trait AssetsInfo {
     async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64>;
+    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +44,7 @@ pub trait ExchangeClient {
 
 pub type Asset = String;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AssetPair {
     pub base: Asset,
     pub quote: Asset,

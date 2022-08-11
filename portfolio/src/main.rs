@@ -142,8 +142,13 @@ pub async fn main() -> Result<()> {
             let f1 = prices_fetcher.process(receiver, Some(sender));
             let f2 = flusher.process(receiver2, None);
 
-            join_all(vec![f1, f2]).await;
+            let results = join_all(vec![f1, f2]).await;
 
+            results.iter().for_each(|r| match r {
+                Err(err) => log::error!("{}", err),
+                Ok(_) => () 
+            });
+            
             log::info!("fetch done!");
         }
         PortfolioAction::RevenueReport {

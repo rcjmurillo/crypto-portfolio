@@ -19,8 +19,6 @@ use api_client::{
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
 use exchange::AssetPair;
 
-const ENDPOINT_CONCURRENCY: usize = 2;
-
 pub trait Identifiable<T> {
     fn id(&self) -> &T;
 }
@@ -231,7 +229,7 @@ impl<Api> CoinbaseFetcher<Api> {
 impl CoinbaseFetcher<Std> {
     pub fn new(config: Config) -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             credentials: Credentials::<Std>::new(),
             api: PhantomData,
             config,
@@ -336,7 +334,7 @@ impl CoinbaseFetcher<Std> {
 impl<'a> CoinbaseFetcher<Pro> {
     pub fn new(config: Config) -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             credentials: Credentials::<Pro>::new(),
             api: PhantomData,
             config,

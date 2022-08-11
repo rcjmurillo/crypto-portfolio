@@ -194,7 +194,7 @@ impl<'a> OperationsStream<'a> {
                 };
                 let price = self
                     .assets_info
-                    .price_at(&AssetPair::new(asset, "USDT"), time)
+                    .usd_price_at(&asset, time)
                     .await?;
                 amount_to_fulfill -= amount_fulfilled;
                 let purchase_cost = paid_amount_used * price;
@@ -207,7 +207,7 @@ impl<'a> OperationsStream<'a> {
 
                 let price_at_sale = self
                     .assets_info
-                    .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
+                    .usd_price_at(&sale.asset, &sale.datetime)
                     .await?;
 
                 let sale_revenue = amount_fulfilled * price_at_sale;
@@ -218,7 +218,7 @@ impl<'a> OperationsStream<'a> {
                     cost: paid_amount_used * price,
                     price: self
                         .assets_info
-                        .price_at(&AssetPair::new(&sale.asset, "USDT"), time)
+                        .usd_price_at(&sale.asset, time)
                         .await?,
                     paid_with: asset.to_string(),
                     paid_with_amount: paid_amount_used,
@@ -240,7 +240,7 @@ impl<'a> OperationsStream<'a> {
 
         let sale_asset_price = self
             .assets_info
-            .price_at(&AssetPair::new(&sale.asset, "USDT"), &sale.datetime)
+            .usd_price_at(&sale.asset, &sale.datetime)
             .await?;
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
@@ -277,7 +277,10 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::operations::{storage::Storage, AssetPrices, Operation::*};
+    use crate::{
+        exchange::Asset,
+        operations::{storage::Storage, Operation::*}
+    };
 
     struct DummyStorage {
         ops: Vec<Operation>,
@@ -317,6 +320,10 @@ mod tests {
             }
             *last_price = p;
             Ok(p)
+        }
+
+        async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
+            self.price_at(&AssetPair::new(asset, "USD"), time).await
         }
     }
 

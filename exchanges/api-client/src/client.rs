@@ -47,16 +47,16 @@ impl QueryParams {
 }
 
 pub struct ApiClient {
-    endpoint_sem: ValueSemaphore<String>,
-    endpoint_params_sem: ValueSemaphore<String>,
+    // endpoint_sem: ValueSemaphore<String>,
+    // endpoint_params_sem: ValueSemaphore<String>,
     cache: Arc<RwLock<Cache>>,
 }
 
 impl ApiClient {
-    pub fn new(endpoint_concurrency: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            endpoint_sem: ValueSemaphore::with_capacity(endpoint_concurrency),
-            endpoint_params_sem: ValueSemaphore::new(),
+            // endpoint_sem: ValueSemaphore::with_capacity(endpoint_concurrency),
+            // endpoint_params_sem: ValueSemaphore::new(),
             cache: Arc::new(RwLock::new(Cache::new())),
         }
     }
@@ -70,7 +70,7 @@ impl ApiClient {
     ) -> Result<Arc<Bytes>> {
         let client = reqwest::Client::new();
 
-        let _endpoint_params_perm;
+        // let _endpoint_params_perm;
         let cache_key = match cache_response {
             true => {
                 // form a cache key = endpoint + cacheable query params
@@ -79,7 +79,7 @@ impl ApiClient {
                     None => endpoint.to_string(),
                 };
                 // Block this endpoint + cacheable params until the response is added to the cache
-                _endpoint_params_perm = self.endpoint_params_sem.acquire_for(key.clone()).await?;
+                // _endpoint_params_perm = self.endpoint_params_sem.acquire_for(key.clone()).await?;
                 match Arc::clone(&self.cache).read().await.get(&key) {
                     Some(v) => {
                         return Ok(Arc::clone(v));
@@ -93,7 +93,7 @@ impl ApiClient {
 
         // Restrict concurrency for each API endpoint, this allows `endpoint_concurrency`
         // requests to be awaiting on the same endpoint at the same time.
-        let _endpoint_perm = self.endpoint_sem.acquire_for(endpoint.to_string()).await?;
+        // let _endpoint_perm = self.endpoint_sem.acquire_for(endpoint.to_string()).await?;
 
         let full_url = match query_params {
             Some(q) => format!("{}?{}", endpoint, q.to_string()),

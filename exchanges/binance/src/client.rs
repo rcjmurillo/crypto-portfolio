@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use futures::future::join_all;
+use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -13,14 +13,13 @@ use serde_json::Value;
 use sha2::Sha256;
 
 use api_client::{errors::Error as ClientError, ApiClient, QueryParams};
-use exchange::{Candle, AssetPair};
+use exchange::{Asset, AssetPair, Candle};
 
 use crate::{
     api_model::*,
     errors::{ApiErrorKind, Error as ApiError},
 };
 
-const ENDPOINT_CONCURRENCY: usize = 10;
 const API_DOMAIN_GLOBAL: &str = "https://api.binance.com";
 const API_DOMAIN_US: &str = "https://api.binance.us";
 
@@ -99,6 +98,9 @@ pub enum EndpointsGlobal {
     MarginTrades,
     MarginLoans,
     MarginRepays,
+    CrossedMarginPairs,
+    IsolatedMarginPairs,
+    AllMarginAssets,
 }
 
 impl ToString for EndpointsGlobal {
@@ -116,6 +118,9 @@ impl ToString for EndpointsGlobal {
             Self::MarginTrades => "/sapi/v1/margin/myTrades",
             Self::MarginLoans => "/sapi/v1/margin/loan",
             Self::MarginRepays => "/sapi/v1/margin/repay",
+            Self::CrossedMarginPairs => "/sapi/v1/margin/allPairs",
+            Self::IsolatedMarginPairs => "/sapi/v1/margin/isolated/allPairs",
+            Self::AllMarginAssets => "/sapi/v1/margin/allAssets",
         }
         .to_string()
     }
@@ -258,7 +263,7 @@ impl<Region> BinanceFetcher<Region> {
     pub async fn fetch_prices_in_range(
         &self,
         endpoint: &str,
-        symbol: &str,
+        symbol: &AssetPair,
         start_ts: u64,
         end_ts: u64,
     ) -> Result<Vec<Candle>> {
@@ -299,7 +304,7 @@ impl<Region> BinanceFetcher<Region> {
         let mut handles = Vec::new();
         for (start, end) in ranges {
             let mut query = QueryParams::new();
-            query.add("symbol", symbol, true);
+            query.add("symbol", symbol.join(""), true);
             query.add("interval", "30m", true);
             query.add("startTime", start, true);
             query.add("endTime", end, true);
@@ -313,7 +318,11 @@ impl<Region> BinanceFetcher<Region> {
             ));
         }
 
-        for resp in join_all(handles).await {
+        for resp in stream::iter(handles)
+            .buffer_unordered(10)
+            .collect::<Vec<_>>()
+            .await
+        {
             match resp {
                 Ok(resp) => {
                     let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
@@ -324,24 +333,16 @@ impl<Region> BinanceFetcher<Region> {
                         close_price: x[4].as_str().unwrap().parse::<f64>().unwrap(),
                     }));
                 }
-                Err(err) => {
-                    match err.downcast::<ClientError>() {
-                        Ok(client_error) => {
-                            match client_error.into() {
-                                // ApiErrorType::UnavailableSymbol means the symbol is not
-                                // available in the exchange, so we can just ignore it.
-                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => continue,
-                                err => {
-                                    return Err(anyhow!(err).context(format!(
-                                        "couldn't fetch prices for symbol: {}",
-                                        symbol
-                                    )))
-                                }
-                            }
-                        }
-                        Err(err) => return Err(err),
+                Err(err) => match err.downcast::<ClientError>() {
+                    Ok(client_error) => {
+                        return Err(anyhow!(format!(
+                            "couldn't fetch prices for symbol: {}",
+                            symbol.join("")
+                        ))
+                        .context(client_error))
                     }
-                }
+                    Err(err) => return Err(err),
+                },
             }
         }
         all_prices.sort_by_key(|c| c.close_time);
@@ -356,10 +357,6 @@ impl<Region> BinanceFetcher<Region> {
     ) -> Result<Vec<Trade>> {
         let mut trades = Vec::<Trade>::new();
         let mut last_id: u64 = 0;
-
-        let exchange_symbols = self
-            .fetch_exchange_symbols(&EndpointsGlobal::ExchangeInfo.to_string())
-            .await?;
 
         loop {
             let mut query = QueryParams::new();
@@ -401,23 +398,18 @@ impl<Region> BinanceFetcher<Region> {
                         break;
                     }
                 }
-                Err(err) => {
-                    match err.downcast::<ClientError>() {
-                        Ok(client_error) => {
-                            match client_error.into() {
-                                // ApiErrorType::UnavailableSymbol means the symbol is not
-                                // available in the exchange, so we can just skip it.
-                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => break,
-                                err => {
-                                    return Err(
-                                        anyhow::Error::msg("couldn't fetch trades").context(err)
-                                    )
-                                }
-                            }
-                        }
-                        Err(err) => return Err(err),
+                Err(err) => match err.downcast::<ClientError>() {
+                    Ok(client_error) => {
+                        log::debug!("trades error for {:?}: {}", symbol, client_error);
+                        return Err(anyhow!(client_error).context(format!(
+                            "couldn't fetch trades from {}{:?} for symbol: {}",
+                            endpoint,
+                            extra_params,
+                            symbol.join("")
+                        )));
                     }
-                }
+                    Err(err) => return Err(err),
+                },
             }
         }
         Ok(trades)
@@ -432,7 +424,7 @@ impl<Region> BinanceFetcher<Region> {
 impl BinanceFetcher<RegionGlobal> {
     pub fn new() -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             config: None,
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
@@ -441,7 +433,7 @@ impl BinanceFetcher<RegionGlobal> {
 
     pub fn with_config(config: Config) -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
@@ -457,6 +449,7 @@ impl BinanceFetcher<RegionGlobal> {
 
         let mut orders: Vec<FiatOrder> = Vec::new();
 
+        let mut requests: Vec<_> = vec![];
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
@@ -464,43 +457,55 @@ impl BinanceFetcher<RegionGlobal> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
-            let mut current_page = 1usize;
-            loop {
-                let mut query = QueryParams::new();
-                query.add("transactionType", tx_type, true);
-                query.add("page", current_page, true);
-                query.add("beginTime", curr_start.timestamp_millis(), true);
-                query.add("endTime", end.timestamp_millis(), true);
-                query.add("timestamp", now.timestamp_millis(), false);
-                query.add("recvWindow", 60000, true);
-                query.add("rows", 500, true);
-                query = self.sign_request(query);
+            requests.push(async move {
+                let mut orders: Vec<FiatOrder> = Vec::new();
+                let mut current_page = 1usize;
+                loop {
+                    let mut query = QueryParams::new();
+                    query.add("transactionType", tx_type, true);
+                    query.add("page", current_page, true);
+                    query.add("beginTime", curr_start.timestamp_millis(), true);
+                    query.add("endTime", end.timestamp_millis(), true);
+                    query.add("timestamp", now.timestamp_millis(), false);
+                    query.add("recvWindow", 60000, true);
+                    query.add("rows", 500, true);
+                    query = self.sign_request(query);
 
-                let resp = self
-                    .api_client
-                    .make_request(
-                        &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
-                        Some(query),
-                        Some(self.default_headers()),
-                        true,
-                    )
-                    .await?;
+                    let resp = self
+                        .api_client
+                        .make_request(
+                            &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
+                            Some(query),
+                            Some(self.default_headers()),
+                            true,
+                        )
+                        .await?;
 
-                let Response { data } = self.from_json(&resp.as_ref()).await?;
-                if data.len() > 0 {
-                    orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
-                    current_page += 1;
-                } else {
-                    break;
+                    let Response { data } = self.from_json(&resp.as_ref()).await?;
+                    if data.len() > 0 {
+                        orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
+                        current_page += 1;
+                    } else {
+                        break;
+                    }
                 }
-            }
+
+                Ok(orders)
+            });
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
             }
         }
 
-        Ok(orders)
+        // concurrently run up to 30 requests
+        let responses = futures::stream::iter(requests).buffer_unordered(10);
+        let responses: Vec<Result<Vec<_>>> = responses.collect().await;
+        let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
+        responses.and_then(|orders| {
+            let resp_orders: Vec<FiatOrder> = orders.into_iter().flatten().collect();
+            Ok(resp_orders)
+        })
     }
 
     pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
@@ -511,23 +516,207 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_fiat_orders("1").await
     }
 
+    /// Fetch from endpoint with not params and deserialize to the specified type
+    async fn fetch_from_endpoint<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
+        let mut query_params = QueryParams::new();
+        query_params.add(
+            "timestamp",
+            Utc::now().naive_utc().timestamp_millis(),
+            false,
+        );
+        query_params.add("recvWindow", 60000, true);
+        query_params = self.sign_request(query_params);
+        let resp = self
+            .api_client
+            .make_request(
+                &format!("{}{}", self.domain, endpoint),
+                Some(query_params),
+                Some(self.default_headers()),
+                true,
+            )
+            .await?;
+
+        self.from_json::<T>(resp.as_ref()).await
+    }
+
+    async fn fetch_all_margin_assets(&self) -> Result<Vec<Asset>> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct MarginAsset {
+            asset_name: String,
+        }
+        let resp: Vec<MarginAsset> = self
+            .fetch_from_endpoint(&EndpointsGlobal::AllMarginAssets.to_string())
+            .await?;
+        Ok(resp.into_iter().map(|a| a.asset_name).collect())
+    }
+
+    async fn fetch_margin_pairs(&self, endpoint: &str) -> Result<Vec<AssetPair>> {
+        #[derive(Deserialize)]
+        struct Pair {
+            base: String,
+            quote: String,
+        }
+
+        let resp = self.fetch_from_endpoint::<Vec<Pair>>(endpoint).await?;
+        Ok(resp
+            .into_iter()
+            .map(|p| AssetPair::new(p.base, p.quote))
+            .collect())
+    }
+
     pub async fn fetch_margin_trades(&self, symbol: &AssetPair) -> Result<Vec<Trade>> {
+        let crossed_margin_pairs = self
+            .fetch_margin_pairs(&EndpointsGlobal::CrossedMarginPairs.to_string())
+            .await?;
+        let isolated_margin_pairs = self
+            .fetch_margin_pairs(&EndpointsGlobal::IsolatedMarginPairs.to_string())
+            .await?;
+        // let all_margin_assets = self.fetch_all_margin_assets().await?;
         let mut trades = Vec::<Trade>::new();
 
-        for is_isolated in vec!["TRUE", "FALSE"] {
+        // log::debug!("crossed_margin_pairs: {:?}", crossed_margin_pairs);
+        // log::debug!("isolated_margin_pairs: {:?}", isolated_margin_pairs);
+        // log::debug!("all_margin_assets: {:?}", all_margin_assets);
+
+        for is_isolated in &[true, false] {
             let mut extra_params = QueryParams::new();
-            extra_params.add("isIsolated", is_isolated, true);
-            let result_trades = self
+            extra_params.add(
+                "isIsolated",
+                if *is_isolated { "TRUE" } else { "FALSE" },
+                true,
+            );
+            if *is_isolated {
+                if !isolated_margin_pairs.contains(symbol) {
+                    continue;
+                }
+            } else if !crossed_margin_pairs.contains(symbol) {
+                continue;
+            }
+            let result = self
                 .fetch_trades_from_endpoint(
                     symbol,
                     &EndpointsGlobal::MarginTrades.to_string(),
                     Some(extra_params),
                 )
-                .await?;
-            trades.extend(result_trades);
+                .await;
+            match result {
+                Ok(result_trades) => trades.extend(result_trades),
+                Err(err) => match err.downcast::<ClientError>() {
+                    Ok(client_error) => {
+                        match client_error.into() {
+                            // ApiErrorKind::UnavailableSymbol means the symbol is not
+                            // available in the exchange, so we can just ignore it.
+                            // Even though the margin pairs are verified above, sometimes
+                            // the data returned by the exchange is not accurate.
+                            ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+                                log::debug!(
+                                    "ignoring symbol {} for margin trades isolation={}",
+                                    symbol.join(""),
+                                    is_isolated
+                                );
+                                continue;
+                            }
+                            err => return Err(anyhow!(err)),
+                        }
+                    }
+                    Err(err) => return Err(err),
+                },
+            }
         }
 
         Ok(trades)
+    }
+
+    pub async fn fetch_margin_transactions<T: DeserializeOwned>(
+        &self,
+        asset: &String,
+        isolated_symbol: Option<&AssetPair>,
+        endpoint: &str,
+    ) -> Result<Vec<T>> {
+        #[derive(Deserialize)]
+        struct Response<U> {
+            rows: Vec<U>,
+            total: u16,
+        }
+
+        let mut txns = Vec::<T>::new();
+
+        // fetch in batches of 90 days from `start_date` to `now()`
+        let now = Utc::now().naive_utc();
+        let start = self.data_start_date().and_hms(0, 0, 0);
+        let archived_cutoff = now - Duration::days(90);
+        let archived_cutoff = archived_cutoff.date().and_hms_micro(23, 59, 59, 99999);
+        // ranges to query for archived/recent trades
+        let ranges = [
+            (start, archived_cutoff, true),
+            (archived_cutoff + Duration::milliseconds(1), now, false),
+        ];
+
+        for (rstart, rend, archived) in ranges {
+            let mut curr_start = rstart;
+
+            let mut requests: Vec<_> = vec![];
+            loop {
+                // the API only allows 90 days between start and end
+                let curr_end = std::cmp::min(curr_start + Duration::days(89), rend); // inclusive
+                let mut current_page: usize = 1;
+                requests.push(async move {
+                    let mut txns = Vec::<T>::new();
+                    loop {
+                        let mut query = QueryParams::new();
+                        query.add("asset", &asset, true);
+                        if let Some(s) = isolated_symbol {
+                            query.add("isolatedSymbol", s.join(""), true);
+                        }
+                        query.add("startTime", curr_start.timestamp_millis(), true);
+                        query.add("endTime", curr_end.timestamp_millis(), true);
+                        query.add("size", 100, true);
+                        query.add("archived", archived, true);
+                        query.add("current", current_page, true);
+                        query.add("recvWindow", 60000, true);
+                        query.add("timestamp", Utc::now().timestamp_millis(), false);
+                        query = self.sign_request(query);
+
+                        let resp = self
+                            .api_client
+                            .make_request(
+                                &format!("{}{}", self.domain, endpoint),
+                                Some(query),
+                                Some(self.default_headers()),
+                                true,
+                            )
+                            .await?;
+
+                        let txns_resp = self.from_json::<Response<T>>(resp.as_ref()).await?;
+                        txns.extend(txns_resp.rows);
+                        if txns_resp.total >= 100 {
+                            current_page += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    Ok(txns)
+                });
+                // move to the next date
+                curr_start = curr_end + Duration::milliseconds(1);
+                if curr_end == rend {
+                    break;
+                }
+            }
+            let responses = futures::stream::iter(requests).buffer_unordered(10);
+            let responses: Vec<Result<Vec<_>>> = responses.collect().await;
+            let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
+            match responses {
+                Ok(v) => {
+                    let resp_txns: Vec<T> = v.into_iter().flatten().collect();
+                    txns.extend(resp_txns);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(txns)
     }
 
     pub async fn fetch_margin_loans(
@@ -535,69 +724,12 @@ impl BinanceFetcher<RegionGlobal> {
         asset: &String,
         isolated_symbol: Option<&AssetPair>,
     ) -> Result<Vec<MarginLoan>> {
-        #[derive(Deserialize)]
-        struct Response {
-            rows: Vec<MarginLoan>,
-            total: u16,
-        }
-
-        let mut loans = Vec::<MarginLoan>::new();
-
-        // does archived = true fetches records from the last 6 months?
-        for archived in &["true", "false"] {
-            // fetch in batches of 90 days from `start_date` to `now()`
-            let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
-            let now = Utc::now().naive_utc();
-            loop {
-                // the API only allows 90 days between start and end
-                let end = std::cmp::min(curr_start + Duration::days(89), now);
-                let mut current_page: usize = 1;
-                loop {
-                    let mut query = QueryParams::new();
-                    query.add("asset", &asset, true);
-                    if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s.join(""), true);
-                    }
-                    query.add("startTime", curr_start.timestamp_millis(), true);
-                    query.add("endTime", end.timestamp_millis(), true);
-                    query.add("size", 100, true);
-                    query.add("archived", archived, true);
-                    query.add("current", current_page, true);
-                    query.add("recvWindow", 60000, true);
-                    query.add("timestamp", Utc::now().timestamp_millis(), false);
-                    query = self.sign_request(query);
-
-                    let resp = self
-                        .api_client
-                        .make_request(
-                            &format!(
-                                "{}{}",
-                                self.domain,
-                                EndpointsGlobal::MarginLoans.to_string()
-                            ),
-                            Some(query),
-                            Some(self.default_headers()),
-                            true,
-                        )
-                        .await?;
-
-                    let loans_resp = self.from_json::<Response>(resp.as_ref()).await?;
-
-                    loans.extend(loans_resp.rows);
-                    if loans_resp.total >= 100 {
-                        current_page += 1;
-                    } else {
-                        break;
-                    }
-                }
-                curr_start = end + Duration::milliseconds(1);
-                if end == now {
-                    break;
-                }
-            }
-        }
-
-        Ok(loans)
+        self.fetch_margin_transactions(
+            asset,
+            isolated_symbol,
+            &EndpointsGlobal::MarginLoans.to_string(),
+        )
+        .await
     }
 
     pub async fn fetch_margin_repays(
@@ -605,67 +737,12 @@ impl BinanceFetcher<RegionGlobal> {
         asset: &String,
         isolated_symbol: Option<&AssetPair>,
     ) -> Result<Vec<MarginRepay>> {
-        #[derive(Deserialize)]
-        struct Response {
-            rows: Vec<MarginRepay>,
-            total: u16,
-        }
-
-        let mut repays = Vec::<MarginRepay>::new();
-
-        // does archived = true fetches records from the last 6 months?
-        for archived in &["true"] {
-            // fetch in batches of 90 days from `start_date` to `now()`
-            let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
-            let now = Utc::now().naive_utc();
-            loop {
-                // the API only allows 90 days between start and end
-                let end = std::cmp::min(curr_start + Duration::days(89), now);
-                let mut current_page: usize = 1;
-                loop {
-                    let mut query = QueryParams::new();
-                    query.add("asset", &asset, true);
-                    if let Some(s) = isolated_symbol {
-                        query.add("isolatedSymbol", s.join(""), true);
-                    }
-                    query.add("startTime", curr_start.timestamp_millis(), true);
-                    query.add("endTime", end.timestamp_millis(), true);
-                    query.add("size", 100, true);
-                    query.add("archived", archived, true);
-                    query.add("current", current_page, true);
-                    query.add("recvWindow", 60000, true);
-                    query.add("timestamp", Utc::now().timestamp_millis(), false);
-                    query = self.sign_request(query);
-                    let resp = self
-                        .api_client
-                        .make_request(
-                            &format!(
-                                "{}{}",
-                                self.domain,
-                                EndpointsGlobal::MarginRepays.to_string()
-                            ),
-                            Some(query),
-                            Some(self.default_headers()),
-                            true,
-                        )
-                        .await?;
-                    let repays_resp = self.from_json::<Response>(resp.as_ref()).await?;
-
-                    repays.extend(repays_resp.rows);
-                    if repays_resp.total >= 100 {
-                        current_page += 1;
-                    } else {
-                        break;
-                    }
-                }
-                curr_start = end + Duration::milliseconds(1);
-                if end == now {
-                    break;
-                }
-            }
-        }
-
-        Ok(repays)
+        self.fetch_margin_transactions(
+            asset,
+            isolated_symbol,
+            &EndpointsGlobal::MarginRepays.to_string(),
+        )
+        .await
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
@@ -748,7 +825,7 @@ impl BinanceFetcher<RegionGlobal> {
 impl BinanceFetcher<RegionUs> {
     pub fn new() -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             config: None,
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
@@ -757,7 +834,7 @@ impl BinanceFetcher<RegionUs> {
 
     pub fn with_config(config: Config) -> Self {
         Self {
-            api_client: ApiClient::new(ENDPOINT_CONCURRENCY),
+            api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,

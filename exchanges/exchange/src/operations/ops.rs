@@ -8,14 +8,11 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, span, Level};
 
-use crate::operations::{
-    db::{self, get_asset_price_bucket, insert_asset_price_bucket},
-    storage::Storage,
-};
+use crate::operations::{db, storage::Storage};
 
 use crate::{
-    AssetPair, AssetsInfo, Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay,
-    Trade, TradeSide, Withdraw,
+    exchange::Asset, AssetPair, AssetsInfo, Candle, Deposit, ExchangeClient, ExchangeDataFetcher,
+    Loan, Repay, Trade, TradeSide, Withdraw,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -216,10 +213,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = self
-                    .asset_info
-                    .price_at(&AssetPair::new(asset, "USDT"), &time)
-                    .await?;
+                let usd_price = self.asset_info.usd_price_at(asset, &time).await?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
                 debug!("end")
@@ -233,10 +227,7 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = self
-                    .asset_info
-                    .price_at(&AssetPair::new(asset, "USDT"), &time)
-                    .await?;
+                let usd_price = self.asset_info.usd_price_at(asset, &time).await?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
                 debug!("end");
@@ -388,15 +379,11 @@ impl<T: ExchangeClient + Send + Sync> OperationsProcesor for PricesFetcher<T> {
     ) -> Result<()> {
         log::info!("syncing asset prices to db...");
         while let Some(op) = receiver.recv().await {
-            // the `.price_at(..)` call will make the DB to populate with
+            // the `.usd_price_at(..)` call will make the DB to populate with
             // bucket of prices corresponding to each processed transaction.
             match &op {
                 Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
-                    if !asset.starts_with("USD") {
-                        self.asset_prices
-                            .price_at(&AssetPair::new(asset, "USDT"), time)
-                            .await?;
-                    }
+                    self.asset_prices.usd_price_at(asset, time).await?;
                 }
                 _ => (),
             }
@@ -425,13 +412,46 @@ impl<T: ExchangeClient> AssetPrices<T> {
         asset_pair: &AssetPair,
         datetime: &DateTime<Utc>,
     ) -> Result<f64> {
-        // special case: USD - USDT - USDC
-        // not all exchanges have the (USDT|USDC)USD martek, so for now just return 1.0.
-        match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
-            ("USD" | "USDT" | "USDC", "USD" | "USDT" | "USDC") => return Ok(1.0),
-            _ => (),
-        };
+        if asset_pair.quote.starts_with("USD") || asset_pair.quote.ends_with("USD") {
+            return self.usd_price_at(&asset_pair.base, &datetime).await;
+        }
+        self.fetch_asset_pair_price(asset_pair, &datetime).await
+    }
 
+    /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
+    /// from different markets.
+    async fn usd_price_at(&self, asset: &Asset, datetime: &DateTime<Utc>) -> Result<f64> {
+        if asset.starts_with("USD") || asset.ends_with("USD") {
+            return Ok(1.0);
+        }
+        let mut last_err = None;
+        // multiple tries from different markets in case one is not available
+        for usd_asset in ["USDT", "USDC", "USD"] {
+            if usd_asset == asset {
+                continue;
+            }
+            match self
+                .fetch_asset_pair_price(&AssetPair::new(asset, usd_asset), &datetime)
+                .await
+            {
+                Err(err) => {
+                    last_err = Some(err);
+                    continue; // try with the next one
+                }
+                ok => return ok,
+            }
+        }
+        Err(
+            anyhow!("couldn't get USD price for {} at {}", asset, datetime)
+                .context(last_err.unwrap()),
+        )
+    }
+
+    async fn fetch_asset_pair_price(
+        &self,
+        asset_pair: &AssetPair,
+        datetime: &DateTime<Utc>,
+    ) -> Result<f64> {
         // create buckets of `period_days` size for time, a list of klines
         // will be fetch for the bucket where the time falls into if it doesn't
         // exists already in the map.
@@ -442,12 +462,12 @@ impl<T: ExchangeClient> AssetPrices<T> {
         let bucket_size = 24 * 3600 * 1000 * period_days;
         let bucket = (time / bucket_size) as u16;
 
-        if let Some(prices) = get_asset_price_bucket(bucket, &asset_pair)? {
+        if let Some(prices) = db::get_asset_price_bucket(bucket, &asset_pair)? {
             Ok(self.find_price_at(&prices, time))
         } else {
             let asset_pair_prices = self.fetch_prices_for(&asset_pair, time).await?;
             let price = self.find_price_at(&asset_pair_prices, time);
-            insert_asset_price_bucket(bucket, &asset_pair, asset_pair_prices)?;
+            db::insert_asset_price_bucket(bucket, &asset_pair, asset_pair_prices)?;
             Ok(price)
         }
     }
@@ -489,65 +509,63 @@ impl<T: ExchangeClient + Send + Sync> AssetsInfo for AssetPrices<T> {
     async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
         self.asset_price_at(asset_pair, time).await
     }
+
+    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
+        self.usd_price_at(asset, time).await
+    }
 }
 
 async fn ops_from_fetcher<'a>(
     prefix: &'a str,
     c: Box<dyn ExchangeDataFetcher + Send + Sync>,
-) -> Vec<Operation> {
+) -> Result<Vec<Operation>> {
     let mut all_ops: Vec<Operation> = Vec::new();
     log::info!("[{}] fetching trades...", prefix);
     all_ops.extend(
         c.trades()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching margin trades...", prefix);
     all_ops.extend(
         c.margin_trades()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching loans...", prefix);
     all_ops.extend(
         c.loans()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching repays...", prefix);
     all_ops.extend(
         c.repays()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
         c.deposits()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     log::info!("[{}] fetching withdraws...", prefix);
     all_ops.extend(
         c.withdraws()
-            .await
-            .unwrap()
+            .await?
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
     // log::info!("[{}] fetching operations...", prefix);
     // all_ops.extend(c.operations().await.unwrap());
     log::info!("[{}] ALL DONE!!!", prefix);
-    all_ops
+    Ok(all_ops)
 }
 
 pub async fn fetch_ops<'a>(
@@ -558,13 +576,18 @@ pub async fn fetch_ops<'a>(
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
         tokio::spawn(async move {
-            for op in ops_from_fetcher(name, f).await {
-                match txc.send(op).await {
-                    Ok(()) => (),
-                    Err(err) => error!("could not send operation: {}", err),
+            match ops_from_fetcher(name, f).await {
+                Ok(ops) => {
+                    for op in ops {
+                        match txc.send(op).await {
+                            Ok(()) => (),
+                            Err(err) => log::error!("could not send operation: {}", err),
+                        }
+                    }
+                    log::debug!("finished sending ops for fetcher {}", name);
                 }
-            }
-            log::debug!("finished sending ops for fetcher {}", name);
+                Err(err) => log::error!("failed to fetch operations from {}: {}", name, err),
+            };
         });
     }
 
@@ -1162,10 +1185,16 @@ mod tests {
         #[async_trait]
         impl AssetsInfo for TestAssetInfo {
             async fn price_at(&self, asset_pair: &AssetPair, _time: &DateTime<Utc>) -> Result<f64> {
-                Ok(match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
-                    ("USDT" | "USD", "USDT" | "USD") => 1.0,
-                    _ => self.prices.lock().await.remove(0),
-                })
+                Ok(
+                    match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
+                        ("USDT" | "USD", "USDT" | "USD") => 1.0,
+                        _ => self.prices.lock().await.remove(0),
+                    },
+                )
+            }
+
+            async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
+                self.usd_price_at(asset, time).await
             }
         }
 

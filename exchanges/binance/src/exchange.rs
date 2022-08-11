@@ -9,7 +9,7 @@ use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
     client::{BinanceFetcher, EndpointsGlobal, EndpointsUs, RegionGlobal, RegionUs},
 };
-use exchange::{self, AssetPair, AssetsInfo, ExchangeDataFetcher, ExchangeClient, Candle};
+use exchange::{self, Asset, AssetPair, AssetsInfo, Candle, ExchangeClient, ExchangeDataFetcher};
 
 impl From<FiatOrder> for exchange::Deposit {
     fn from(d: FiatOrder) -> Self {
@@ -266,10 +266,11 @@ impl ExchangeClient for BinanceFetcher<RegionGlobal> {
     ) -> Result<Vec<Candle>> {
         self.fetch_prices_in_range(
             &EndpointsGlobal::Klines.to_string(),
-            &asset_pair.join(""),
+            asset_pair,
             start.timestamp_millis().try_into()?,
             end.timestamp_millis().try_into()?,
-        ).await
+        )
+        .await
     }
 }
 
@@ -358,7 +359,10 @@ impl AssetsInfo for BinanceFetcher<RegionGlobal> {
             time,
         )
         .await
-        //.map_err(|err| anyhow!(err.to_string()).context(Error::FetchFailed))
+    }
+
+    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
+        self.price_at(&AssetPair::new(asset, "USD"), time).await
     }
 }
 
