@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
+use std::{collections::HashSet, vec};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -175,6 +175,7 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
             .await?;
         let all_symbols: Vec<String> = exchange_symbols.iter().map(|x| x.symbol.clone()).collect();
 
+        let mut loans = vec![];
         let mut processed_assets = HashSet::new();
         for symbol in self.symbols().iter() {
             if all_symbols.contains(&symbol.join("")) {
@@ -184,10 +185,19 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
                     processed_assets.insert(&symbol.base);
                 }
                 // fetch margin isolated loans
-                handles.push(self.fetch_margin_loans(&symbol.base, Some(symbol)));
+                // handles.push(self.fetch_margin_loans(&symbol.base, Some(symbol)));
+                loans.extend(
+                    self.fetch_margin_loans(&symbol.base, Some(symbol))
+                        .await?
+                        .into_iter()
+                        .map(|l| l.into())
+                        .collect::<Vec<exchange::Loan>>(),
+                );
             }
         }
-        flatten_results(join_all(handles).await)
+        // flatten_results(join_all(handles).await)
+
+        Ok(loans)
     }
 
     async fn repays(&self) -> Result<Vec<exchange::Repay>> {

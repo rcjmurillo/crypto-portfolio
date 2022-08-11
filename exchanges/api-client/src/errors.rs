@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Display, Formatter, Result};
-use std::error::Error as StdError;
+use thiserror::Error;
 
 #[derive(Debug)]
 pub enum Error {
@@ -9,6 +9,7 @@ pub enum Error {
     BadRequest { body: String },
     NotFound,
     Other { status: u16 },
+    TooManyRequests { retry_after: usize },
 }
 
 impl Display for Error {

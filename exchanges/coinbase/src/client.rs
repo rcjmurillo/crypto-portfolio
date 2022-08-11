@@ -11,10 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
 
-use api_client::{
-    errors::{Error as ApiError},
-    ApiClient, QueryParams,
-};
+use api_client::{errors::Error as ApiError, ApiClient, Query};
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
 use exchange::AssetPair;
@@ -169,7 +166,7 @@ impl<Api> CoinbaseFetcher<Api> {
         mut headers: HeaderMap,
         method: &'static str,
         endpoint: &str,
-        params: Option<&QueryParams>,
+        params: Option<&Query>,
         body: &str,
         base64_encode: bool,
     ) -> HeaderMap {
@@ -188,7 +185,7 @@ impl<Api> CoinbaseFetcher<Api> {
             HeaderValue::from_str(&timestamp.to_string()).unwrap(),
         );
         let uri_path = match params {
-            Some(params) => format!("{}?{}", endpoint, params.to_string()),
+            Some(params) => format!("{}?{}", endpoint, params.materialize().full_query),
             None => endpoint.to_string(),
         };
 
@@ -241,8 +238,8 @@ impl CoinbaseFetcher<Std> {
         endpoint: String,
     ) -> Result<Vec<T>> {
         let mut all_resources = Vec::new();
-        let mut params = QueryParams::new();
-        params.add("limit", 100, true);
+        let mut params = Query::new();
+        params.cached_param("limit", 100);
 
         loop {
             // loop until all pages are consumed
@@ -261,10 +258,10 @@ impl CoinbaseFetcher<Std> {
             all_resources.extend(parsed_resp.data);
             if parsed_resp.pagination.next_uri.is_some() {
                 // order of params matters for signature, i.e. `limit` has to go first
-                params = QueryParams::new();
-                params.add("limit", 100, true);
+                params = Query::new();
+                params.cached_param("limit", 100);
                 if let Some(last) = all_resources.last() {
-                    params.add("starting_after", last.id(), true);
+                    params.cached_param("starting_after", last.id());
                 }
             } else {
                 break;
@@ -373,13 +370,14 @@ impl<'a> CoinbaseFetcher<Pro> {
             let mut last_id = None;
             loop {
                 // loop until all paginated elements are consumed
-                let mut params = QueryParams::new();
-                params.add("product_id", product_id.clone(), true);
-                params.add("start_date", start_date, true);
-                params.add("end_date", end_date, true);
-                params.add("limit", 1000, true);
+                let mut params = Query::new();
+                params
+                    .cached_param("product_id", product_id.clone())
+                    .cached_param("start_date", start_date)
+                    .cached_param("end_date", end_date)
+                    .cached_param("limit", 1000);
                 if let Some(last_id) = last_id {
-                    params.add("after", last_id, true);
+                    params.cached_param("after", last_id);
                 }
                 let headers = self.sign_request(
                     HeaderMap::new(),

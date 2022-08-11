@@ -12,7 +12,7 @@ use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
 
-use api_client::{errors::Error as ClientError, ApiClient, QueryParams};
+use api_client::{errors::Error as ClientError, ApiClient, Query};
 use exchange::{Asset, AssetPair, Candle};
 
 use crate::{
@@ -181,13 +181,18 @@ impl<Region> BinanceFetcher<Region> {
         }
     }
 
-    fn sign_request(&self, mut query_params: QueryParams) -> QueryParams {
-        let mut signed_key =
-            Hmac::<Sha256>::new_from_slice(self.credentials.secret_key.as_bytes()).unwrap();
-        signed_key.update(query_params.to_string().as_ref());
-        let signature = hex_encode(signed_key.finalize().into_bytes());
-        query_params.add("signature", signature, false);
-        query_params
+    fn sign_request(&self, query: &mut Query) {
+        let secret_key = self.credentials.secret_key.to_owned();
+        query.on_materialize(move |mut query_str| {
+            let mut signed_key = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).unwrap();
+            // Materialize the query string excluding this lazy parameter so it doesn't fall into
+            // an infinite recursion.
+            signed_key.update(query_str.full_query.as_bytes());
+            let hexed_signature = hex_encode(signed_key.finalize().into_bytes());
+            query_str.full_query =
+                format!("{}&signature={}", query_str.full_query, hexed_signature);
+            query_str
+        });
     }
 
     fn default_headers(&self) -> HeaderMap {
@@ -238,11 +243,12 @@ impl<Region> BinanceFetcher<Region> {
         let start_time = time - 30 * 60;
         let end_time = time + 30 * 60;
 
-        let mut query = QueryParams::new();
-        query.add("symbol", symbol, true);
-        query.add("interval", "30m", true);
-        query.add("startTime", start_time, true);
-        query.add("endTime", end_time, true);
+        let mut query = Query::new();
+        query
+            .cached_param("symbol", symbol)
+            .cached_param("interval", "30m")
+            .cached_param("startTime", start_time)
+            .cached_param("endTime", end_time);
 
         let resp = self
             .api_client
@@ -298,18 +304,19 @@ impl<Region> BinanceFetcher<Region> {
             })
             .collect();
 
+        let endpoint = Arc::new(format!("{}{}", self.domain, endpoint));
+
+        let mut handles = Vec::new();
         let mut all_prices = Vec::new();
 
-        let endpoint = Arc::new(format!("{}{}", self.domain, endpoint));
-        let mut handles = Vec::new();
         for (start, end) in ranges {
-            let mut query = QueryParams::new();
-            query.add("symbol", symbol.join(""), true);
-            query.add("interval", "30m", true);
-            query.add("startTime", start, true);
-            query.add("endTime", end, true);
-            query.add("limit", limit, true);
-
+            let mut query = Query::new();
+            query
+                .cached_param("symbol", symbol.join(""))
+                .cached_param("interval", "30m")
+                .cached_param("startTime", start)
+                .cached_param("endTime", end)
+                .cached_param("limit", limit);
             handles.push(self.api_client.make_request(
                 &endpoint,
                 Some(query),
@@ -319,7 +326,7 @@ impl<Region> BinanceFetcher<Region> {
         }
 
         for resp in stream::iter(handles)
-            .buffer_unordered(10)
+            .buffer_unordered(100)
             .collect::<Vec<_>>()
             .await
         {
@@ -353,27 +360,31 @@ impl<Region> BinanceFetcher<Region> {
         &self,
         symbol: &AssetPair,
         endpoint: &str,
-        extra_params: Option<QueryParams>,
+        extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
         let mut trades = Vec::<Trade>::new();
         let mut last_id: u64 = 0;
 
+        let mut query = Query::new();
+        query
+            .cached_param("symbol", symbol.join(""))
+            .cached_param("fromId", last_id)
+            .cached_param("limit", 1000)
+            .cached_param("recvWindow", 60000)
+            .lazy_param("timestamp", || Utc::now().timestamp_millis().to_string());
+        self.sign_request(&mut query);
+        if let Some(extra_params) = extra_params {
+            query.merge(extra_params);
+        }
+
         loop {
-            let mut query = QueryParams::new();
-            query.add("symbol", symbol.join(""), true);
-            query.add("fromId", last_id, true);
-            query.add("limit", 1000, true);
-            query.add("recvWindow", 60000, true);
-            query.add("timestamp", Utc::now().timestamp_millis(), false);
-            if let Some(extra_params) = extra_params.as_ref() {
-                query.extend(extra_params.clone());
-            }
-            query = self.sign_request(query);
+            let q = query.clone();
+            let qstr = q.materialize().full_query;
             let resp = self
                 .api_client
                 .make_request(
                     &format!("{}{}", self.domain, endpoint),
-                    Some(query),
+                    Some(q),
                     Some(self.default_headers()),
                     true,
                 )
@@ -400,11 +411,10 @@ impl<Region> BinanceFetcher<Region> {
                 }
                 Err(err) => match err.downcast::<ClientError>() {
                     Ok(client_error) => {
-                        log::debug!("trades error for {:?}: {}", symbol, client_error);
                         return Err(anyhow!(client_error).context(format!(
                             "couldn't fetch trades from {}{:?} for symbol: {}",
                             endpoint,
-                            extra_params,
+                            qstr,
                             symbol.join("")
                         )));
                     }
@@ -449,7 +459,7 @@ impl BinanceFetcher<RegionGlobal> {
 
         let mut orders: Vec<FiatOrder> = Vec::new();
 
-        let mut requests: Vec<_> = vec![];
+        // let mut requests: Vec<_> = vec![];
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
@@ -457,41 +467,58 @@ impl BinanceFetcher<RegionGlobal> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
-            requests.push(async move {
-                let mut orders: Vec<FiatOrder> = Vec::new();
-                let mut current_page = 1usize;
-                loop {
-                    let mut query = QueryParams::new();
-                    query.add("transactionType", tx_type, true);
-                    query.add("page", current_page, true);
-                    query.add("beginTime", curr_start.timestamp_millis(), true);
-                    query.add("endTime", end.timestamp_millis(), true);
-                    query.add("timestamp", now.timestamp_millis(), false);
-                    query.add("recvWindow", 60000, true);
-                    query.add("rows", 500, true);
-                    query = self.sign_request(query);
+            let mut current_page = 1usize;
 
-                    let resp = self
-                        .api_client
-                        .make_request(
-                            &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
-                            Some(query),
-                            Some(self.default_headers()),
-                            true,
-                        )
-                        .await?;
+            let mut query = Query::new();
+            query
+                .cached_param("transactionType", tx_type)
+                .cached_param("beginTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis())
+                .lazy_param("timestamp", || Utc::now().timestamp_millis().to_string())
+                .cached_param("recvWindow", 60000)
+                .cached_param("rows", 500);
+            self.sign_request(&mut query);
 
-                    let Response { data } = self.from_json(&resp.as_ref()).await?;
-                    if data.len() > 0 {
-                        orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
-                        current_page += 1;
-                    } else {
-                        break;
+            loop {
+                let mut q = query.clone();
+                q.cached_param("page", current_page);
+                let resp = self
+                    .api_client
+                    .make_request(
+                        &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
+                        Some(q),
+                        Some(self.default_headers()),
+                        true,
+                    )
+                    .await;
+
+                match resp {
+                    Ok(resp) => {
+                        let Response { data } = self.from_json(&resp.as_ref()).await?;
+                        if data.len() > 0 {
+                            orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
+                            current_page += 1;
+                        } else {
+                            break;
+                        }
                     }
+                    Err(err) => match err.downcast::<ClientError>() {
+                        Ok(casted_err) => match casted_err {
+                            // retry after the specified number of seconds
+                            ClientError::TooManyRequests { retry_after } => {
+                                log::debug!("retrying after {} seconds", retry_after);
+                                tokio::time::sleep(
+                                    Duration::seconds(10).to_std()?,
+                                )
+                                .await;
+                            }
+                            err => return Err(anyhow!(err)),
+                        },
+                        Err(e) => return Err(e),
+                    },
                 }
+            }
 
-                Ok(orders)
-            });
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
@@ -499,13 +526,14 @@ impl BinanceFetcher<RegionGlobal> {
         }
 
         // concurrently run up to 30 requests
-        let responses = futures::stream::iter(requests).buffer_unordered(10);
-        let responses: Vec<Result<Vec<_>>> = responses.collect().await;
-        let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
-        responses.and_then(|orders| {
-            let resp_orders: Vec<FiatOrder> = orders.into_iter().flatten().collect();
-            Ok(resp_orders)
-        })
+        // let responses = futures::stream::iter(requests).buffer_unordered(100);
+        // let responses: Vec<Result<Vec<_>>> = responses.collect().await;
+        // let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
+        // responses.and_then(|orders| {
+        //     let resp_orders: Vec<FiatOrder> = orders.into_iter().flatten().collect();
+        //     Ok(resp_orders)
+        // })
+        Ok(orders)
     }
 
     pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
@@ -518,19 +546,18 @@ impl BinanceFetcher<RegionGlobal> {
 
     /// Fetch from endpoint with not params and deserialize to the specified type
     async fn fetch_from_endpoint<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
-        let mut query_params = QueryParams::new();
-        query_params.add(
-            "timestamp",
-            Utc::now().naive_utc().timestamp_millis(),
-            false,
-        );
-        query_params.add("recvWindow", 60000, true);
-        query_params = self.sign_request(query_params);
+        let mut query = Query::new();
+        query
+            .lazy_param("timestamp", || {
+                Utc::now().naive_utc().timestamp_millis().to_string()
+            })
+            .cached_param("recvWindow", 60000);
+        self.sign_request(&mut query);
         let resp = self
             .api_client
             .make_request(
                 &format!("{}{}", self.domain, endpoint),
-                Some(query_params),
+                Some(query),
                 Some(self.default_headers()),
                 true,
             )
@@ -580,12 +607,8 @@ impl BinanceFetcher<RegionGlobal> {
         // log::debug!("all_margin_assets: {:?}", all_margin_assets);
 
         for is_isolated in &[true, false] {
-            let mut extra_params = QueryParams::new();
-            extra_params.add(
-                "isIsolated",
-                if *is_isolated { "TRUE" } else { "FALSE" },
-                true,
-            );
+            let mut extra_params = Query::new();
+            extra_params.cached_param("isIsolated", if *is_isolated { "TRUE" } else { "FALSE" });
             if *is_isolated {
                 if !isolated_margin_pairs.contains(symbol) {
                     continue;
@@ -642,10 +665,9 @@ impl BinanceFetcher<RegionGlobal> {
 
         let mut txns = Vec::<T>::new();
 
-        // fetch in batches of 90 days from `start_date` to `now()`
         let now = Utc::now().naive_utc();
         let start = self.data_start_date().and_hms(0, 0, 0);
-        let archived_cutoff = now - Duration::days(90);
+        let archived_cutoff = now - Duration::days(30 * 6);
         let archived_cutoff = archived_cutoff.date().and_hms_micro(23, 59, 59, 99999);
         // ranges to query for archived/recent trades
         let ranges = [
@@ -656,63 +678,84 @@ impl BinanceFetcher<RegionGlobal> {
         for (rstart, rend, archived) in ranges {
             let mut curr_start = rstart;
 
-            let mut requests: Vec<_> = vec![];
             loop {
                 // the API only allows 90 days between start and end
                 let curr_end = std::cmp::min(curr_start + Duration::days(89), rend); // inclusive
                 let mut current_page: usize = 1;
-                requests.push(async move {
-                    let mut txns = Vec::<T>::new();
-                    loop {
-                        let mut query = QueryParams::new();
-                        query.add("asset", &asset, true);
-                        if let Some(s) = isolated_symbol {
-                            query.add("isolatedSymbol", s.join(""), true);
+
+                let mut txns = Vec::<T>::new();
+                loop {
+                    let mut query = Query::new();
+                    query.cached_param("asset", &asset);
+                    if let Some(s) = isolated_symbol {
+                        query.cached_param("isolatedSymbol", s.join(""));
+                    }
+                    query
+                        .cached_param("startTime", curr_start.timestamp_millis())
+                        .cached_param("endTime", curr_end.timestamp_millis())
+                        .cached_param("size", 100)
+                        .cached_param("archived", archived)
+                        .cached_param("current", current_page)
+                        .lazy_param("timestamp", || Utc::now().timestamp_millis().to_string())
+                        .cached_param("recvWindow", 60000);
+                    self.sign_request(&mut query);
+
+                    let resp = self
+                        .api_client
+                        .make_request(
+                            &format!("{}{}", self.domain, endpoint),
+                            Some(query),
+                            Some(self.default_headers()),
+                            true,
+                        )
+                        .await?;
+
+                    let txns_resp = self.from_json::<Response<T>>(resp.as_ref()).await;
+                    match txns_resp {
+                        Ok(result_txns) => {
+                            txns.extend(result_txns.rows);
+                            if result_txns.total >= 100 {
+                                current_page += 1;
+                            } else {
+                                break;
+                            }
                         }
-                        query.add("startTime", curr_start.timestamp_millis(), true);
-                        query.add("endTime", curr_end.timestamp_millis(), true);
-                        query.add("size", 100, true);
-                        query.add("archived", archived, true);
-                        query.add("current", current_page, true);
-                        query.add("recvWindow", 60000, true);
-                        query.add("timestamp", Utc::now().timestamp_millis(), false);
-                        query = self.sign_request(query);
-
-                        let resp = self
-                            .api_client
-                            .make_request(
-                                &format!("{}{}", self.domain, endpoint),
-                                Some(query),
-                                Some(self.default_headers()),
-                                true,
-                            )
-                            .await?;
-
-                        let txns_resp = self.from_json::<Response<T>>(resp.as_ref()).await?;
-                        txns.extend(txns_resp.rows);
-                        if txns_resp.total >= 100 {
-                            current_page += 1;
-                        } else {
-                            break;
+                        Err(err) => {
+                            match err.downcast::<ClientError>() {
+                                Ok(client_error) => {
+                                    match client_error.into() {
+                                        // ApiErrorKind::UnavailableSymbol means the symbol is not
+                                        // available in the exchange, so we can just ignore it.
+                                        // Even though the margin pairs are verified above, sometimes
+                                        // the data returned by the exchange is not accurate.
+                                        ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+                                            log::debug!(
+                                                "ignoring asset {} for margin trades isolated_symbol={:?}",
+                                                asset,
+                                                isolated_symbol.and_then(|a| Some(a.join(""))).unwrap_or_else(|| "".to_string())
+                                            );
+                                            continue;
+                                        }
+                                        err => {
+                                            log::debug!("err: {:?}", err);
+                                            return Err(anyhow!(err));
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    log::debug!("err: {:?}", err);
+                                    return Err(err);
+                                }
+                            }
                         }
                     }
-                    Ok(txns)
-                });
+                }
+
                 // move to the next date
                 curr_start = curr_end + Duration::milliseconds(1);
                 if curr_end == rend {
                     break;
                 }
-            }
-            let responses = futures::stream::iter(requests).buffer_unordered(10);
-            let responses: Vec<Result<Vec<_>>> = responses.collect().await;
-            let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
-            match responses {
-                Ok(v) => {
-                    let resp_txns: Vec<T> = v.into_iter().flatten().collect();
-                    txns.extend(resp_txns);
-                }
-                Err(err) => return Err(err),
             }
         }
 
@@ -755,12 +798,13 @@ impl BinanceFetcher<RegionGlobal> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
-            let mut query = QueryParams::new();
-            query.add("timestamp", now.timestamp_millis(), false);
-            query.add("recvWindow", 60000, true);
-            query.add("startTime", curr_start.timestamp_millis(), true);
-            query.add("endTime", end.timestamp_millis(), true);
-            query = self.sign_request(query);
+            let mut query = Query::new();
+            query
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .cached_param("recvWindow", 60000)
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis());
+            self.sign_request(&mut query);
 
             let resp = self
                 .api_client
@@ -793,12 +837,13 @@ impl BinanceFetcher<RegionGlobal> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
-            let mut query = QueryParams::new();
-            query.add("timestamp", now.timestamp_millis(), false);
-            query.add("recvWindow", 60000, true);
-            query.add("startTime", curr_start.timestamp_millis(), true);
-            query.add("endTime", end.timestamp_millis(), true);
-            query = self.sign_request(query);
+            let mut query = Query::new();
+            query
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .cached_param("recvWindow", 60000)
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis());
+            self.sign_request(&mut query);
 
             let resp = self
                 .api_client
@@ -857,13 +902,14 @@ impl BinanceFetcher<RegionUs> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
-            let mut query = QueryParams::new();
-            query.add("fiatCurrency", "USD", true);
-            query.add("startTime", curr_start.timestamp_millis(), true);
-            query.add("endTime", end.timestamp_millis(), true);
-            query.add("timestamp", now.timestamp_millis(), false);
-            query.add("recvWindow", 60000, true);
-            query = self.sign_request(query);
+            let mut query = Query::new();
+            query
+                .cached_param("fiatCurrency", "USD")
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis())
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .cached_param("recvWindow", 60000);
+            self.sign_request(&mut query);
 
             let resp = self
                 .api_client
@@ -920,13 +966,14 @@ impl BinanceFetcher<RegionUs> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
-            let mut query = QueryParams::new();
-            query.add("timestamp", now.timestamp_millis(), false);
-            query.add("recvWindow", 60000, true);
-            query.add("startTime", curr_start.timestamp_millis(), true);
-            query.add("endTime", end.timestamp_millis(), true);
-            query.add("status", 1, true);
-            query = self.sign_request(query);
+            let mut query = Query::new();
+            query
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .cached_param("recvWindow", 60000)
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis())
+                .cached_param("status", 1);
+            self.sign_request(&mut query);
 
             let resp = self
                 .api_client
@@ -965,12 +1012,13 @@ impl BinanceFetcher<RegionUs> {
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
-            let mut query = QueryParams::new();
-            query.add("timestamp", now.timestamp_millis(), false);
-            query.add("recvWindow", 60000, true);
-            query.add("startTime", curr_start.timestamp_millis(), true);
-            query.add("endTime", end.timestamp_millis(), true);
-            query = self.sign_request(query);
+            let mut query = Query::new();
+            query
+                .cached_param("recvWindow", 60000)
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .cached_param("endTime", end.timestamp_millis())
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string());
+            self.sign_request(&mut query);
 
             let resp = self
                 .api_client

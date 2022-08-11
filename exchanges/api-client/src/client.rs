@@ -1,62 +1,145 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as SyncRwLock};
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
+use reqwest::header::HeaderValue;
 use reqwest::{header::HeaderMap, StatusCode};
 use tokio::sync::RwLock;
 
-use crate::{errors::Error as ApiError, sync::ValueSemaphore};
+use crate::{errors::Error as ApiError};
 
 type Cache = HashMap<String, Arc<Bytes>>;
 
-#[derive(Debug, Clone)]
-pub struct QueryParams(Vec<(&'static str, String, bool)>);
+enum ValueState {
+    Closure(Box<dyn Fn() -> String + Send + Sync>),
+    Materialized(String),
+}
 
-impl QueryParams {
+/// Stores the result of the query materialization
+pub struct QueryString {
+    pub full_query: String,
+    pub cacheable_query: String,
+}
+
+#[derive(Clone)]
+pub struct Query {
+    params: Arc<SyncRwLock<Vec<(&'static str, bool)>>>,
+    values: Arc<SyncRwLock<HashMap<&'static str, Arc<ValueState>>>>,
+    on_materialize_cb: Option<Arc<Box<dyn 'static + Fn(QueryString) -> QueryString + Send + Sync>>>,
+}
+
+impl Query {
     pub fn new() -> Self {
-        Self(Vec::new())
+        Query {
+            params: Arc::new(SyncRwLock::new(vec![])),
+            values: Arc::new(SyncRwLock::new(HashMap::new())),
+            on_materialize_cb: None,
+        }
     }
 
-    pub fn add<T: ToString>(&mut self, name: &'static str, value: T, cacheable: bool) {
-        self.0.push((name, value.to_string(), cacheable));
+    fn add_param(&mut self, name: &'static str, value_state: ValueState, cacheable: bool) {
+        if !self.params.read().unwrap().contains(&(name, cacheable)) {
+            self.params.write().unwrap().push((name, cacheable));
+        } // TODO: move parameter to the last position
+        self.values
+            .write()
+            .unwrap()
+            .insert(name, Arc::new(value_state));
     }
 
-    pub fn extend(&mut self, params: QueryParams) {
-        self.0.extend(params.0);
+    fn merge_param(&self, name: &'static str, value_state: Arc<ValueState>, cacheable: bool) {
+        if !self.params.read().unwrap().contains(&(name, cacheable)) {
+            self.params.write().unwrap().push((name, cacheable));
+        } // TODO: move parameter to the last position
+        self.values.write().unwrap().insert(name, value_state);
     }
 
-    pub fn to_string(&self) -> String {
-        self.0
+    fn materialize_query(&self, params: &[&str]) -> String {
+        params
             .iter()
-            .map(|(k, v, _)| format!("{}={}", k, v))
+            .filter_map(
+                |name| match self.values.read().unwrap().get(name).unwrap().as_ref() {
+                    ValueState::Materialized(value) => Some(format!("{}={}", name, value)),
+                    ValueState::Closure(f) => Some(format!("{}={}", name, f().to_string())),
+                    _ => unreachable!(),
+                },
+            )
             .collect::<Vec<String>>()
             .join("&")
     }
 
-    pub fn as_cacheable_string(&self) -> String {
-        self.0
+    pub fn on_materialize<F: 'static + Fn(QueryString) -> QueryString + Send + Sync>(
+        &mut self,
+        f: F,
+    ) {
+        self.on_materialize_cb = Some(Arc::new(Box::new(f)));
+    }
+
+    // Materialize the query string, it'll run any lazy parameter clousures.
+    pub fn materialize(&self) -> QueryString {
+        let all_params: Vec<&str> = self
+            .params
+            .read()
+            .unwrap()
             .iter()
-            .filter_map(|(k, v, c)| match *c {
-                true => Some(v.to_string() + *k),
-                false => None,
-            })
-            .collect::<Vec<String>>()
-            .join("")
+            .map(|(name, _)| *name)
+            .collect();
+        let cacheable_params: Vec<&str> = self
+            .params
+            .read()
+            .unwrap()
+            .iter()
+            .filter_map(|(name, c)| if *c { Some(*name) } else { None })
+            .collect();
+
+        let qs = QueryString {
+            full_query: self.materialize_query(&all_params),
+            cacheable_query: self.materialize_query(&cacheable_params),
+        };
+        match self.on_materialize_cb.as_ref() {
+            Some(cb) => (*cb)(qs),
+            None => qs,
+        }
+    }
+
+    pub fn param<T: ToString>(&mut self, name: &'static str, value: T) -> &mut Self {
+        self.add_param(name, ValueState::Materialized(value.to_string()), false);
+        self
+    }
+
+    pub fn cached_param<T: ToString>(&mut self, name: &'static str, value: T) -> &mut Self {
+        self.add_param(name, ValueState::Materialized(value.to_string()), true);
+        self
+    }
+
+    pub fn lazy_param<F: 'static + Fn() -> String + Send + Sync>(
+        &mut self,
+        name: &'static str,
+        f: F,
+    ) -> &mut Self {
+        self.add_param(name, ValueState::Closure(Box::new(f)), false);
+        self
+    }
+
+    pub fn merge(&mut self, other: Query) {
+        for (name, cacheable) in other.params.read().unwrap().iter() {
+            self.merge_param(
+                name,
+                other.values.read().unwrap().get(name).unwrap().clone(),
+                *cacheable,
+            );
+        }
     }
 }
 
 pub struct ApiClient {
-    // endpoint_sem: ValueSemaphore<String>,
-    // endpoint_params_sem: ValueSemaphore<String>,
     cache: Arc<RwLock<Cache>>,
 }
 
 impl ApiClient {
     pub fn new() -> Self {
         Self {
-            // endpoint_sem: ValueSemaphore::with_capacity(endpoint_concurrency),
-            // endpoint_params_sem: ValueSemaphore::new(),
             cache: Arc::new(RwLock::new(Cache::new())),
         }
     }
@@ -64,23 +147,22 @@ impl ApiClient {
     pub async fn make_request(
         &self,
         endpoint: &str,
-        query_params: Option<QueryParams>,
+        query_params: Option<Query>,
         headers: Option<HeaderMap>,
         cache_response: bool,
     ) -> Result<Arc<Bytes>> {
         let client = reqwest::Client::new();
 
-        // let _endpoint_params_perm;
+        let cache = self.cache.read().await;
+        let query_str = query_params.map(|q| q.materialize());
         let cache_key = match cache_response {
             true => {
                 // form a cache key = endpoint + cacheable query params
-                let key = match query_params.as_ref() {
-                    Some(q) => format!("{}{}", endpoint, q.as_cacheable_string()),
+                let key = match query_str.as_ref() {
+                    Some(q) => format!("{}{}", endpoint, q.cacheable_query),
                     None => endpoint.to_string(),
                 };
-                // Block this endpoint + cacheable params until the response is added to the cache
-                // _endpoint_params_perm = self.endpoint_params_sem.acquire_for(key.clone()).await?;
-                match Arc::clone(&self.cache).read().await.get(&key) {
+                match &cache.get(&key) {
                     Some(v) => {
                         return Ok(Arc::clone(v));
                     }
@@ -90,13 +172,12 @@ impl ApiClient {
             }
             false => None,
         };
+        drop(cache);
 
-        // Restrict concurrency for each API endpoint, this allows `endpoint_concurrency`
-        // requests to be awaiting on the same endpoint at the same time.
-        // let _endpoint_perm = self.endpoint_sem.acquire_for(endpoint.to_string()).await?;
-
-        let full_url = match query_params {
-            Some(q) => format!("{}?{}", endpoint, q.to_string()),
+        let full_url = match query_str {
+            Some(q) => {
+                format!("{}?{}", endpoint, q.full_query)
+            }
             None => endpoint.to_string(),
         };
 
@@ -118,7 +199,10 @@ impl ApiClient {
                 }
                 Ok(resp_bytes)
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                log::debug!("response error: {:?}", err);
+                Err(err)
+            }
         }
     }
 
@@ -135,10 +219,22 @@ impl ApiClient {
             StatusCode::UNAUTHORIZED => {
                 Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
             }
-            StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(ApiError::BadRequest {
-                body: resp.text().await?,
-            })),
+            StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(
+                ApiError::BadRequest {
+                    body: resp.text().await?,
+                },
+            )),
             StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
+            StatusCode::TOO_MANY_REQUESTS => {
+                let default = HeaderValue::from(0isize);
+                let h = resp
+                    .headers()
+                    .get("retry-after")
+                    .unwrap_or(&default);
+                Err(anyhow!(ApiError::TooManyRequests {
+                    retry_after: h.to_str()?.parse::<usize>()?,
+                }))
+            }
             status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
                 status: status.into(),
             })),
