@@ -1,6 +1,6 @@
-use std::{env, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 
 use bytes::Bytes;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
@@ -11,8 +11,15 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
+use tokio::sync::Mutex;
+use tower::{
+    layer::Layer,
+    limit::{RateLimit, RateLimitLayer},
+    retry::{Policy, Retry},
+    Service,
+};
 
-use api_client::{errors::Error as ClientError, ApiClient, Query};
+use api_client::{errors::Error as ClientError, ApiClient, Query, Request, RequestBuilder};
 use exchange::{Asset, AssetPair, Candle};
 
 use crate::{
@@ -149,11 +156,55 @@ impl Clone for Config {
     }
 }
 
+/// Implements a policy for errors responses that if retried have to eventually
+/// succeed, but also don't retry indefinitely.
+struct RetryErrorResponse(u8);
+
+impl Policy<Request, Arc<Bytes>, Error> for RetryErrorResponse {
+    type Future = future::Ready<Self>;
+
+    fn retry(&self, req: &Request, result: Result<&Arc<Bytes>, &Error>) -> Option<Self::Future> {
+        match result {
+            Ok(_) => {
+                // Treat all `Response`s as success,
+                // so don't retry...
+                None
+            }
+            Err(err) => match err.downcast_ref::<ClientError>() {
+                Some(client_error) => {
+                    match client_error.into() {
+                        ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
+                            log::debug!(
+                                "it took to long to send the request for {} to, retrying",
+                                req.endpoint
+                            );
+                            if self.0 > 0 {
+                                // Try again!
+                                Some(future::ready(RetryErrorResponse(self.0 - 1)))
+                            } else {
+                                // Used all our attempts, no retry...
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                }
+                None => None,
+            },
+        }
+    }
+
+    fn clone_request(&self, req: &Request) -> Option<Request> {
+        Some(req.clone())
+    }
+}
+
 pub struct BinanceFetcher<Region> {
     pub config: Option<Config>,
     pub api_client: ApiClient,
     pub credentials: Credentials<Region>,
     pub domain: &'static str,
+    endpoint_svcs: Mutex<HashMap<String, RateLimit<ApiClient>>>,
 }
 
 impl<Region> BinanceFetcher<Region> {
@@ -203,6 +254,10 @@ impl<Region> BinanceFetcher<Region> {
         );
         headers
     }
+
+    // fn make_request(&self, request: Request) -> Result<Arc<Bytes>> {
+
+    // }
 
     pub async fn fetch_exchange_symbols(&self, endpoint: &str) -> Result<Vec<Symbol>> {
         #[derive(Deserialize, Clone)]
@@ -380,6 +435,7 @@ impl<Region> BinanceFetcher<Region> {
         loop {
             let q = query.clone();
             let qstr = q.materialize().full_query;
+
             let resp = self
                 .api_client
                 .make_request(
@@ -433,20 +489,34 @@ impl<Region> BinanceFetcher<Region> {
 
 impl BinanceFetcher<RegionGlobal> {
     pub fn new() -> Self {
+        let mut svcs = HashMap::new();
+        svcs.insert(
+            EndpointsGlobal::FiatOrders.to_string(),
+            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
+        );
+
         Self {
             api_client: ApiClient::new(),
             config: None,
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
+            endpoint_svcs: Mutex::new(svcs),
         }
     }
 
     pub fn with_config(config: Config) -> Self {
+        let mut svcs = HashMap::new();
+        svcs.insert(
+            EndpointsGlobal::FiatOrders.to_string(),
+            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
+        );
+
         Self {
             api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
+            endpoint_svcs: Mutex::new(svcs),
         }
     }
 
@@ -482,15 +552,34 @@ impl BinanceFetcher<RegionGlobal> {
             loop {
                 let mut q = query.clone();
                 q.cached_param("page", current_page);
-                let resp = self
-                    .api_client
-                    .make_request(
-                        &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
-                        Some(q),
-                        Some(self.default_headers()),
-                        true,
-                    )
-                    .await;
+
+                let endpoint = EndpointsGlobal::FiatOrders.to_string();
+
+                let mut svcs = self.endpoint_svcs.lock().await;
+                let svc = svcs
+                    .get_mut(&endpoint)
+                    .expect(&format!("missing service for endpoint {}", endpoint));
+
+                let req = RequestBuilder::default()
+                    .endpoint(format!("{}{}", self.domain, endpoint))
+                    .query_params(q)
+                    .headers(self.default_headers())
+                    .cache_response(true)
+                    .build()?;
+
+                // wait until the service is ready
+                futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
+                let resp = svc.call(req).await;
+
+                // let resp = self
+                //     .api_client
+                //     .make_request(
+                //         &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
+                //         Some(q),
+                //         Some(self.default_headers()),
+                //         true,
+                //     )
+                //     .await;
 
                 match resp {
                     Ok(resp) => {
@@ -507,10 +596,7 @@ impl BinanceFetcher<RegionGlobal> {
                             // retry after the specified number of seconds
                             ClientError::TooManyRequests { retry_after } => {
                                 log::debug!("retrying after {} seconds", retry_after);
-                                tokio::time::sleep(
-                                    Duration::seconds(10).to_std()?,
-                                )
-                                .await;
+                                tokio::time::sleep(Duration::seconds(10).to_std()?).await;
                             }
                             err => return Err(anyhow!(err)),
                         },
@@ -607,44 +693,55 @@ impl BinanceFetcher<RegionGlobal> {
         // log::debug!("all_margin_assets: {:?}", all_margin_assets);
 
         for is_isolated in &[true, false] {
-            let mut extra_params = Query::new();
-            extra_params.cached_param("isIsolated", if *is_isolated { "TRUE" } else { "FALSE" });
-            if *is_isolated {
-                if !isolated_margin_pairs.contains(symbol) {
-                    continue;
+            loop {
+                let mut extra_params = Query::new();
+                extra_params
+                    .cached_param("isIsolated", if *is_isolated { "TRUE" } else { "FALSE" });
+                if *is_isolated {
+                    if !isolated_margin_pairs.contains(symbol) {
+                        break;
+                    }
+                } else if !crossed_margin_pairs.contains(symbol) {
+                    break;
                 }
-            } else if !crossed_margin_pairs.contains(symbol) {
-                continue;
-            }
-            let result = self
-                .fetch_trades_from_endpoint(
-                    symbol,
-                    &EndpointsGlobal::MarginTrades.to_string(),
-                    Some(extra_params),
-                )
-                .await;
-            match result {
-                Ok(result_trades) => trades.extend(result_trades),
-                Err(err) => match err.downcast::<ClientError>() {
-                    Ok(client_error) => {
-                        match client_error.into() {
-                            // ApiErrorKind::UnavailableSymbol means the symbol is not
-                            // available in the exchange, so we can just ignore it.
-                            // Even though the margin pairs are verified above, sometimes
-                            // the data returned by the exchange is not accurate.
-                            ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
-                                log::debug!(
-                                    "ignoring symbol {} for margin trades isolation={}",
+                let result = self
+                    .fetch_trades_from_endpoint(
+                        symbol,
+                        &EndpointsGlobal::MarginTrades.to_string(),
+                        Some(extra_params),
+                    )
+                    .await;
+                match result {
+                    Ok(result_trades) => trades.extend(result_trades),
+                    Err(err) => match err.downcast::<ClientError>() {
+                        Ok(client_error) => {
+                            match client_error.into() {
+                                // ApiErrorKind::UnavailableSymbol means the symbol is not
+                                // available in the exchange, so we can just ignore it.
+                                // Even though the margin pairs are verified above, sometimes
+                                // the data returned by the exchange is not accurate.
+                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+                                    log::debug!(
+                                        "ignoring symbol {} for margin trades isolation={}",
+                                        symbol.join(""),
+                                        is_isolated
+                                    );
+                                    break;
+                                }
+                                ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
+                                    log::debug!(
+                                    "it took to long to send the request for asset={} is_isolated={}, retrying",
                                     symbol.join(""),
                                     is_isolated
                                 );
-                                continue;
+                                    continue;
+                                }
+                                err => return Err(anyhow!(err)),
                             }
-                            err => return Err(anyhow!(err)),
                         }
-                    }
-                    Err(err) => return Err(err),
-                },
+                        Err(err) => return Err(err),
+                    },
+                }
             }
         }
 
@@ -663,7 +760,7 @@ impl BinanceFetcher<RegionGlobal> {
             total: u16,
         }
 
-        let mut txns = Vec::<T>::new();
+        let txns = Vec::<T>::new();
 
         let now = Utc::now().naive_utc();
         let start = self.data_start_date().and_hms(0, 0, 0);
@@ -731,6 +828,14 @@ impl BinanceFetcher<RegionGlobal> {
                                         ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
                                             log::debug!(
                                                 "ignoring asset {} for margin trades isolated_symbol={:?}",
+                                                asset,
+                                                isolated_symbol.and_then(|a| Some(a.join(""))).unwrap_or_else(|| "".to_string())
+                                            );
+                                            break;
+                                        }
+                                        ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
+                                            log::debug!(
+                                                "it took to long to send the request for asset={} isolated_symbol={}, retrying",
                                                 asset,
                                                 isolated_symbol.and_then(|a| Some(a.join(""))).unwrap_or_else(|| "".to_string())
                                             );
@@ -869,20 +974,34 @@ impl BinanceFetcher<RegionGlobal> {
 
 impl BinanceFetcher<RegionUs> {
     pub fn new() -> Self {
+        let mut svcs = HashMap::new();
+        svcs.insert(
+            EndpointsUs::FiatDeposits.to_string(),
+            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
+        );
+
         Self {
             api_client: ApiClient::new(),
             config: None,
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
+            endpoint_svcs: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn with_config(config: Config) -> Self {
+        let mut svcs = HashMap::new();
+        svcs.insert(
+            EndpointsUs::FiatDeposits.to_string(),
+            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
+        );
+
         Self {
             api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
+            endpoint_svcs: Mutex::new(svcs),
         }
     }
 
@@ -911,15 +1030,30 @@ impl BinanceFetcher<RegionUs> {
                 .cached_param("recvWindow", 60000);
             self.sign_request(&mut query);
 
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, endpoint),
-                    Some(query),
-                    Some(self.default_headers()),
-                    true,
-                )
-                .await?;
+            let mut svcs = self.endpoint_svcs.lock().await;
+            let svc = svcs
+                .get_mut(endpoint)
+                .expect(&format!("missing service for endpoint {}", endpoint));
+
+            let req = RequestBuilder::default()
+                .endpoint(format!("{}{}", self.domain, endpoint))
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+
+            futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
+            let resp = svc.call(req).await?;
+
+            // let resp = self
+            //     .api_client
+            //     .make_request(
+            //         &format!("{}{}", self.domain, endpoint),
+            //         Some(query),
+            //         Some(self.default_headers()),
+            //         true,
+            //     )
+            //     .await?;
 
             let Response {
                 asset_log_record_list,

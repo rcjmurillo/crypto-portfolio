@@ -1,13 +1,19 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock as SyncRwLock};
+use std::task::Poll;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, RwLock as SyncRwLock},
+};
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use reqwest::header::HeaderValue;
 use reqwest::{header::HeaderMap, StatusCode};
 use tokio::sync::RwLock;
+use tower::Service;
 
-use crate::{errors::Error as ApiError};
+use crate::errors::Error as ApiError;
 
 type Cache = HashMap<String, Arc<Bytes>>;
 
@@ -133,11 +139,99 @@ impl Query {
     }
 }
 
+async fn validate_response(resp: reqwest::Response) -> Result<reqwest::Response> {
+    let status = resp.status();
+    match status {
+        StatusCode::OK => Ok(resp),
+        StatusCode::INTERNAL_SERVER_ERROR => {
+            Err(anyhow!(resp.text().await?).context(ApiError::Internal))
+        }
+        StatusCode::SERVICE_UNAVAILABLE => {
+            Err(anyhow!(resp.text().await?).context(ApiError::ServiceUnavailable))
+        }
+        StatusCode::UNAUTHORIZED => {
+            Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
+        }
+        StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(
+            ApiError::BadRequest {
+                body: resp.text().await?,
+            },
+        )),
+        StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
+        StatusCode::TOO_MANY_REQUESTS => {
+            let default = HeaderValue::from(0isize);
+            let h = resp.headers().get("retry-after").unwrap_or(&default);
+            Err(anyhow!(ApiError::TooManyRequests {
+                retry_after: h.to_str()?.parse::<usize>()?,
+            }))
+        }
+        status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
+            status: status.into(),
+        })),
+    }
+}
+
+async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<Arc<Bytes>> {
+    let client = reqwest::Client::new();
+
+    let cache = local_cache.read().await;
+    let query_str = req.query_params.map(|q| q.materialize());
+    let cache_key = match req.cache_response {
+        true => {
+            // form a cache key = endpoint + cacheable query params
+            let key = match query_str.as_ref() {
+                Some(q) => format!("{}{}", req.endpoint, q.cacheable_query),
+                None => req.endpoint.to_string(),
+            };
+            match &cache.get(&key) {
+                Some(v) => {
+                    return Ok(Arc::clone(v));
+                }
+                None => (),
+            }
+            Some(key)
+        }
+        false => None,
+    };
+    drop(cache);
+
+    let full_url = match query_str {
+        Some(q) => {
+            format!("{}?{}", req.endpoint, q.full_query)
+        }
+        None => req.endpoint.to_string(),
+    };
+
+    let mut r = client.get(&full_url);
+    if let Some(h) = req.headers {
+        r = r.headers(h);
+    }
+    let resp = r.send().await;
+
+    match validate_response(resp?).await {
+        Ok(resp) => {
+            let resp_bytes = Arc::new(resp.bytes().await?);
+            if let Some(cache_key) = cache_key {
+                let cache = Arc::clone(&local_cache);
+                cache
+                    .write()
+                    .await
+                    .insert(cache_key, Arc::clone(&resp_bytes));
+            }
+            Ok(resp_bytes)
+        }
+        Err(err) => {
+            log::debug!("response error: {:?}", err);
+            Err(err)
+        }
+    }
+}
+
 pub struct ApiClient {
     cache: Arc<RwLock<Cache>>,
 }
 
-impl ApiClient {
+impl<'a> ApiClient {
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(Cache::new())),
@@ -151,93 +245,44 @@ impl ApiClient {
         headers: Option<HeaderMap>,
         cache_response: bool,
     ) -> Result<Arc<Bytes>> {
-        let client = reqwest::Client::new();
-
-        let cache = self.cache.read().await;
-        let query_str = query_params.map(|q| q.materialize());
-        let cache_key = match cache_response {
-            true => {
-                // form a cache key = endpoint + cacheable query params
-                let key = match query_str.as_ref() {
-                    Some(q) => format!("{}{}", endpoint, q.cacheable_query),
-                    None => endpoint.to_string(),
-                };
-                match &cache.get(&key) {
-                    Some(v) => {
-                        return Ok(Arc::clone(v));
-                    }
-                    None => (),
-                }
-                Some(key)
-            }
-            false => None,
-        };
-        drop(cache);
-
-        let full_url = match query_str {
-            Some(q) => {
-                format!("{}?{}", endpoint, q.full_query)
-            }
-            None => endpoint.to_string(),
-        };
-
-        let mut r = client.get(&full_url);
-        if let Some(h) = headers {
-            r = r.headers(h);
+        // fixme: accept Request once all usages have been replaced
+        let mut req_builder = RequestBuilder::default();
+        let mut req_builder = req_builder.endpoint(endpoint.to_string());
+        if query_params.is_some() {
+            req_builder = req_builder.query_params(query_params.unwrap());
         }
-        let resp = r.send().await;
-
-        match self.validate_response(resp?).await {
-            Ok(resp) => {
-                let resp_bytes = Arc::new(resp.bytes().await?);
-                if let Some(cache_key) = cache_key {
-                    let cache = Arc::clone(&self.cache);
-                    cache
-                        .write()
-                        .await
-                        .insert(cache_key, Arc::clone(&resp_bytes));
-                }
-                Ok(resp_bytes)
-            }
-            Err(err) => {
-                log::debug!("response error: {:?}", err);
-                Err(err)
-            }
+        if headers.is_some() {
+            req_builder = req_builder.headers(headers.unwrap());
         }
+        let req = req_builder.cache_response(cache_response).build()?;
+        make_request(self.cache.clone(), req).await
+    }
+}
+
+impl Service<Request> for ApiClient {
+    type Response = Arc<Bytes>;
+
+    type Error = anyhow::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(())) // always ready to make more requests!
     }
 
-    async fn validate_response(&self, resp: reqwest::Response) -> Result<reqwest::Response> {
-        let status = resp.status();
-        match status {
-            StatusCode::OK => Ok(resp),
-            StatusCode::INTERNAL_SERVER_ERROR => {
-                Err(anyhow!(resp.text().await?).context(ApiError::Internal))
-            }
-            StatusCode::SERVICE_UNAVAILABLE => {
-                Err(anyhow!(resp.text().await?).context(ApiError::ServiceUnavailable))
-            }
-            StatusCode::UNAUTHORIZED => {
-                Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
-            }
-            StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(
-                ApiError::BadRequest {
-                    body: resp.text().await?,
-                },
-            )),
-            StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
-            StatusCode::TOO_MANY_REQUESTS => {
-                let default = HeaderValue::from(0isize);
-                let h = resp
-                    .headers()
-                    .get("retry-after")
-                    .unwrap_or(&default);
-                Err(anyhow!(ApiError::TooManyRequests {
-                    retry_after: h.to_str()?.parse::<usize>()?,
-                }))
-            }
-            status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
-                status: status.into(),
-            })),
-        }
+    fn call(&mut self, req: Request) -> Self::Future {
+        Box::pin(make_request(self.cache.clone(), req))
     }
+}
+
+#[derive(Builder, Clone)]
+pub struct Request {
+    pub endpoint: String,
+    #[builder(setter(strip_option), default)]
+    pub query_params: Option<Query>,
+    #[builder(setter(strip_option), default)]
+    pub headers: Option<HeaderMap>,
+    pub cache_response: bool,
 }

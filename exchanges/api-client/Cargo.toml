@@ -12,4 +12,6 @@ thiserror = "1.0.31"
 bytes = "1.0.1"
 reqwest = { version = "0.11", features = ["json"] }
 tokio = { version = "1.17", features = ["full"] }
+tower = { version = "0.4.13", features = ["limit"] }
+derive_builder = "0.11.2"
 log = "0.4.14"

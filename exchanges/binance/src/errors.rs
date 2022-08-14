@@ -13,6 +13,7 @@ pub enum Error {
 #[derive(Debug)]
 pub enum ApiErrorKind {
     UnavailableSymbol,
+    InvalidTimestamp,
     // add any other relevant error codes here
     Other(i16),
 }
@@ -21,14 +22,15 @@ impl From<Option<i16>> for ApiErrorKind {
     fn from(code: Option<i16>) -> Self {
         match code {
             Some(-11001) => ApiErrorKind::UnavailableSymbol,
+            Some(-1021) => ApiErrorKind::InvalidTimestamp,
             Some(c) => ApiErrorKind::Other(c),
             _ => ApiErrorKind::Other(0),
         }
     }
 }
 
-impl From<ApiError> for Error {
-    fn from(api_error: ApiError) -> Self {
+impl From<&ApiError> for Error {
+    fn from(api_error: &ApiError) -> Self {
         match api_error {
             ApiError::BadRequest { body } => {
                 #[derive(Deserialize)]
@@ -42,6 +44,12 @@ impl From<ApiError> for Error {
             }
             e => Error::Other(e.to_string()),
         }
+    }
+}
+
+impl From<ApiError> for Error {
+    fn from(api_error: ApiError) -> Self {
+        Error::from(&api_error)
     }
 }
 
