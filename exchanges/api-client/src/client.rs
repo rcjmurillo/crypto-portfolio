@@ -188,8 +188,8 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
         true => {
             // form a cache key = endpoint + cacheable query params
             let key = match query_str.as_ref() {
-                Some(q) => format!("{}{}", req.endpoint, q.cacheable_query),
-                None => req.endpoint.to_string(),
+                Some(q) => format!("{}{}", req.url.path(), q.cacheable_query),
+                None => req.url.path().to_string(),
             };
             match &cache.get(&key) {
                 Some(v) => {
@@ -205,9 +205,9 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
 
     let full_url = match query_str {
         Some(q) => {
-            format!("{}{}?{}", req.domain, req.endpoint, q.full_query)
+            format!("{}?{}", req.url, q.full_query)
         }
-        None => format!("{}{}", req.domain, req.endpoint),
+        None => req.url.to_string(),
     };
 
     log::debug!("full url: {}", full_url);
@@ -258,14 +258,6 @@ impl<'a> ApiClient {
         cache_response: bool,
     ) -> Result<Arc<Bytes>> {
         let url = Url::parse(endpoint)?;
-        let domain = format!(
-            "{}://{}",
-            url.scheme(),
-            url.domain()
-                .ok_or_else(|| anyhow!("missing domain in URL: {}", url.to_string()))?
-        );
-        let endpoint = url.path();
-
         log::debug!(
             "making request to {} {:?}",
             url.to_string(),
@@ -275,8 +267,7 @@ impl<'a> ApiClient {
         // fixme: accept Request once all usages have been replaced
         let mut req_builder = RequestBuilder::default();
         let mut req_builder = req_builder
-            .domain(domain.to_string())
-            .endpoint(endpoint.to_string());
+            .url(Url::parse(endpoint)?);
         if query_params.is_some() {
             req_builder = req_builder.query_params(query_params.unwrap());
         }
@@ -314,8 +305,7 @@ impl AsRef<ApiClient> for ApiClient {
 
 #[derive(Builder, Clone)]
 pub struct Request {
-    pub domain: String,
-    pub endpoint: String,
+    pub url: Url,
     #[builder(setter(strip_option), default)]
     pub query_params: Option<Query>,
     #[builder(setter(strip_option), default)]

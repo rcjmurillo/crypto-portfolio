@@ -7,7 +7,10 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::{
+    header::{HeaderMap, HeaderName, HeaderValue},
+    Url,
+};
 use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
@@ -176,18 +179,15 @@ struct EndpointServices<Region> {
 
 impl<Region> EndpointServices<Region> {
     pub async fn route(&self, request: Request) -> Result<Arc<Bytes>> {
-        log::debug!("routing endpoint: {}", request.endpoint);
+        log::debug!("routing url: {}", request.url);
         let mut svc = self
             .services
-            .get(request.endpoint.as_str())
-            .ok_or(anyhow!(
-                "no service found for endpoint {}",
-                request.endpoint
-            ))?
+            .get(request.url.as_str())
+            .ok_or(anyhow!("no service found for endpoint {}", request.url))?
             .lock()
             .await;
 
-        log::debug!("calling service for: {}", request.endpoint);
+        log::debug!("calling service for: {}", request.url);
         futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
         svc.call(request).await
     }
@@ -291,7 +291,7 @@ impl Policy<Request, Arc<Bytes>, Error> for RetryErrorResponse {
                         ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
                             log::debug!(
                                 "it took to long to send the request for {} to, retrying",
-                                req.endpoint
+                                req.url
                             );
                             if self.0 > 0 {
                                 // Try again!
@@ -375,8 +375,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         }
 
         let req = RequestBuilder::default()
-            .domain(self.domain.to_string())
-            .endpoint(endpoint.to_string())
+            .url(Url::parse(self.domain)?.join(endpoint)?)
             .headers(self.default_headers())
             .cache_response(true)
             .build()?;
@@ -389,8 +388,7 @@ impl<'a, Region> BinanceFetcher<Region> {
 
     pub async fn fetch_all_prices(&self, endpoint: &str) -> Result<Vec<SymbolPrice>> {
         let req = RequestBuilder::default()
-            .domain(self.domain.to_string())
-            .endpoint(endpoint.to_string())
+            .url(Url::parse(self.domain)?.join(endpoint)?)
             .cache_response(true)
             .build()?;
         let resp = self.endpoint_services.route(req).await?;
@@ -415,8 +413,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             .cached_param("endTime", end_time);
 
         let req = RequestBuilder::default()
-            .domain(self.domain.to_string())
-            .endpoint(endpoint.to_string())
+            .url(Url::parse(self.domain)?.join(endpoint)?)
             .query_params(query)
             .headers(self.default_headers())
             .cache_response(true)
@@ -483,13 +480,12 @@ impl<'a, Region> BinanceFetcher<Region> {
                 .cached_param("endTime", end)
                 .cached_param("limit", limit);
             let req = RequestBuilder::default()
-                .domain(value);
-            handles.push(self.api_client.make_request(
-                &endpoint,
-                Some(query),
-                Some(self.default_headers()),
-                true,
-            ));
+                .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+            handles.push(self.endpoint_services.route(req));
         }
 
         for resp in stream::iter(handles)
@@ -545,20 +541,17 @@ impl<'a, Region> BinanceFetcher<Region> {
         }
 
         loop {
-            log::debug!("getting margin trades for {}", symbol.join(""));
             let mut q = query.clone();
             q.cached_param("fromId", last_id);
             let qstr = q.materialize().full_query;
-            log::debug!("full margin url: {}", qstr);
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, endpoint),
-                    Some(q),
-                    Some(self.default_headers()),
-                    true,
-                )
-                .await;
+
+            let req = RequestBuilder::default()
+                .url(Url::parse(self.domain)?.join(endpoint)?)
+                .query_params(q)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+            let resp = self.endpoint_services.route(req).await;
 
             match resp {
                 Ok(resp) => {
@@ -663,8 +656,7 @@ impl BinanceFetcher<RegionGlobal> {
 
                 let endpoint = EndpointsGlobal::FiatOrders.to_string();
                 let req = RequestBuilder::default()
-                    .domain(self.domain.to_string())
-                    .endpoint(endpoint)
+                    .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                     .query_params(q)
                     .headers(self.default_headers())
                     .cache_response(true)
@@ -730,15 +722,15 @@ impl BinanceFetcher<RegionGlobal> {
             })
             .cached_param("recvWindow", 60000);
         self.sign_request(&mut query);
-        let resp = self
-            .api_client
-            .make_request(
-                &format!("{}{}", self.domain, endpoint),
-                Some(query),
-                Some(self.default_headers()),
-                true,
-            )
-            .await?;
+
+        let req = RequestBuilder::default()
+            .url(Url::parse(self.domain)?.join(endpoint)?)
+            .query_params(query)
+            .headers(self.default_headers())
+            .cache_response(true)
+            .build()?;
+
+        let resp = self.endpoint_services.route(req).await?;
 
         self.from_json::<T>(resp.as_ref()).await
     }
@@ -817,14 +809,6 @@ impl BinanceFetcher<RegionGlobal> {
                                 );
                                 break;
                             }
-                            ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
-                                log::debug!(
-                                        "it took to long to send the request for asset={} is_isolated={}, retrying",
-                                        symbol.join(""),
-                                        is_isolated
-                                    );
-                                continue;
-                            }
                             err => return Err(anyhow!(err)),
                         }
                     }
@@ -885,15 +869,14 @@ impl BinanceFetcher<RegionGlobal> {
                         .cached_param("recvWindow", 60000);
                     self.sign_request(&mut query);
 
-                    let resp = self
-                        .api_client
-                        .make_request(
-                            &format!("{}{}", self.domain, endpoint),
-                            Some(query),
-                            Some(self.default_headers()),
-                            true,
-                        )
-                        .await?;
+                    let req = RequestBuilder::default()
+                        .url(Url::parse(self.domain)?.join(endpoint)?)
+                        .query_params(query)
+                        .headers(self.default_headers())
+                        .cache_response(true)
+                        .build()?;
+
+                    let resp = self.endpoint_services.route(req).await?;
 
                     let txns_resp = self.from_json::<Response<T>>(resp.as_ref()).await;
                     match txns_resp {
@@ -999,15 +982,17 @@ impl BinanceFetcher<RegionGlobal> {
                 .cached_param("endTime", end.timestamp_millis());
             self.sign_request(&mut query);
 
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, EndpointsGlobal::Deposits.to_string()),
-                    Some(query),
-                    Some(self.default_headers()),
-                    true,
+            let req = RequestBuilder::default()
+                .url(
+                    Url::parse(self.domain)?
+                        .join(EndpointsGlobal::Deposits.to_string().as_str())?,
                 )
-                .await?;
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+
+            let resp = self.endpoint_services.route(req).await?;
 
             let deposit_list: Vec<Deposit> = self.from_json(resp.as_ref()).await?;
             deposits.extend(deposit_list);
@@ -1038,15 +1023,17 @@ impl BinanceFetcher<RegionGlobal> {
                 .cached_param("endTime", end.timestamp_millis());
             self.sign_request(&mut query);
 
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, EndpointsGlobal::Withdraws.to_string()),
-                    Some(query),
-                    Some(self.default_headers()),
-                    true,
+            let req = RequestBuilder::default()
+                .url(
+                    Url::parse(self.domain)?
+                        .join(EndpointsGlobal::Withdraws.to_string().as_str())?,
                 )
-                .await?;
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+
+            let resp = self.endpoint_services.route(req).await?;
 
             let withdraw_list: Vec<Withdraw> = self.from_json(resp.as_ref()).await?;
             withdraws.extend(withdraw_list);
@@ -1111,8 +1098,7 @@ impl BinanceFetcher<RegionUs> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .domain(self.domain.to_string())
-                .endpoint(endpoint.to_string())
+                .url(Url::parse(self.domain)?.join(endpoint)?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1174,15 +1160,14 @@ impl BinanceFetcher<RegionUs> {
                 .cached_param("status", 1);
             self.sign_request(&mut query);
 
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, EndpointsUs::Deposits.to_string()),
-                    Some(query),
-                    Some(self.default_headers()),
-                    true,
-                )
-                .await?;
+            let req = RequestBuilder::default()
+                .url(Url::parse(self.domain)?.join(EndpointsUs::Deposits.to_string().as_str())?)
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+
+            let resp = self.endpoint_services.route(req).await?;
 
             let DepositResponse { deposit_list } = self.from_json(resp.as_ref()).await?;
             deposits.extend(deposit_list);
@@ -1219,15 +1204,17 @@ impl BinanceFetcher<RegionUs> {
                 .lazy_param("timestamp", move || now.timestamp_millis().to_string());
             self.sign_request(&mut query);
 
-            let resp = self
-                .api_client
-                .make_request(
-                    &format!("{}{}", self.domain, EndpointsUs::Withdraws.to_string()),
-                    Some(query),
-                    Some(self.default_headers()),
-                    true,
+            let req = RequestBuilder::default()
+                .url(
+                    Url::parse(self.domain)?
+                        .join(EndpointsGlobal::Withdraws.to_string().as_str())?,
                 )
-                .await?;
+                .query_params(query)
+                .headers(self.default_headers())
+                .cache_response(true)
+                .build()?;
+
+            let resp = self.endpoint_services.route(req).await?;
 
             let Response { withdraw_list } = self.from_json(resp.as_ref()).await?;
             withdraws.extend(withdraw_list);
