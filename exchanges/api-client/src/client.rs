@@ -28,6 +28,8 @@ pub struct QueryString {
     pub cacheable_query: String,
 }
 
+/// Allows to manipulate a query string. It's also possible to add lazy paramaters which delay 
+/// the evaluation of the parameter value until just before the request is sent.
 #[derive(Clone)]
 pub struct Query {
     params: Arc<SyncRwLock<Vec<(&'static str, bool)>>>,
