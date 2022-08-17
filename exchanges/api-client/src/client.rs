@@ -44,10 +44,18 @@ impl Query {
         }
     }
 
-    fn add_param(&mut self, name: &'static str, value_state: ValueState, cacheable: bool) {
-        if !self.params.read().unwrap().contains(&(name, cacheable)) {
+    fn update_param_name(&self, name: &'static str, cacheable: bool) {
+        if self.params.read().unwrap().contains(&(name, cacheable)) {
+            let mut params = self.params.write().unwrap();
+            let i = params.iter().position(|(f, _)| *f == name).unwrap();
+            params.splice(i..i + 1, vec![(name, cacheable)]);
+        } else {
             self.params.write().unwrap().push((name, cacheable));
-        } // TODO: move parameter to the last position
+        }
+    }
+
+    fn add_param(&self, name: &'static str, value_state: ValueState, cacheable: bool) {
+        self.update_param_name(name, cacheable);
         self.values
             .write()
             .unwrap()
@@ -55,9 +63,7 @@ impl Query {
     }
 
     fn merge_param(&self, name: &'static str, value_state: Arc<ValueState>, cacheable: bool) {
-        if !self.params.read().unwrap().contains(&(name, cacheable)) {
-            self.params.write().unwrap().push((name, cacheable));
-        } // TODO: move parameter to the last position
+        self.update_param_name(name, cacheable);
         self.values.write().unwrap().insert(name, value_state);
     }
 
@@ -258,7 +264,11 @@ impl<'a> ApiClient {
         );
         let endpoint = url.path();
 
-        log::debug!("making request to {} {:?}", url.to_string(), query_params.as_ref().map(|q| q.materialize().full_query));
+        log::debug!(
+            "making request to {} {:?}",
+            url.to_string(),
+            query_params.as_ref().map(|q| q.materialize().full_query)
+        );
 
         // fixme: accept Request once all usages have been replaced
         let mut req_builder = RequestBuilder::default();

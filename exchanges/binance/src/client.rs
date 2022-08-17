@@ -1,6 +1,4 @@
-use std::{
-    borrow::BorrowMut, collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc,
-};
+use std::{collections::HashMap, env, marker::PhantomData, sync::Arc};
 
 use anyhow::{anyhow, Error, Result};
 
@@ -16,9 +14,8 @@ use sha2::Sha256;
 use tokio::sync::Mutex;
 use tower::{
     layer::Layer,
-    limit::{rate::Rate, RateLimit, RateLimitLayer},
+    limit::{rate::Rate, RateLimit},
     retry::{Policy, Retry, RetryLayer},
-    steer::Steer,
     Service,
 };
 
@@ -97,11 +94,17 @@ impl ToString for EndpointsUs {
 
 impl EndpointsUs {
     fn to_rate(&self) -> Rate {
-        match self {
-            Self::Deposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            Self::Withdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            Self::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            Self::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+        self.into()
+    }
+}
+
+impl From<&EndpointsUs> for Rate {
+    fn from(v: &EndpointsUs) -> Self {
+        match v {
+            EndpointsUs::Deposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            EndpointsUs::Withdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            EndpointsUs::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            EndpointsUs::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
             _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
         }
     }
@@ -125,17 +128,6 @@ pub enum EndpointsGlobal {
     AllMarginAssets,
 }
 
-impl EndpointsGlobal {
-    fn to_rate(&self) -> Rate {
-        match self {
-            Self::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            Self::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            Self::FiatOrders => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
-        }
-    }
-}
-
 impl ToString for EndpointsGlobal {
     fn to_string(&self) -> String {
         match self {
@@ -156,6 +148,23 @@ impl ToString for EndpointsGlobal {
             Self::AllMarginAssets => "/sapi/v1/margin/allAssets",
         }
         .to_string()
+    }
+}
+
+impl EndpointsGlobal {
+    fn to_rate(&self) -> Rate {
+        self.into()
+    }
+}
+
+impl From<&EndpointsGlobal> for Rate {
+    fn from(v: &EndpointsGlobal) -> Self {
+        match v {
+            EndpointsGlobal::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            EndpointsGlobal::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            EndpointsGlobal::FiatOrders => Rate::new(1, Duration::seconds(20).to_std().unwrap()),
+            _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
+        }
     }
 }
 
@@ -359,36 +368,32 @@ impl<'a, Region> BinanceFetcher<Region> {
         headers
     }
 
-    // fn make_request(&self, request: Request) -> Result<Arc<Bytes>> {
-
-    // }
-
     pub async fn fetch_exchange_symbols(&self, endpoint: &str) -> Result<Vec<Symbol>> {
         #[derive(Deserialize, Clone)]
         struct EndpointResponse {
             symbols: Vec<Symbol>,
         }
 
-        let resp = self
-            .api_client
-            .make_request(
-                &format!("{}{}", self.domain, endpoint),
-                None,
-                Some(self.default_headers()),
-                true,
-            )
-            .await?;
+        let req = RequestBuilder::default()
+            .domain(self.domain.to_string())
+            .endpoint(endpoint.to_string())
+            .headers(self.default_headers())
+            .cache_response(true)
+            .build()?;
+        let resp = self.endpoint_services.route(req).await?;
+
         let EndpointResponse { symbols } =
             self.from_json::<EndpointResponse>(resp.as_ref()).await?;
         Ok(symbols)
     }
 
     pub async fn fetch_all_prices(&self, endpoint: &str) -> Result<Vec<SymbolPrice>> {
-        let resp = self
-            .api_client
-            .make_request(&format!("{}{}", self.domain, endpoint), None, None, true)
-            .await?;
-
+        let req = RequestBuilder::default()
+            .domain(self.domain.to_string())
+            .endpoint(endpoint.to_string())
+            .cache_response(true)
+            .build()?;
+        let resp = self.endpoint_services.route(req).await?;
         self.from_json(resp.as_ref()).await
     }
 
@@ -409,15 +414,16 @@ impl<'a, Region> BinanceFetcher<Region> {
             .cached_param("startTime", start_time)
             .cached_param("endTime", end_time);
 
-        let resp = self
-            .api_client
-            .make_request(
-                &format!("{}{}", self.domain, endpoint),
-                Some(query),
-                Some(self.default_headers()),
-                true,
-            )
-            .await?;
+        let req = RequestBuilder::default()
+            .domain(self.domain.to_string())
+            .endpoint(endpoint.to_string())
+            .query_params(query)
+            .headers(self.default_headers())
+            .cache_response(true)
+            .build()?;
+
+        let resp = self.endpoint_services.route(req).await?;
+
         let klines: Vec<Vec<Value>> = self.from_json(resp.as_ref()).await?;
         let s = &klines[0];
         let high = s[2].as_str().unwrap().parse::<f64>().unwrap();
@@ -476,6 +482,8 @@ impl<'a, Region> BinanceFetcher<Region> {
                 .cached_param("startTime", start)
                 .cached_param("endTime", end)
                 .cached_param("limit", limit);
+            let req = RequestBuilder::default()
+                .domain(value);
             handles.push(self.api_client.make_request(
                 &endpoint,
                 Some(query),
