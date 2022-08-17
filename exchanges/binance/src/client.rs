@@ -182,7 +182,7 @@ impl<Region> EndpointServices<Region> {
         log::debug!("routing url: {}", request.url);
         let mut svc = self
             .services
-            .get(request.url.as_str())
+            .get(request.url.path())
             .ok_or(anyhow!("no service found for endpoint {}", request.url))?
             .lock()
             .await;
@@ -216,6 +216,10 @@ impl EndpointServices<RegionUs> {
 
         s.services = endpoint_services![
             s.client.clone(),
+            EndpointsUs::Trades,
+            EndpointsUs::Klines,
+            EndpointsUs::Prices,
+            EndpointsUs::ExchangeInfo,
             EndpointsUs::Deposits,
             EndpointsUs::Withdraws,
             EndpointsUs::FiatDeposits,
@@ -237,11 +241,21 @@ impl EndpointServices<RegionGlobal> {
 
         s.services = endpoint_services![
             s.client.clone(),
+            EndpointsUs::Trades,
+            EndpointsUs::Klines,
+            EndpointsUs::Prices,
+            EndpointsUs::ExchangeInfo,
             EndpointsGlobal::Deposits,
             EndpointsGlobal::Withdraws,
             EndpointsGlobal::FiatDeposits,
             EndpointsGlobal::FiatWithdraws,
-            EndpointsGlobal::FiatOrders
+            EndpointsGlobal::FiatOrders,
+            EndpointsGlobal::MarginTrades,
+            EndpointsGlobal::MarginLoans,
+            EndpointsGlobal::MarginRepays,
+            EndpointsGlobal::CrossedMarginPairs,
+            EndpointsGlobal::IsolatedMarginPairs,
+            EndpointsGlobal::AllMarginAssets
         ];
         s
     }
