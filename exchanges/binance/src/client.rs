@@ -1,4 +1,6 @@
-use std::{collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{
+    borrow::BorrowMut, collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc,
+};
 
 use anyhow::{anyhow, Error, Result};
 
@@ -14,8 +16,9 @@ use sha2::Sha256;
 use tokio::sync::Mutex;
 use tower::{
     layer::Layer,
-    limit::{RateLimit, RateLimitLayer},
-    retry::{Policy, Retry},
+    limit::{rate::Rate, RateLimit, RateLimitLayer},
+    retry::{Policy, Retry, RetryLayer},
+    steer::Steer,
     Service,
 };
 
@@ -92,6 +95,18 @@ impl ToString for EndpointsUs {
     }
 }
 
+impl EndpointsUs {
+    fn to_rate(&self) -> Rate {
+        match self {
+            Self::Deposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            Self::Withdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            Self::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            Self::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
+        }
+    }
+}
+
 pub enum EndpointsGlobal {
     Trades,
     Klines,
@@ -108,6 +123,17 @@ pub enum EndpointsGlobal {
     CrossedMarginPairs,
     IsolatedMarginPairs,
     AllMarginAssets,
+}
+
+impl EndpointsGlobal {
+    fn to_rate(&self) -> Rate {
+        match self {
+            Self::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            Self::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            Self::FiatOrders => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
+        }
+    }
 }
 
 impl ToString for EndpointsGlobal {
@@ -130,6 +156,85 @@ impl ToString for EndpointsGlobal {
             Self::AllMarginAssets => "/sapi/v1/margin/allAssets",
         }
         .to_string()
+    }
+}
+
+struct EndpointServices<Region> {
+    client: Arc<ApiClient>,
+    services: HashMap<String, Mutex<RateLimit<Retry<RetryErrorResponse, Arc<ApiClient>>>>>,
+    region: PhantomData<Region>,
+}
+
+impl<Region> EndpointServices<Region> {
+    pub async fn route(&self, request: Request) -> Result<Arc<Bytes>> {
+        log::debug!("routing endpoint: {}", request.endpoint);
+        let mut svc = self
+            .services
+            .get(request.endpoint.as_str())
+            .ok_or(anyhow!(
+                "no service found for endpoint {}",
+                request.endpoint
+            ))?
+            .lock()
+            .await;
+
+        log::debug!("calling service for: {}", request.endpoint);
+        futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
+        svc.call(request).await
+    }
+}
+
+macro_rules! endpoint_services {
+    ($client:expr, $($endpoint:expr),+) => {{
+        let retry_layer = RetryLayer::new(RetryErrorResponse(5));
+        let mut services = HashMap::new();
+        $(
+            services.insert($endpoint.to_string(), Mutex::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate())));
+        )+
+        services
+    }};
+}
+
+impl EndpointServices<RegionUs> {
+    pub fn new() -> Self {
+        let client = Arc::new(ApiClient::new());
+
+        let mut s = Self {
+            client,
+            services: HashMap::new(),
+            region: PhantomData,
+        };
+
+        s.services = endpoint_services![
+            s.client.clone(),
+            EndpointsUs::Deposits,
+            EndpointsUs::Withdraws,
+            EndpointsUs::FiatDeposits,
+            EndpointsUs::FiatWithdraws
+        ];
+        s
+    }
+}
+
+impl EndpointServices<RegionGlobal> {
+    pub fn new() -> Self {
+        let client = Arc::new(ApiClient::new());
+
+        let mut s = Self {
+            client,
+            services: HashMap::new(),
+            region: PhantomData,
+        };
+
+        s.services = endpoint_services![
+            s.client.clone(),
+            EndpointsGlobal::Deposits,
+            EndpointsGlobal::Withdraws,
+            EndpointsGlobal::FiatDeposits,
+            EndpointsGlobal::FiatWithdraws,
+            EndpointsGlobal::FiatOrders
+        ];
+        s
     }
 }
 
@@ -158,6 +263,7 @@ impl Clone for Config {
 
 /// Implements a policy for errors responses that if retried have to eventually
 /// succeed, but also don't retry indefinitely.
+#[derive(Clone)]
 struct RetryErrorResponse(u8);
 
 impl Policy<Request, Arc<Bytes>, Error> for RetryErrorResponse {
@@ -200,14 +306,14 @@ impl Policy<Request, Arc<Bytes>, Error> for RetryErrorResponse {
 }
 
 pub struct BinanceFetcher<Region> {
+    endpoint_services: EndpointServices<Region>,
     pub config: Option<Config>,
     pub api_client: ApiClient,
     pub credentials: Credentials<Region>,
     pub domain: &'static str,
-    endpoint_svcs: Mutex<HashMap<String, RateLimit<ApiClient>>>,
 }
 
-impl<Region> BinanceFetcher<Region> {
+impl<'a, Region> BinanceFetcher<Region> {
     fn data_start_date(&self) -> &NaiveDate {
         &self
             .config
@@ -236,8 +342,6 @@ impl<Region> BinanceFetcher<Region> {
         let secret_key = self.credentials.secret_key.to_owned();
         query.on_materialize(move |mut query_str| {
             let mut signed_key = Hmac::<Sha256>::new_from_slice(secret_key.as_bytes()).unwrap();
-            // Materialize the query string excluding this lazy parameter so it doesn't fall into
-            // an infinite recursion.
             signed_key.update(query_str.full_query.as_bytes());
             let hexed_signature = hex_encode(signed_key.finalize().into_bytes());
             query_str.full_query =
@@ -433,9 +537,11 @@ impl<Region> BinanceFetcher<Region> {
         }
 
         loop {
-            let q = query.clone();
+            log::debug!("getting margin trades for {}", symbol.join(""));
+            let mut q = query.clone();
+            q.cached_param("fromId", last_id);
             let qstr = q.materialize().full_query;
-
+            log::debug!("full margin url: {}", qstr);
             let resp = self
                 .api_client
                 .make_request(
@@ -451,10 +557,16 @@ impl<Region> BinanceFetcher<Region> {
                     let mut binance_trades = self.from_json::<Vec<Trade>>(resp.as_ref()).await?;
                     binance_trades.sort_by_key(|k| k.time);
                     let fetch_more = binance_trades.len() >= 1000;
+                    log::debug!(
+                        "getting more trades for {} got {}",
+                        symbol.join(""),
+                        binance_trades.len()
+                    );
                     if fetch_more {
                         // the API will return id >= fromId, thus add one to not include
                         // the last processed id.
                         last_id = binance_trades.iter().last().unwrap().id + 1;
+                        log::debug!("last_id updated to {}", last_id);
                     };
                     for mut t in binance_trades.into_iter() {
                         t.base_asset = symbol.base.clone();
@@ -489,34 +601,22 @@ impl<Region> BinanceFetcher<Region> {
 
 impl BinanceFetcher<RegionGlobal> {
     pub fn new() -> Self {
-        let mut svcs = HashMap::new();
-        svcs.insert(
-            EndpointsGlobal::FiatOrders.to_string(),
-            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
-        );
-
         Self {
-            api_client: ApiClient::new(),
+            endpoint_services: EndpointServices::<RegionGlobal>::new(),
             config: None,
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
-            endpoint_svcs: Mutex::new(svcs),
+            api_client: ApiClient::new(),
         }
     }
 
     pub fn with_config(config: Config) -> Self {
-        let mut svcs = HashMap::new();
-        svcs.insert(
-            EndpointsGlobal::FiatOrders.to_string(),
-            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
-        );
-
         Self {
             api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
-            endpoint_svcs: Mutex::new(svcs),
+            endpoint_services: EndpointServices::<RegionGlobal>::new(),
         }
     }
 
@@ -554,32 +654,15 @@ impl BinanceFetcher<RegionGlobal> {
                 q.cached_param("page", current_page);
 
                 let endpoint = EndpointsGlobal::FiatOrders.to_string();
-
-                let mut svcs = self.endpoint_svcs.lock().await;
-                let svc = svcs
-                    .get_mut(&endpoint)
-                    .expect(&format!("missing service for endpoint {}", endpoint));
-
                 let req = RequestBuilder::default()
-                    .endpoint(format!("{}{}", self.domain, endpoint))
+                    .domain(self.domain.to_string())
+                    .endpoint(endpoint)
                     .query_params(q)
                     .headers(self.default_headers())
                     .cache_response(true)
                     .build()?;
 
-                // wait until the service is ready
-                futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
-                let resp = svc.call(req).await;
-
-                // let resp = self
-                //     .api_client
-                //     .make_request(
-                //         &format!("{}{}", self.domain, EndpointsGlobal::FiatOrders.to_string(),),
-                //         Some(q),
-                //         Some(self.default_headers()),
-                //         true,
-                //     )
-                //     .await;
+                let resp = self.endpoint_services.route(req).await;
 
                 match resp {
                     Ok(resp) => {
@@ -693,55 +776,52 @@ impl BinanceFetcher<RegionGlobal> {
         // log::debug!("all_margin_assets: {:?}", all_margin_assets);
 
         for is_isolated in &[true, false] {
-            loop {
-                let mut extra_params = Query::new();
-                extra_params
-                    .cached_param("isIsolated", if *is_isolated { "TRUE" } else { "FALSE" });
-                if *is_isolated {
-                    if !isolated_margin_pairs.contains(symbol) {
-                        break;
-                    }
-                } else if !crossed_margin_pairs.contains(symbol) {
+            let mut extra_params = Query::new();
+            extra_params.cached_param("isIsolated", if *is_isolated { "TRUE" } else { "FALSE" });
+            if *is_isolated {
+                if !isolated_margin_pairs.contains(symbol) {
                     break;
                 }
-                let result = self
-                    .fetch_trades_from_endpoint(
-                        symbol,
-                        &EndpointsGlobal::MarginTrades.to_string(),
-                        Some(extra_params),
-                    )
-                    .await;
-                match result {
-                    Ok(result_trades) => trades.extend(result_trades),
-                    Err(err) => match err.downcast::<ClientError>() {
-                        Ok(client_error) => {
-                            match client_error.into() {
-                                // ApiErrorKind::UnavailableSymbol means the symbol is not
-                                // available in the exchange, so we can just ignore it.
-                                // Even though the margin pairs are verified above, sometimes
-                                // the data returned by the exchange is not accurate.
-                                ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
-                                    log::debug!(
-                                        "ignoring symbol {} for margin trades isolation={}",
-                                        symbol.join(""),
-                                        is_isolated
-                                    );
-                                    break;
-                                }
-                                ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
-                                    log::debug!(
-                                    "it took to long to send the request for asset={} is_isolated={}, retrying",
+            } else if !crossed_margin_pairs.contains(symbol) {
+                break;
+            }
+            let result = self
+                .fetch_trades_from_endpoint(
+                    symbol,
+                    &EndpointsGlobal::MarginTrades.to_string(),
+                    Some(extra_params),
+                )
+                .await;
+            match result {
+                Ok(result_trades) => trades.extend(result_trades),
+                Err(err) => match err.downcast::<ClientError>() {
+                    Ok(client_error) => {
+                        match client_error.into() {
+                            // ApiErrorKind::UnavailableSymbol means the symbol is not
+                            // available in the exchange, so we can just ignore it.
+                            // Even though the margin pairs are verified above, sometimes
+                            // the data returned by the exchange is not accurate.
+                            ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+                                log::debug!(
+                                    "ignoring symbol {} for margin trades isolation={}",
                                     symbol.join(""),
                                     is_isolated
                                 );
-                                    continue;
-                                }
-                                err => return Err(anyhow!(err)),
+                                break;
                             }
+                            ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
+                                log::debug!(
+                                        "it took to long to send the request for asset={} is_isolated={}, retrying",
+                                        symbol.join(""),
+                                        is_isolated
+                                    );
+                                continue;
+                            }
+                            err => return Err(anyhow!(err)),
                         }
-                        Err(err) => return Err(err),
-                    },
-                }
+                    }
+                    Err(err) => return Err(err),
+                },
             }
         }
 
@@ -974,34 +1054,22 @@ impl BinanceFetcher<RegionGlobal> {
 
 impl BinanceFetcher<RegionUs> {
     pub fn new() -> Self {
-        let mut svcs = HashMap::new();
-        svcs.insert(
-            EndpointsUs::FiatDeposits.to_string(),
-            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
-        );
-
         Self {
             api_client: ApiClient::new(),
             config: None,
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
-            endpoint_svcs: Mutex::new(HashMap::new()),
+            endpoint_services: EndpointServices::<RegionUs>::new(),
         }
     }
 
     pub fn with_config(config: Config) -> Self {
-        let mut svcs = HashMap::new();
-        svcs.insert(
-            EndpointsUs::FiatDeposits.to_string(),
-            RateLimitLayer::new(1, Duration::minutes(1).to_std().unwrap()).layer(ApiClient::new()),
-        );
-
         Self {
             api_client: ApiClient::new(),
             config: Some(config),
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
-            endpoint_svcs: Mutex::new(svcs),
+            endpoint_services: EndpointServices::<RegionUs>::new(),
         }
     }
 
@@ -1026,34 +1094,23 @@ impl BinanceFetcher<RegionUs> {
                 .cached_param("fiatCurrency", "USD")
                 .cached_param("startTime", curr_start.timestamp_millis())
                 .cached_param("endTime", end.timestamp_millis())
-                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .lazy_param("timestamp", move || {
+                    let now = now.timestamp_millis().to_string();
+                    println!("generating timestamp: {}", now);
+                    now
+                })
                 .cached_param("recvWindow", 60000);
             self.sign_request(&mut query);
 
-            let mut svcs = self.endpoint_svcs.lock().await;
-            let svc = svcs
-                .get_mut(endpoint)
-                .expect(&format!("missing service for endpoint {}", endpoint));
-
             let req = RequestBuilder::default()
-                .endpoint(format!("{}{}", self.domain, endpoint))
+                .domain(self.domain.to_string())
+                .endpoint(endpoint.to_string())
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
                 .build()?;
 
-            futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
-            let resp = svc.call(req).await?;
-
-            // let resp = self
-            //     .api_client
-            //     .make_request(
-            //         &format!("{}{}", self.domain, endpoint),
-            //         Some(query),
-            //         Some(self.default_headers()),
-            //         true,
-            //     )
-            //     .await?;
+            let resp = self.endpoint_services.route(req).await?;
 
             let Response {
                 asset_log_record_list,

@@ -8,8 +8,8 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
-use reqwest::header::HeaderValue;
 use reqwest::{header::HeaderMap, StatusCode};
+use reqwest::{header::HeaderValue, Url};
 use tokio::sync::RwLock;
 use tower::Service;
 
@@ -197,10 +197,12 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
 
     let full_url = match query_str {
         Some(q) => {
-            format!("{}?{}", req.endpoint, q.full_query)
+            format!("{}{}?{}", req.domain, req.endpoint, q.full_query)
         }
-        None => req.endpoint.to_string(),
+        None => format!("{}{}", req.domain, req.endpoint),
     };
+
+    log::debug!("full url: {}", full_url);
 
     let mut r = client.get(&full_url);
     if let Some(h) = req.headers {
@@ -218,6 +220,7 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
                     .await
                     .insert(cache_key, Arc::clone(&resp_bytes));
             }
+            log::debug!("successful response");
             Ok(resp_bytes)
         }
         Err(err) => {
@@ -227,6 +230,7 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
     }
 }
 
+// #[derive(Clone)]
 pub struct ApiClient {
     cache: Arc<RwLock<Cache>>,
 }
@@ -245,9 +249,22 @@ impl<'a> ApiClient {
         headers: Option<HeaderMap>,
         cache_response: bool,
     ) -> Result<Arc<Bytes>> {
+        let url = Url::parse(endpoint)?;
+        let domain = format!(
+            "{}://{}",
+            url.scheme(),
+            url.domain()
+                .ok_or_else(|| anyhow!("missing domain in URL: {}", url.to_string()))?
+        );
+        let endpoint = url.path();
+
+        log::debug!("making request to {} {:?}", url.to_string(), query_params.as_ref().map(|q| q.materialize().full_query));
+
         // fixme: accept Request once all usages have been replaced
         let mut req_builder = RequestBuilder::default();
-        let mut req_builder = req_builder.endpoint(endpoint.to_string());
+        let mut req_builder = req_builder
+            .domain(domain.to_string())
+            .endpoint(endpoint.to_string());
         if query_params.is_some() {
             req_builder = req_builder.query_params(query_params.unwrap());
         }
@@ -259,7 +276,7 @@ impl<'a> ApiClient {
     }
 }
 
-impl Service<Request> for ApiClient {
+impl Service<Request> for Arc<ApiClient> {
     type Response = Arc<Bytes>;
 
     type Error = anyhow::Error;
@@ -277,8 +294,15 @@ impl Service<Request> for ApiClient {
     }
 }
 
+impl AsRef<ApiClient> for ApiClient {
+    fn as_ref(&self) -> &ApiClient {
+        &self
+    }
+}
+
 #[derive(Builder, Clone)]
 pub struct Request {
+    pub domain: String,
     pub endpoint: String,
     #[builder(setter(strip_option), default)]
     pub query_params: Option<Query>,
