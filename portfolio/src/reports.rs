@@ -3,7 +3,7 @@ use std::{cmp::Ordering, collections::HashMap};
 use anyhow::Result;
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
-use binance::{BinanceFetcher, EndpointsGlobal, RegionGlobal};
+use binance::{BinanceFetcher, ApiGlobal, RegionGlobal};
 use exchange::{AssetsInfo, operations::{BalanceTracker}};
 
 pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
@@ -24,7 +24,7 @@ pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) 
     let mut all_assets_value = 0f64;
 
     let all_prices: HashMap<String, f64> = binance_client
-        .fetch_all_prices(&EndpointsGlobal::Prices.to_string())
+        .fetch_all_prices(&ApiGlobal::Prices.to_string())
         .await?
         .into_iter()
         .map(|x| (x.symbol, x.price))

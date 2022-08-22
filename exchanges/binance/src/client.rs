@@ -23,7 +23,7 @@ use tower::{
 };
 
 use api_client::{errors::Error as ClientError, ApiClient, Query, Request, RequestBuilder};
-use exchange::{Asset, AssetPair, Candle};
+use exchange::{AssetPair, Candle};
 
 use crate::{
     api_model::*,
@@ -68,7 +68,7 @@ impl Credentials<RegionUs> {
     }
 }
 
-pub enum EndpointsUs {
+pub enum ApiUs {
     Trades,
     Klines,
     Prices,
@@ -79,8 +79,14 @@ pub enum EndpointsUs {
     FiatWithdraws,
 }
 
-impl ToString for EndpointsUs {
-    fn to_string(&self) -> String {
+impl ApiUs {
+    fn to_rate(&self) -> Rate {
+        self.into()
+    }
+}
+
+impl AsRef<str> for ApiUs {
+    fn as_ref(&self) -> &str {
         match self {
             Self::Trades => "/api/v3/myTrades",
             Self::Klines => "/api/v3/klines",
@@ -91,37 +97,34 @@ impl ToString for EndpointsUs {
             Self::FiatDeposits => "/sapi/v1/fiatpayment/query/deposit/history",
             Self::FiatWithdraws => "/sapi/v1/fiatpayment/query/withdraw/history",
         }
-        .to_string()
     }
 }
 
-impl EndpointsUs {
-    fn to_rate(&self) -> Rate {
-        self.into()
+impl ToString for ApiUs {
+    fn to_string(&self) -> String {
+        self.as_ref().to_string()
     }
 }
 
-impl From<&EndpointsUs> for Rate {
-    fn from(v: &EndpointsUs) -> Self {
+impl From<&ApiUs> for Rate {
+    fn from(v: &ApiUs) -> Self {
         match v {
-            EndpointsUs::Deposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            EndpointsUs::Withdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            EndpointsUs::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            EndpointsUs::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            ApiUs::Deposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            ApiUs::Withdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            ApiUs::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
+            ApiUs::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
             _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
         }
     }
 }
 
-pub enum EndpointsGlobal {
+pub enum ApiGlobal {
     Trades,
     Klines,
     Prices,
     ExchangeInfo,
     Deposits,
     Withdraws,
-    FiatDeposits,
-    FiatWithdraws,
     FiatOrders,
     MarginTrades,
     MarginLoans,
@@ -131,8 +134,14 @@ pub enum EndpointsGlobal {
     AllMarginAssets,
 }
 
-impl ToString for EndpointsGlobal {
-    fn to_string(&self) -> String {
+impl ApiGlobal {
+    fn to_rate(&self) -> Rate {
+        self.into()
+    }
+}
+
+impl AsRef<str> for ApiGlobal {
+    fn as_ref(&self) -> &str {
         match self {
             Self::Trades => "/api/v3/myTrades",
             Self::Klines => "/api/v3/klines",
@@ -141,8 +150,6 @@ impl ToString for EndpointsGlobal {
             Self::Deposits => "/sapi/v1/capital/deposit/hisrec",
             Self::Withdraws => "/sapi/v1/capital/withdraw/history",
             Self::FiatOrders => "/sapi/v1/fiat/orders",
-            Self::FiatDeposits => "",
-            Self::FiatWithdraws => "",
             Self::MarginTrades => "/sapi/v1/margin/myTrades",
             Self::MarginLoans => "/sapi/v1/margin/loan",
             Self::MarginRepays => "/sapi/v1/margin/repay",
@@ -150,25 +157,33 @@ impl ToString for EndpointsGlobal {
             Self::IsolatedMarginPairs => "/sapi/v1/margin/isolated/allPairs",
             Self::AllMarginAssets => "/sapi/v1/margin/allAssets",
         }
-        .to_string()
     }
 }
 
-impl EndpointsGlobal {
-    fn to_rate(&self) -> Rate {
-        self.into()
+impl ToString for ApiGlobal {
+    fn to_string(&self) -> String {
+        self.as_ref().to_string()
     }
 }
 
-impl From<&EndpointsGlobal> for Rate {
-    fn from(v: &EndpointsGlobal) -> Self {
+impl From<&ApiGlobal> for Rate {
+    fn from(v: &ApiGlobal) -> Self {
         match v {
-            EndpointsGlobal::FiatDeposits => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            EndpointsGlobal::FiatWithdraws => Rate::new(1, Duration::seconds(10).to_std().unwrap()),
-            EndpointsGlobal::FiatOrders => Rate::new(1, Duration::seconds(20).to_std().unwrap()),
+            ApiGlobal::FiatOrders => Rate::new(1, Duration::seconds(30).to_std().unwrap()),
             _ => Rate::new(1000, Duration::seconds(1).to_std().unwrap()),
         }
     }
+}
+
+macro_rules! endpoint_services {
+    ($client:expr, $($endpoint:expr),+) => {{
+        let retry_layer = RetryLayer::new(RetryErrorResponse(5));
+        let mut services = HashMap::new();
+        $(
+            services.insert($endpoint.to_string(), Mutex::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate())));
+        )+
+        services
+    }};
 }
 
 struct EndpointServices<Region> {
@@ -187,21 +202,10 @@ impl<Region> EndpointServices<Region> {
             .lock()
             .await;
 
-        log::debug!("calling service for: {}", request.url);
+        // await until the service is ready
         futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
         svc.call(request).await
     }
-}
-
-macro_rules! endpoint_services {
-    ($client:expr, $($endpoint:expr),+) => {{
-        let retry_layer = RetryLayer::new(RetryErrorResponse(5));
-        let mut services = HashMap::new();
-        $(
-            services.insert($endpoint.to_string(), Mutex::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate())));
-        )+
-        services
-    }};
 }
 
 impl EndpointServices<RegionUs> {
@@ -216,14 +220,14 @@ impl EndpointServices<RegionUs> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            EndpointsUs::Trades,
-            EndpointsUs::Klines,
-            EndpointsUs::Prices,
-            EndpointsUs::ExchangeInfo,
-            EndpointsUs::Deposits,
-            EndpointsUs::Withdraws,
-            EndpointsUs::FiatDeposits,
-            EndpointsUs::FiatWithdraws
+            ApiUs::Trades,
+            ApiUs::Klines,
+            ApiUs::Prices,
+            ApiUs::ExchangeInfo,
+            ApiUs::Deposits,
+            ApiUs::Withdraws,
+            ApiUs::FiatDeposits,
+            ApiUs::FiatWithdraws
         ];
         s
     }
@@ -241,21 +245,19 @@ impl EndpointServices<RegionGlobal> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            EndpointsUs::Trades,
-            EndpointsUs::Klines,
-            EndpointsUs::Prices,
-            EndpointsUs::ExchangeInfo,
-            EndpointsGlobal::Deposits,
-            EndpointsGlobal::Withdraws,
-            EndpointsGlobal::FiatDeposits,
-            EndpointsGlobal::FiatWithdraws,
-            EndpointsGlobal::FiatOrders,
-            EndpointsGlobal::MarginTrades,
-            EndpointsGlobal::MarginLoans,
-            EndpointsGlobal::MarginRepays,
-            EndpointsGlobal::CrossedMarginPairs,
-            EndpointsGlobal::IsolatedMarginPairs,
-            EndpointsGlobal::AllMarginAssets
+            ApiUs::Trades,
+            ApiUs::Klines,
+            ApiUs::Prices,
+            ApiUs::ExchangeInfo,
+            ApiGlobal::Deposits,
+            ApiGlobal::Withdraws,
+            ApiGlobal::FiatOrders,
+            ApiGlobal::MarginTrades,
+            ApiGlobal::MarginLoans,
+            ApiGlobal::MarginRepays,
+            ApiGlobal::CrossedMarginPairs,
+            ApiGlobal::IsolatedMarginPairs,
+            ApiGlobal::AllMarginAssets
         ];
         s
     }
@@ -503,7 +505,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         }
 
         for resp in stream::iter(handles)
-            .buffer_unordered(100)
+            .buffer_unordered(500)
             .collect::<Vec<_>>()
             .await
         {
@@ -644,7 +646,6 @@ impl BinanceFetcher<RegionGlobal> {
 
         let mut orders: Vec<FiatOrder> = Vec::new();
 
-        // let mut requests: Vec<_> = vec![];
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
@@ -668,7 +669,7 @@ impl BinanceFetcher<RegionGlobal> {
                 let mut q = query.clone();
                 q.cached_param("page", current_page);
 
-                let endpoint = EndpointsGlobal::FiatOrders.to_string();
+                let endpoint = ApiGlobal::FiatOrders.to_string();
                 let req = RequestBuilder::default()
                     .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                     .query_params(q)
@@ -688,17 +689,7 @@ impl BinanceFetcher<RegionGlobal> {
                             break;
                         }
                     }
-                    Err(err) => match err.downcast::<ClientError>() {
-                        Ok(casted_err) => match casted_err {
-                            // retry after the specified number of seconds
-                            ClientError::TooManyRequests { retry_after } => {
-                                log::debug!("retrying after {} seconds", retry_after);
-                                tokio::time::sleep(Duration::seconds(10).to_std()?).await;
-                            }
-                            err => return Err(anyhow!(err)),
-                        },
-                        Err(e) => return Err(e),
-                    },
+                    Err(e) => return Err(e),
                 }
             }
 
@@ -708,14 +699,6 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        // concurrently run up to 30 requests
-        // let responses = futures::stream::iter(requests).buffer_unordered(100);
-        // let responses: Vec<Result<Vec<_>>> = responses.collect().await;
-        // let responses: Result<Vec<Vec<_>>> = responses.into_iter().collect();
-        // responses.and_then(|orders| {
-        //     let resp_orders: Vec<FiatOrder> = orders.into_iter().flatten().collect();
-        //     Ok(resp_orders)
-        // })
         Ok(orders)
     }
 
@@ -749,18 +732,6 @@ impl BinanceFetcher<RegionGlobal> {
         self.from_json::<T>(resp.as_ref()).await
     }
 
-    async fn fetch_all_margin_assets(&self) -> Result<Vec<Asset>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct MarginAsset {
-            asset_name: String,
-        }
-        let resp: Vec<MarginAsset> = self
-            .fetch_from_endpoint(&EndpointsGlobal::AllMarginAssets.to_string())
-            .await?;
-        Ok(resp.into_iter().map(|a| a.asset_name).collect())
-    }
-
     async fn fetch_margin_pairs(&self, endpoint: &str) -> Result<Vec<AssetPair>> {
         #[derive(Deserialize)]
         struct Pair {
@@ -777,17 +748,14 @@ impl BinanceFetcher<RegionGlobal> {
 
     pub async fn fetch_margin_trades(&self, symbol: &AssetPair) -> Result<Vec<Trade>> {
         let crossed_margin_pairs = self
-            .fetch_margin_pairs(&EndpointsGlobal::CrossedMarginPairs.to_string())
+            .fetch_margin_pairs(&ApiGlobal::CrossedMarginPairs.to_string())
             .await?;
         let isolated_margin_pairs = self
-            .fetch_margin_pairs(&EndpointsGlobal::IsolatedMarginPairs.to_string())
+            .fetch_margin_pairs(&ApiGlobal::IsolatedMarginPairs.to_string())
             .await?;
-        // let all_margin_assets = self.fetch_all_margin_assets().await?;
-        let mut trades = Vec::<Trade>::new();
 
-        // log::debug!("crossed_margin_pairs: {:?}", crossed_margin_pairs);
-        // log::debug!("isolated_margin_pairs: {:?}", isolated_margin_pairs);
-        // log::debug!("all_margin_assets: {:?}", all_margin_assets);
+        let endpoint = ApiGlobal::MarginTrades.to_string();
+        let mut futures = Vec::new();
 
         for is_isolated in &[true, false] {
             let mut extra_params = Query::new();
@@ -799,13 +767,18 @@ impl BinanceFetcher<RegionGlobal> {
             } else if !crossed_margin_pairs.contains(symbol) {
                 break;
             }
-            let result = self
-                .fetch_trades_from_endpoint(
-                    symbol,
-                    &EndpointsGlobal::MarginTrades.to_string(),
-                    Some(extra_params),
-                )
-                .await;
+            let fut = self.fetch_trades_from_endpoint(symbol, &endpoint, Some(extra_params));
+
+            futures.push(fut);
+        }
+
+        let mut trades = Vec::new();
+
+        let results = futures::stream::iter(futures)
+            .buffer_unordered(1000)
+            .collect::<Vec<Result<Vec<Trade>>>>()
+            .await;
+        for result in results {
             match result {
                 Ok(result_trades) => trades.extend(result_trades),
                 Err(err) => match err.downcast::<ClientError>() {
@@ -817,9 +790,8 @@ impl BinanceFetcher<RegionGlobal> {
                             // the data returned by the exchange is not accurate.
                             ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
                                 log::debug!(
-                                    "ignoring symbol {} for margin trades isolation={}",
+                                    "ignoring symbol {} for margin trades",
                                     symbol.join(""),
-                                    is_isolated
                                 );
                                 break;
                             }
@@ -960,7 +932,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_margin_transactions(
             asset,
             isolated_symbol,
-            &EndpointsGlobal::MarginLoans.to_string(),
+            &ApiGlobal::MarginLoans.to_string(),
         )
         .await
     }
@@ -973,7 +945,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_margin_transactions(
             asset,
             isolated_symbol,
-            &EndpointsGlobal::MarginRepays.to_string(),
+            &ApiGlobal::MarginRepays.to_string(),
         )
         .await
     }
@@ -985,8 +957,8 @@ impl BinanceFetcher<RegionGlobal> {
         let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
         loop {
             let now = Utc::now().naive_utc();
-            // the API only allows 90 days between start and end
-            let end = std::cmp::min(curr_start + Duration::days(90), now);
+            // the API only allows max 90 days between start and end
+            let end = std::cmp::min(curr_start + Duration::days(89), now);
 
             let mut query = Query::new();
             query
@@ -999,7 +971,7 @@ impl BinanceFetcher<RegionGlobal> {
             let req = RequestBuilder::default()
                 .url(
                     Url::parse(self.domain)?
-                        .join(EndpointsGlobal::Deposits.to_string().as_str())?,
+                        .join(ApiGlobal::Deposits.to_string().as_str())?,
                 )
                 .query_params(query)
                 .headers(self.default_headers())
@@ -1040,7 +1012,7 @@ impl BinanceFetcher<RegionGlobal> {
             let req = RequestBuilder::default()
                 .url(
                     Url::parse(self.domain)?
-                        .join(EndpointsGlobal::Withdraws.to_string().as_str())?,
+                        .join(ApiGlobal::Withdraws.to_string().as_str())?,
                 )
                 .query_params(query)
                 .headers(self.default_headers())
@@ -1140,12 +1112,12 @@ impl BinanceFetcher<RegionUs> {
     }
 
     pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders(&EndpointsUs::FiatDeposits.to_string())
+        self.fetch_fiat_orders(&ApiUs::FiatDeposits.to_string())
             .await
     }
 
     pub async fn fetch_fiat_withdraws(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders(&EndpointsUs::FiatWithdraws.to_string())
+        self.fetch_fiat_orders(&ApiUs::FiatWithdraws.to_string())
             .await
     }
 
@@ -1175,7 +1147,7 @@ impl BinanceFetcher<RegionUs> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(Url::parse(self.domain)?.join(EndpointsUs::Deposits.to_string().as_str())?)
+                .url(Url::parse(self.domain)?.join(ApiUs::Deposits.to_string().as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1219,10 +1191,7 @@ impl BinanceFetcher<RegionUs> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(
-                    Url::parse(self.domain)?
-                        .join(EndpointsGlobal::Withdraws.to_string().as_str())?,
-                )
+                .url(Url::parse(self.domain)?.join(ApiUs::Withdraws.to_string().as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
