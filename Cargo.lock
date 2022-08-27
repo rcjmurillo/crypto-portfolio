@@ -254,6 +254,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "coingecko"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "api-client",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "exchange",
+ "futures",
+ "hex",
+ "hmac 0.12.1",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -238,7 +238,7 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
     }
 }
 
-// #[derive(Clone)]
+#[derive(Clone)]
 pub struct ApiClient {
     cache: Arc<RwLock<Cache>>,
 }
@@ -280,6 +280,24 @@ impl<'a> ApiClient {
 }
 
 impl Service<Request> for Arc<ApiClient> {
+    type Response = Arc<Bytes>;
+
+    type Error = anyhow::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(())) // always ready to make more requests!
+    }
+
+    fn call(&mut self, req: Request) -> Self::Future {
+        Box::pin(make_request(self.cache.clone(), req))
+    }
+}
+
+impl Service<Request> for ApiClient {
     type Response = Arc<Bytes>;
 
     type Error = anyhow::Error;
