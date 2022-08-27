@@ -52,6 +52,16 @@ struct CoinInfo {
     symbol: String,
 }
 
+/// assign the provided timestamp into a bucket (start, end), so we can fetch a range
+/// of prices for the time range (bucket) the provided timestamp falls into. Given
+/// responses will be cached it will help to avoid making subsequent requests for
+/// timestamps that fall into the same "bucket".
+fn bucketize_timestamp(ts: u64, bucket_size: u64) -> (u64, u64) {
+    let start_ts = ts - (ts % bucket_size);
+    let end_ts = start_ts + bucket_size;
+    (start_ts, end_ts)
+}
+
 pub struct Client {
     api_service: Mutex<RateLimit<ApiClient>>,
 }
@@ -139,18 +149,6 @@ impl Client {
                 .context(format!("couldn't parse: {:?}", resp_bytes.clone()))),
         }
     }
-
-    /// assign the provided timestamp into a bucket (start, end), so we can fetch a range
-    /// of prices for the time range (bucket) the provided timestamp falls into. Given
-    /// responses will be cached it will help to avoid making subsequent requests for
-    /// timestamps that fall into the same "bucket".
-    fn bucketize_timestamp(&self, ts: u64) -> (u64, u64) {
-        // the API provides hourly granularity if we request a range <= 90 days
-        let bucket_size = 90 * 24 * 60 * 60; // seconds
-        let start_ts = ts - (ts % bucket_size);
-        let end_ts = start_ts + bucket_size;
-        (start_ts, end_ts)
-    }
 }
 
 #[async_trait]
@@ -159,7 +157,9 @@ impl AssetsInfo for Client {
         let quote_coin_info = self.fetch_coin_info(&asset_pair.quote).await?;
         let base_coin_info = self.fetch_coin_info(&asset_pair.base).await?;
         let ts = time.timestamp().try_into()?;
-        let (start_ts, end_ts) = self.bucketize_timestamp(ts);
+        // the API provides hourly granularity if we request a range <= 90 days
+        let bucket_size = 90 * 24 * 60 * 60; // seconds
+        let (start_ts, end_ts) = bucketize_timestamp(ts, bucket_size);
         let prices = self
             .fetch_coin_market_chart_range(
                 &base_coin_info.id,
@@ -180,5 +180,22 @@ impl AssetsInfo for Client {
     }
     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
         self.price_at(&AssetPair::new(asset, &"usd"), time).await
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use crate::bucketize_timestamp;
+
+    #[test]
+    fn test_bucketize_timestamp() {
+        assert_eq!(bucketize_timestamp(10, 15), (0, 15));
+        assert_eq!(bucketize_timestamp(7, 15), (0, 15));
+        assert_eq!(bucketize_timestamp(0, 15), (0, 15));
+        assert_eq!(bucketize_timestamp(15, 15), (15, 30));
+        assert_eq!(bucketize_timestamp(16, 15), (15, 30));
+        assert_eq!(bucketize_timestamp(77, 20), (60, 80));
+        assert_eq!(bucketize_timestamp(98, 20), (80, 100));
     }
 }
