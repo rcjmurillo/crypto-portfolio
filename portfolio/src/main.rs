@@ -14,6 +14,7 @@ use futures::future::join_all;
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
+use coingecko::Client as CoinGeckoClient;
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
@@ -133,8 +134,10 @@ pub async fn main() -> Result<()> {
             };
 
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
+            // let prices_fetcher =
+            //     PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
             let prices_fetcher =
-                PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
+                PricesFetcher::new(AssetPrices::new(CoinGeckoClient::new()));
             let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations

@@ -7,6 +7,7 @@ edition = "2021"
 [dependencies]
 binance = { path = "../exchanges/binance" }
 coinbase = { path = "../exchanges/coinbase" }
+coingecko = { path = "../exchanges/coingecko" }
 exchange = { path = "../exchanges/exchange" }
 
 anyhow = "1.0.58"

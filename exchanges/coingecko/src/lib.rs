@@ -17,7 +17,7 @@ use tower::{
 use api_client::{ApiClient, Query, RequestBuilder};
 use exchange::{Asset, AssetPair, AssetsInfo};
 
-const REQUESTS_PER_MINUTE: u64 = 50;
+const REQUESTS_PER_MINUTE: u64 = 40;
 const API_HOST: &'static str = "api.coingecko.com";
 
 enum Api {
@@ -40,7 +40,7 @@ impl ToString for Api {
     }
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct CoinPrice {
     timestamp: u64,
     price: f64,
@@ -80,9 +80,13 @@ impl Client {
         // todo: cache this vector
         let coins = self.fetch_coins_list().await?;
 
+        if symbol == "USD" {
+            return Ok(CoinInfo{id: "usd".to_string(), symbol: "usd".to_string()});
+        }
+
         coins
             .into_iter()
-            .find(|c| c.symbol == symbol)
+            .find(|c| c.symbol == symbol.to_lowercase())
             .ok_or(anyhow!("couldn't find symbol {}", symbol))
     }
 
@@ -96,13 +100,8 @@ impl Client {
             .cache_response(true)
             .build()?;
 
-        #[derive(Deserialize)]
-        struct CoinList {
-            coins: Vec<CoinInfo>,
-        }
-
         let resp = svc.call(request).await?;
-        let CoinList { coins } = self.from_json(&resp)?;
+        let coins: Vec<CoinInfo> = self.from_json(&resp)?;
 
         Ok(coins)
     }
@@ -156,18 +155,18 @@ impl AssetsInfo for Client {
     async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
         let quote_coin_info = self.fetch_coin_info(&asset_pair.quote).await?;
         let base_coin_info = self.fetch_coin_info(&asset_pair.base).await?;
-        let ts = time.timestamp().try_into()?;
+        let ts = time.timestamp_millis().try_into()?;
         // the API provides hourly granularity if we request a range <= 90 days
-        let bucket_size = 90 * 24 * 60 * 60; // seconds
+        let bucket_size = 90 * 24 * 60 * 60 * 1000; // milliseconds
         let (start_ts, end_ts) = bucketize_timestamp(ts, bucket_size);
         let prices = self
             .fetch_coin_market_chart_range(
                 &base_coin_info.id,
-                &quote_coin_info.id,
+                &quote_coin_info.symbol,
                 // given the API uses an hourly granularity, substract and add an hour to
                 // the range boundaries to make sure the timestamp we're looking for is included.
-                start_ts - 60,
-                end_ts + 60,
+                start_ts - 60 * 60 * 1000,
+                end_ts + 60 * 60 * 1000,
             )
             .await?;
         // find the index of the first price with timestamp greater than one we're looking for.
@@ -176,13 +175,13 @@ impl AssetsInfo for Client {
             .iter()
             .position(|p| p.timestamp > ts)
             .ok_or(anyhow!("couldn't find price in list of prices"))?;
+        println!("found ts for {} at index: {} {:?}", ts, index, prices);
         Ok(prices[index - 1].price)
     }
     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
         self.price_at(&AssetPair::new(asset, &"usd"), time).await
     }
 }
-
 
 #[cfg(test)]
 mod tests {

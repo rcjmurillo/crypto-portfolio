@@ -371,7 +371,7 @@ impl<T> PricesFetcher<T> {
 }
 
 #[async_trait]
-impl<T: ExchangeClient + Send + Sync> OperationsProcesor for PricesFetcher<T> {
+impl<T: AssetsInfo + Send + Sync> OperationsProcesor for PricesFetcher<T> {
     async fn process(
         &self,
         mut receiver: mpsc::Receiver<Operation>,
@@ -402,20 +402,9 @@ pub struct AssetPrices<T> {
     client: T,
 }
 
-impl<T: ExchangeClient> AssetPrices<T> {
+impl<T: AssetsInfo> AssetPrices<T> {
     pub fn new(client: T) -> Self {
         Self { client }
-    }
-
-    async fn asset_price_at(
-        &self,
-        asset_pair: &AssetPair,
-        datetime: &DateTime<Utc>,
-    ) -> Result<f64> {
-        if asset_pair.quote.starts_with("USD") || asset_pair.quote.ends_with("USD") {
-            return self.usd_price_at(&asset_pair.base, &datetime).await;
-        }
-        self.fetch_asset_pair_price(asset_pair, &datetime).await
     }
 
     /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
@@ -431,7 +420,8 @@ impl<T: ExchangeClient> AssetPrices<T> {
                 continue;
             }
             match self
-                .fetch_asset_pair_price(&AssetPair::new(asset, usd_asset), &datetime)
+                .client
+                .price_at(&AssetPair::new(asset, usd_asset), &datetime)
                 .await
             {
                 Err(err) => {
@@ -446,68 +436,12 @@ impl<T: ExchangeClient> AssetPrices<T> {
                 .context(last_err.unwrap()),
         )
     }
-
-    async fn fetch_asset_pair_price(
-        &self,
-        asset_pair: &AssetPair,
-        datetime: &DateTime<Utc>,
-    ) -> Result<f64> {
-        // create buckets of `period_days` size for time, a list of klines
-        // will be fetch for the bucket where the time falls into if it doesn't
-        // exists already in the map.
-        // Once made sure the data for the bucket is in the map use it to
-        // determine the price of the symbol at `time`.
-        let time = datetime.timestamp_millis().try_into()?;
-        let period_days = 180;
-        let bucket_size = 24 * 3600 * 1000 * period_days;
-        let bucket = (time / bucket_size) as u16;
-
-        if let Some(prices) = db::get_asset_price_bucket(bucket, &asset_pair)? {
-            Ok(self.find_price_at(&prices, time))
-        } else {
-            let asset_pair_prices = self.fetch_prices_for(&asset_pair, time).await?;
-            let price = self.find_price_at(&asset_pair_prices, time);
-            db::insert_asset_price_bucket(bucket, &asset_pair, asset_pair_prices)?;
-            Ok(price)
-        }
-    }
-
-    async fn fetch_prices_for(&self, asset_pair: &AssetPair, time: u64) -> Result<Vec<Candle>> {
-        // fetch prices from the start time of the bucket not `time` so other calls
-        // can reuse the data for transactions that fall into the same bucket. Also this
-        // way it's assured fetched data won't overlap.
-        let period_days = 180;
-        let bucket_size = 24 * 3600 * 1000 * period_days;
-        let start_ts = time - (time % bucket_size);
-        let end_ts = start_ts + bucket_size;
-        self.client
-            .prices(
-                asset_pair,
-                Utc.timestamp_millis(start_ts.try_into()?),
-                Utc.timestamp_millis(end_ts.try_into()?),
-            )
-            .await
-    }
-
-    fn find_price_at(&self, prices: &Vec<Candle>, time: u64) -> f64 {
-        // find the price at `time` in the vector of candles, it's assumed
-        // the data is sorted.
-        // With that invariant then the first candle which time is greater than
-        // the provided `time` is the one that holds the most accurate price.
-        prices
-            .iter()
-            .find_map(|c| match c.close_time > time {
-                true => Some(c.close_price),
-                false => None,
-            })
-            .unwrap_or(0.0)
-    }
 }
 
 #[async_trait]
-impl<T: ExchangeClient + Send + Sync> AssetsInfo for AssetPrices<T> {
+impl<T: AssetsInfo + Send + Sync> AssetsInfo for AssetPrices<T> {
     async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
-        self.asset_price_at(asset_pair, time).await
+        self.client.price_at(asset_pair, time).await
     }
 
     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
