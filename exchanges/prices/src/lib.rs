@@ -52,14 +52,14 @@ where
                 //
                 // The price of a market is always in terms of the quote symbol, thus to convert it
                 // in terms of the current market we need to know the quote symbol of the last market 
-                // we saw, if it's the same as the base symbol on the new one the last price is 
-                // multiplied by this market's price, otherwise it's divided. The proxy markets' list 
-                // must guarantee that the quote symbol of a given market is present on the next one.
+                // if it's the same as the base symbol on the new one the last price is multiplied 
+                // by this market's price, otherwise it's divided. The proxy markets' list must 
+                // guarantee that the quote symbol of a given market is present on the next one.
                 // e.g. given a market DOT-VET and a list of proxy market with prices:
                 //   
-                //   0: DOT-ETH -> 0.004569
-                //   1: ETH-BTC -> 0.0791120
-                //   2: VET-BTC -> 0.0000012
+                //   0: DOT-ETH -> 0.004569 : initial price
+                //   1: ETH-BTC -> 0.0791120: last quote symbol is the now base thus multiply
+                //   2: VET-BTC -> 0.0000012: last quote symbol is the now quote thus divide 
                 //   
                 // the following operation will give the price of DOT in terms of VET:
                 //   
