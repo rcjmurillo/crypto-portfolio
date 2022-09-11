@@ -4,7 +4,8 @@ use rusqlite::{ffi::Error as FfiError, params, Connection, Error, ErrorCode};
 use serde_json;
 
 use crate::operations::{storage::Storage, Operation as OperationType};
-use crate::{AssetPair, Candle};
+use crate::{Candle};
+use market::Market;
 
 const DB_NAME: &'static str = "operations.db";
 
@@ -204,7 +205,7 @@ pub fn get_operations() -> Result<Vec<Operation>> {
 
 pub fn insert_asset_price_bucket(
     bucket: u16,
-    asset_pair: &AssetPair,
+    market: &Market,
     prices: Vec<Candle>,
 ) -> Result<()> {
     let conn = Connection::open(DB_NAME)?;
@@ -214,7 +215,7 @@ pub fn insert_asset_price_bucket(
 
     match stmt.execute(params![
         bucket,
-        asset_pair.join("-"),
+        market.join("-"),
         serde_json::to_string(&prices).context("error while converting prices into JSON")?
     ]) {
         Ok(_) => (),
@@ -232,7 +233,7 @@ pub fn insert_asset_price_bucket(
     Ok(())
 }
 
-pub fn get_asset_price_bucket(bucket: u16, asset: &AssetPair) -> Result<Option<Vec<Candle>>> {
+pub fn get_asset_price_bucket(bucket: u16, asset: &Market) -> Result<Option<Vec<Candle>>> {
     let conn = Connection::open(DB_NAME)?;
 
     let mut stmt =

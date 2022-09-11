@@ -7,22 +7,24 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::{convert::TryInto, time::Duration};
 use tokio::sync::Mutex;
 use tower::{
     limit::{rate::Rate, RateLimit},
     Service,
 };
 
-use api_client::{ApiClient, Query, RequestBuilder};
-use exchange::{Asset, AssetPair, AssetsInfo};
+use api_client::{ApiClient, Cache, Query, RequestBuilder};
+use market::{Market, MarketData};
 
-const REQUESTS_PER_MINUTE: u64 = 40;
+const REQUESTS_PER_MINUTE: u64 = 10;
 const API_HOST: &'static str = "api.coingecko.com";
 
 enum Api {
     CoinsList,
     CoinsMarketChartRange,
+    SupportedVsCurrencies,
 }
 
 impl AsRef<str> for Api {
@@ -30,6 +32,7 @@ impl AsRef<str> for Api {
         match self {
             Self::CoinsList => "/api/v3/coins/list",
             Self::CoinsMarketChartRange => "/api/v3/coins/{}/market_chart/range",
+            Self::SupportedVsCurrencies => "/api/v3/simple/supported_vs_currencies",
         }
     }
 }
@@ -46,7 +49,7 @@ struct CoinPrice {
     price: f64,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct CoinInfo {
     id: String,
     symbol: String,
@@ -62,17 +65,25 @@ fn bucketize_timestamp(ts: u64, bucket_size: u64) -> (u64, u64) {
     (start_ts, end_ts)
 }
 
-pub struct Client {
-    api_service: Mutex<RateLimit<ApiClient>>,
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    // maps a symbol to it's id in coingecko
+    pub symbol_mappings: HashMap<String, String>,
 }
 
-impl Client {
-    pub fn new() -> Self {
+pub struct Client<'a> {
+    api_service: Mutex<Cache<RateLimit<ApiClient>>>,
+    config: &'a Config,
+}
+
+impl<'a> Client<'a> {
+    pub fn with_config(config: &'a Config) -> Self {
         Self {
-            api_service: Mutex::new(RateLimit::new(
+            api_service: Mutex::new(Cache::new(RateLimit::new(
                 ApiClient::new(),
                 Rate::new(REQUESTS_PER_MINUTE, Duration::from_secs(60)),
-            )),
+            ))),
+            config,
         }
     }
 
@@ -80,20 +91,58 @@ impl Client {
         // todo: cache this vector
         let coins = self.fetch_coins_list().await?;
 
-        if symbol == "USD" {
-            return Ok(CoinInfo{id: "usd".to_string(), symbol: "usd".to_string()});
+        if symbol.to_lowercase().as_str() == "usd" {
+            return Ok(CoinInfo {
+                id: "usd".to_string(),
+                symbol: "usd".to_string(),
+            });
         }
 
-        coins
-            .into_iter()
-            .find(|c| c.symbol == symbol.to_lowercase())
-            .ok_or(anyhow!("couldn't find symbol {}", symbol))
+        let symbol = symbol.to_lowercase();
+
+        let mut found = coins.into_iter().fold(vec![], |mut acc, c| {
+            if c.symbol == symbol {
+                acc.push(c);
+            }
+            acc
+        });
+        if found.len() > 1 {
+            println!("found multiple: {:?}", found);
+            found
+                .into_iter()
+                .find(|c| {
+                    self.config
+                        .symbol_mappings
+                        .get(&symbol)
+                        .filter(|sid| *sid == &c.id)
+                        .is_some()
+                })
+                .ok_or(anyhow!("couldn't find symbol {}", symbol))
+        } else {
+            println!("found a single one: {:?}", found);
+            found
+                .pop()
+                .ok_or(anyhow!("couldn't find symbol {}", symbol))
+        }
+    }
+
+    async fn supported_vs_currencies(&self) -> Result<Vec<String>> {
+        let mut svc = self.api_service.lock().await;
+
+        let request = RequestBuilder::default()
+            .url(
+                Url::parse(&format!("https://{}", API_HOST))?
+                    .join(Api::SupportedVsCurrencies.as_ref())?,
+            )
+            .cache_response(true)
+            .build()?;
+
+        let resp = svc.call(request).await?;
+        self.from_json(&resp)
     }
 
     async fn fetch_coins_list(&self) -> Result<Vec<CoinInfo>> {
         let mut svc = self.api_service.lock().await;
-        // await until the service is ready
-        futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
 
         let request = RequestBuilder::default()
             .url(Url::parse(&format!("https://{}", API_HOST))?.join(Api::CoinsList.as_ref())?)
@@ -114,8 +163,6 @@ impl Client {
         end_ts: u64,
     ) -> Result<Vec<CoinPrice>> {
         let mut svc = self.api_service.lock().await;
-        // await until the service is ready
-        futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
         let url = Api::CoinsMarketChartRange.as_ref().replace("{}", coin_id);
 
         let mut query = Query::new();
@@ -151,13 +198,46 @@ impl Client {
 }
 
 #[async_trait]
-impl AssetsInfo for Client {
-    async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
-        let quote_coin_info = self.fetch_coin_info(&asset_pair.quote).await?;
-        let base_coin_info = self.fetch_coin_info(&asset_pair.base).await?;
-        let ts = time.timestamp_millis().try_into()?;
+impl MarketData for Client<'_> {
+    async fn has_market(&self, market: &Market) -> Result<bool> {
+        let supported_vs_currencies = self.supported_vs_currencies().await?;
+        // per tests with the API, for any symbol that's in the supported vs currencies, it's possible
+        // to get a market with any other symbol as base and that symbol as quote/vs_currency.
+        Ok(supported_vs_currencies.contains(&market.quote))
+    }
+
+    async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
+        let supported_vs_currencies = self.supported_vs_currencies().await?;
+        // to keep this simple for now, this is going to use some big coins that
+        // must be in the supported vs currencies. Try with each one of them and stop
+        // when one of them is in the list.
+        let common_quote_symbols = vec!["usd", "btc", "eth"];
+        for quote_symbol in common_quote_symbols.iter() {
+            // just in case, this shouldn't happen
+            if *quote_symbol == market.quote {
+                continue;
+            }
+            if supported_vs_currencies.contains(&(*quote_symbol).to_string()) {
+                return Ok(Some(vec![
+                    Market::new(market.base.clone(), quote_symbol),
+                    Market::new(market.quote.clone(), quote_symbol),
+                ]));
+            }
+        }
+        Err(anyhow!(
+            "common quote symbols {:?} not present in supported vs currencies",
+            common_quote_symbols
+        ))
+    }
+
+    async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
+        let base_coin_info = self.fetch_coin_info(&market.base).await?;
+        let quote_coin_info = self.fetch_coin_info(&market.quote).await?;
+        println!("base coin info: {} {:?}", market.base, base_coin_info);
+        println!("quote coin info: {} {:?}", market.quote, quote_coin_info);
+        let ts = time.timestamp().try_into()?;
         // the API provides hourly granularity if we request a range <= 90 days
-        let bucket_size = 90 * 24 * 60 * 60 * 1000; // milliseconds
+        let bucket_size = 90 * 24 * 60 * 60; // seconds
         let (start_ts, end_ts) = bucketize_timestamp(ts, bucket_size);
         let prices = self
             .fetch_coin_market_chart_range(
@@ -165,21 +245,20 @@ impl AssetsInfo for Client {
                 &quote_coin_info.symbol,
                 // given the API uses an hourly granularity, substract and add an hour to
                 // the range boundaries to make sure the timestamp we're looking for is included.
-                start_ts - 60 * 60 * 1000,
-                end_ts + 60 * 60 * 1000,
+                start_ts - 60 * 60,
+                end_ts + 60 * 60,
             )
             .await?;
         // find the index of the first price with timestamp greater than one we're looking for.
         // The price used will be the one right before this one.
+        // note: the API expects the timestamps in seconds but the response includes
+        // timestamps in milliseconds.
+        let ts_ms = time.timestamp_millis().try_into()?;
         let index = prices
             .iter()
-            .position(|p| p.timestamp > ts)
+            .position(|p| p.timestamp > ts_ms)
             .ok_or(anyhow!("couldn't find price in list of prices"))?;
-        println!("found ts for {} at index: {} {:?}", ts, index, prices);
         Ok(prices[index - 1].price)
-    }
-    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-        self.price_at(&AssetPair::new(asset, &"usd"), time).await
     }
 }
 

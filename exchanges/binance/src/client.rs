@@ -22,8 +22,9 @@ use tower::{
     Service,
 };
 
-use api_client::{errors::Error as ClientError, ApiClient, Query, Request, RequestBuilder};
-use exchange::{AssetPair, Candle};
+use api_client::{Cache, errors::Error as ClientError, ApiClient, Query, Request, Response, RequestBuilder};
+use exchange::{Candle};
+use market::Market;
 
 use crate::{
     api_model::*,
@@ -180,15 +181,15 @@ macro_rules! endpoint_services {
         let retry_layer = RetryLayer::new(RetryErrorResponse(5));
         let mut services = HashMap::new();
         $(
-            services.insert($endpoint.to_string(), Mutex::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate())));
+            services.insert($endpoint.to_string(), Mutex::new(Cache::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate()))));
         )+
         services
     }};
 }
 
 struct EndpointServices<Region> {
-    client: Arc<ApiClient>,
-    services: HashMap<String, Mutex<RateLimit<Retry<RetryErrorResponse, Arc<ApiClient>>>>>,
+    client: ApiClient,
+    services: HashMap<String, Mutex<Cache<RateLimit<Retry<RetryErrorResponse, ApiClient>>>>>,
     region: PhantomData<Region>,
 }
 
@@ -203,14 +204,13 @@ impl<Region> EndpointServices<Region> {
             .await;
 
         // await until the service is ready
-        futures::future::poll_fn(|cx| svc.poll_ready(cx)).await?;
         svc.call(request).await
     }
 }
 
 impl EndpointServices<RegionUs> {
     pub fn new() -> Self {
-        let client = Arc::new(ApiClient::new());
+        let client = ApiClient::new();
 
         let mut s = Self {
             client,
@@ -235,7 +235,7 @@ impl EndpointServices<RegionUs> {
 
 impl EndpointServices<RegionGlobal> {
     pub fn new() -> Self {
-        let client = Arc::new(ApiClient::new());
+        let client = ApiClient::new();
 
         let mut s = Self {
             client,
@@ -263,9 +263,10 @@ impl EndpointServices<RegionGlobal> {
     }
 }
 
+#[derive(Clone)]
 pub struct Config {
     pub start_date: NaiveDate,
-    pub symbols: Vec<AssetPair>,
+    pub symbols: Vec<Market>,
 }
 
 impl Config {
@@ -277,24 +278,15 @@ impl Config {
     }
 }
 
-impl Clone for Config {
-    fn clone(&self) -> Self {
-        Self {
-            start_date: self.start_date.clone(),
-            symbols: self.symbols.clone(),
-        }
-    }
-}
-
 /// Implements a policy for errors responses that if retried have to eventually
 /// succeed, but also don't retry indefinitely.
 #[derive(Clone)]
 struct RetryErrorResponse(u8);
 
-impl Policy<Request, Arc<Bytes>, Error> for RetryErrorResponse {
+impl Policy<Request, Response, Error> for RetryErrorResponse {
     type Future = future::Ready<Self>;
 
-    fn retry(&self, req: &Request, result: Result<&Arc<Bytes>, &Error>) -> Option<Self::Future> {
+    fn retry(&self, req: &Request, result: Result<&Response, &Error>) -> Option<Self::Future> {
         match result {
             Ok(_) => {
                 // Treat all `Response`s as success,
@@ -347,7 +339,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             .start_date
     }
 
-    pub fn symbols(&self) -> &Vec<AssetPair> {
+    pub fn symbols(&self) -> &Vec<Market> {
         &self
             .config
             .as_ref()
@@ -447,7 +439,7 @@ impl<'a, Region> BinanceFetcher<Region> {
     pub async fn fetch_prices_in_range(
         &self,
         endpoint: &str,
-        symbol: &AssetPair,
+        market: &Market,
         start_ts: u64,
         end_ts: u64,
     ) -> Result<Vec<Candle>> {
@@ -490,7 +482,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         for (start, end) in ranges {
             let mut query = Query::new();
             query
-                .cached_param("symbol", symbol.join(""))
+                .cached_param("symbol", market.join(""))
                 .cached_param("interval", "30m")
                 .cached_param("startTime", start)
                 .cached_param("endTime", end)
@@ -523,7 +515,7 @@ impl<'a, Region> BinanceFetcher<Region> {
                     Ok(client_error) => {
                         return Err(anyhow!(format!(
                             "couldn't fetch prices for symbol: {}",
-                            symbol.join("")
+                            market.join("")
                         ))
                         .context(client_error))
                     }
@@ -537,7 +529,7 @@ impl<'a, Region> BinanceFetcher<Region> {
 
     async fn fetch_trades_from_endpoint(
         &self,
-        symbol: &AssetPair,
+        symbol: &Market,
         endpoint: &str,
         extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
@@ -610,7 +602,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         Ok(trades)
     }
 
-    pub async fn fetch_trades(&self, endpoint: &str, symbol: &AssetPair) -> Result<Vec<Trade>> {
+    pub async fn fetch_trades(&self, endpoint: &str, symbol: &Market) -> Result<Vec<Trade>> {
         self.fetch_trades_from_endpoint(symbol, endpoint, None)
             .await
     }
@@ -732,7 +724,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.from_json::<T>(resp.as_ref()).await
     }
 
-    async fn fetch_margin_pairs(&self, endpoint: &str) -> Result<Vec<AssetPair>> {
+    async fn fetch_margin_pairs(&self, endpoint: &str) -> Result<Vec<Market>> {
         #[derive(Deserialize)]
         struct Pair {
             base: String,
@@ -742,11 +734,11 @@ impl BinanceFetcher<RegionGlobal> {
         let resp = self.fetch_from_endpoint::<Vec<Pair>>(endpoint).await?;
         Ok(resp
             .into_iter()
-            .map(|p| AssetPair::new(p.base, p.quote))
+            .map(|p| Market::new(p.base, p.quote))
             .collect())
     }
 
-    pub async fn fetch_margin_trades(&self, symbol: &AssetPair) -> Result<Vec<Trade>> {
+    pub async fn fetch_margin_trades(&self, symbol: &Market) -> Result<Vec<Trade>> {
         let crossed_margin_pairs = self
             .fetch_margin_pairs(&ApiGlobal::CrossedMarginPairs.to_string())
             .await?;
@@ -809,7 +801,7 @@ impl BinanceFetcher<RegionGlobal> {
     pub async fn fetch_margin_transactions<T: DeserializeOwned>(
         &self,
         asset: &String,
-        isolated_symbol: Option<&AssetPair>,
+        isolated_symbol: Option<&Market>,
         endpoint: &str,
     ) -> Result<Vec<T>> {
         #[derive(Deserialize)]
@@ -927,7 +919,7 @@ impl BinanceFetcher<RegionGlobal> {
     pub async fn fetch_margin_loans(
         &self,
         asset: &String,
-        isolated_symbol: Option<&AssetPair>,
+        isolated_symbol: Option<&Market>,
     ) -> Result<Vec<MarginLoan>> {
         self.fetch_margin_transactions(
             asset,
@@ -940,7 +932,7 @@ impl BinanceFetcher<RegionGlobal> {
     pub async fn fetch_margin_repays(
         &self,
         asset: &String,
-        isolated_symbol: Option<&AssetPair>,
+        isolated_symbol: Option<&Market>,
     ) -> Result<Vec<MarginRepay>> {
         self.fetch_margin_transactions(
             asset,

@@ -14,7 +14,7 @@ use sha2::Sha256;
 use api_client::{errors::Error as ApiError, ApiClient, Query};
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
-use exchange::AssetPair;
+use market::Market;
 
 pub trait Identifiable<T> {
     fn id(&self) -> &T;
@@ -254,7 +254,7 @@ impl CoinbaseFetcher<Std> {
                     true,
                 )
                 .await?;
-            let parsed_resp: Response<T> = self.from_json(&resp)?;
+            let parsed_resp: Response<T> = self.from_json(&resp.bytes)?;
             all_resources.extend(parsed_resp.data);
             if parsed_resp.pagination.next_uri.is_some() {
                 // order of params matters for signature, i.e. `limit` has to go first
@@ -356,7 +356,7 @@ impl<'a> CoinbaseFetcher<Pro> {
                 true,
             )
             .await?;
-        let parsed_resp: Vec<Product> = self.from_json(&resp)?;
+        let parsed_resp: Vec<Product> = self.from_json(&resp.bytes)?;
         Ok(parsed_resp)
     }
 
@@ -396,7 +396,7 @@ impl<'a> CoinbaseFetcher<Pro> {
                         true,
                     )
                     .await?;
-                let parsed_resp: Vec<Fill> = self.from_json(&resp)?;
+                let parsed_resp: Vec<Fill> = self.from_json(&resp.bytes)?;
                 let resp_len = parsed_resp.len();
                 if resp_len >= 1000 {
                     last_id = Some(parsed_resp.last().unwrap().trade_id);

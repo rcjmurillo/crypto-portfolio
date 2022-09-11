@@ -1,12 +1,10 @@
 [package]
-name = "prices"
+name = "market"
 version = "0.1.0"
 authors = ["Ricardo Murillo <rcjmurillo@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-api-client = { path = "../api-client" }
-exchange = { path = "../exchange" }
 anyhow = "1.0.58"
 async-trait = "0.1.50"
 bytes = "1.0.1"

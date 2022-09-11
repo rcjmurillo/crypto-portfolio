@@ -9,6 +9,7 @@ binance = { path = "../exchanges/binance" }
 coinbase = { path = "../exchanges/coinbase" }
 coingecko = { path = "../exchanges/coingecko" }
 exchange = { path = "../exchanges/exchange" }
+market = { path = "../exchanges/market" }
 
 anyhow = "1.0.58"
 tokio = { version = "1.17", features = ["full"] }

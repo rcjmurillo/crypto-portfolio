@@ -8,38 +8,89 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-pub trait Market: Display {
-    fn base(&self) -> &str;
-    fn quote(&self) -> &str;
+pub type Asset = String;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Market {
+    pub base: Asset,
+    pub quote: Asset,
+}
+
+impl Market {
+    pub fn new<A, B>(asset_a: A, asset_b: B) -> Self
+    where
+        A: ToString,
+        B: ToString,
+    {
+        Self {
+            base: asset_a.to_string(),
+            quote: asset_b.to_string(),
+        }
+    }
+
+    /// try to create the string from an incoming string expected to be0
+    /// a pair of assets joined by '-'.
+    pub fn try_from_str(assets: &str) -> Result<Self> {
+        let parts: Vec<&str> = assets.split("-").collect();
+        if parts.len() == 2 {
+            Ok(Self {
+                base: parts[0].to_string(),
+                quote: parts[1].to_string(),
+            })
+        } else {
+            Err(anyhow!("couldn't parse '{}' into assets", assets))
+        }
+    }
+
+    pub fn join(&self, sep: &str) -> String {
+        format!("{}{}{}", self.base, sep, self.quote)
+    }
+}
+
+// impl PartialEq for &Market {
+//     fn eq(&self, other: &Self) -> bool {
+//         self.base == other.base && self.quote == other.quote
+//     }
+// }
+
+impl Display for Market {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.base, self.quote)
+    }
+}
+
+impl TryFrom<String> for Market {
+    type Error = anyhow::Error;
+
+    fn try_from(assets: String) -> Result<Self> {
+        Self::try_from_str(&assets)
+    }
 }
 
 #[async_trait]
 /// Data source for markets
-pub trait MarketData<M: Market> {
-    async fn has_market(&self, market: &M) -> Result<bool>;
-    /// Try to find an existent market for the two given symbols
-    async fn market_for(&self, base_symbol: &str, quote_symbol: &str) -> Result<Option<M>>;
+pub trait MarketData {
+    async fn has_market(&self, market: &Market) -> Result<bool>;
     // A list of "proxy" markets that can be used to indirectly compute the price of the
     // provided market if this one doesn't exist or can't be computed directly.
     // e.g. given a market DOT-ETH, a list of proxy markets could be:
     //   [DOT-BTC, ETH-BTC] or [DOT-USD, ETH-USD]
     // This list of markets must act as a chain where the quote symbol of a market must be
     // present on the next one.
-    async fn proxy_markets_for(&self, market: &M) -> Result<Option<Vec<M>>>;
-    async fn price_at(&self, market: &M, time: &DateTime<Utc>) -> Result<f64>;
+    async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>>;
+    async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64>;
 }
 
-pub async fn solve_price<M, MD>(
-    market: &M,
+pub async fn solve_price<T>(
+    market_data: &T,
+    market: &Market,
     time: &DateTime<Utc>,
-    market_data: &MD,
-) -> Result<Option<f64>>
+) -> Result<f64>
 where
-    M: Market,
-    MD: MarketData<M>,
+    T: MarketData
 {
     if market_data.has_market(market).await? {
-        Ok(Some(market_data.price_at(market, time).await?))
+        Ok(market_data.price_at(market, time).await?)
     } else {
         match market_data.proxy_markets_for(market).await? {
             Some(proxy_markets) => {
@@ -65,7 +116,7 @@ where
                 //   
                 //  0.004569 * 0.0791120 / 0.0000012 = 301.21894
                 //
-                let mut last_market: Option<&M> = None;
+                let mut last_market: Option<&Market> = None;
                 let mut last_price = 0.0;
                 for proxy_market in proxy_markets.iter() {
                     if market_data.has_market(proxy_market).await? {
@@ -73,9 +124,9 @@ where
 
                         match last_market {
                             Some(lm) => {
-                                if lm.quote() == proxy_market.base() {
+                                if lm.quote == proxy_market.base {
                                     last_price *= proxy_price;
-                                } else if lm.quote() == proxy_market.quote() {
+                                } else if lm.quote == proxy_market.quote {
                                     last_price /= proxy_price;
                                 } else {
                                     return Err(anyhow!(
@@ -93,62 +144,36 @@ where
                     } else {
                         return Err(anyhow!(
                             "market in proxy markets not found: {}{}",
-                            proxy_market.base(),
-                            proxy_market.quote()
+                            proxy_market.base,
+                            proxy_market.quote
                         ));
                     }
                 }
                 if last_price > 0.0 {
-                    Ok(Some(last_price))
+                    Ok(last_price)
                 } else {
-                    Ok(None)
+                    Err(anyhow!("couldn't find price for {}", market))
                 }
             }
-            None => Ok(None),
+            None => Err(anyhow!("no proxy markets found for {}", market)),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Display;
-
     use anyhow::Result;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
 
     use crate::{solve_price, Market, MarketData};
 
-    struct TestMarket(String, String);
-
-    impl TestMarket {
-        fn new(base: String, quote: String) -> Self {
-            Self(base, quote)
-        }
-    }
-
-    impl PartialEq for &TestMarket {
-        fn eq(&self, other: &Self) -> bool {
-            self.0 == other.0 && self.1 == other.1
-        }
-    }
-
-    impl Market for TestMarket {
-        fn base(&self) -> &str {
-            &self.0
-        }
-
-        fn quote(&self) -> &str {
-            &self.1
-        }
-    }
-
     struct TestMarketData;
 
     #[async_trait]
-    impl MarketData<TestMarket> for TestMarketData {
-        async fn has_market(&self, market: &TestMarket) -> Result<bool> {
-            Ok(match (market.base(), market.quote()) {
+    impl MarketData for TestMarketData {
+        async fn has_market(&self, market: &Market) -> Result<bool> {
+            Ok(match (market.base.as_str(), market.quote.as_str()) {
                 ("BTC", "USD")
                 | ("USDC", "USD")
                 | ("SOL", "ETH")
@@ -160,50 +185,34 @@ mod tests {
             })
         }
 
-        async fn market_for(&self, symbol1: &str, symbol2: &str) -> Result<Option<TestMarket>> {
-            let markets = vec![
-                ("BTC", "USD"),
-                ("USDC", "USD"),
-                ("SOL", "ETH"),
-                ("ETH", "BTC"),
-                ("WBTC", "USD"),
-                ("ADA", "ETH"),
-                ("DOT", "ETH"),
-            ];
-            let r = markets
-                .iter()
-                .find(|p| *p == &(symbol1, symbol2) || *p == &(symbol2, symbol1));
-            Ok(r.map(|t| TestMarket::new(t.0.to_string(), t.1.to_string())))
-        }
-
-        async fn proxy_markets_for(&self, market: &TestMarket) -> Result<Option<Vec<TestMarket>>>
+        async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>>
         where
             Self: Sized,
         {
-            Ok(match (market.base(), market.quote()) {
+            Ok(match (market.base.as_str(), market.quote.as_str()) {
                 ("BTC", "USDC") => Some(vec![
-                    TestMarket::new("BTC".to_string(), "USD".to_string()),
-                    TestMarket::new("USDC".to_string(), "USD".to_string()),
+                    Market::new("BTC".to_string(), "USD".to_string()),
+                    Market::new("USDC".to_string(), "USD".to_string()),
                 ]),
                 ("SOL", "BTC") => Some(vec![
-                    TestMarket::new("SOL".to_string(), "ETH".to_string()),
-                    TestMarket::new("ETH".to_string(), "BTC".to_string()),
+                    Market::new("SOL".to_string(), "ETH".to_string()),
+                    Market::new("ETH".to_string(), "BTC".to_string()),
                 ]),
                 ("WBTC", "BTC") => Some(vec![
-                    TestMarket::new("WBTC".to_string(), "USD".to_string()),
-                    TestMarket::new("BTC".to_string(), "USD".to_string()),
+                    Market::new("WBTC".to_string(), "USD".to_string()),
+                    Market::new("BTC".to_string(), "USD".to_string()),
                 ]),
                 ("ADA", "DOT") => Some(vec![
-                    TestMarket::new("ADA".to_string(), "ETH".to_string()),
-                    TestMarket::new("ETH".to_string(), "BTC".to_string()),
-                    TestMarket::new("DOT".to_string(), "BTC".to_string()),
+                    Market::new("ADA".to_string(), "ETH".to_string()),
+                    Market::new("ETH".to_string(), "BTC".to_string()),
+                    Market::new("DOT".to_string(), "BTC".to_string()),
                 ]),
                 _ => None,
             })
         }
 
-        async fn price_at(&self, market: &TestMarket, _: &DateTime<Utc>) -> Result<f64> {
-            Ok(match (market.base(), market.quote()) {
+        async fn price_at(&self, market: &Market, _: &DateTime<Utc>) -> Result<f64> {
+            Ok(match (market.base.as_str(), market.quote.as_str()) {
                 ("BTC", "USD") => 20_000.0,
                 ("USDC", "USD") => 0.9998,
                 ("SOL", "ETH") => 0.02047,
@@ -216,45 +225,39 @@ mod tests {
         }
     }
 
-    impl Display for TestMarket {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}{}", self.0, self.1)
-        }
-    }
-
     #[tokio::test]
     async fn test_solve_price() {
-        let m = TestMarket::new("BTC".to_string(), "USD".to_string());
+        let m = Market::new("BTC".to_string(), "USD".to_string());
         let market_data = TestMarketData;
         assert!(market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&m, &Utc::now(), &market_data).await.unwrap(),
+            solve_price(&market_data, &m, &Utc::now()).await.unwrap(),
             // direct BTC-USD
-            Some(20_000.0)
+            20_000.0
         );
 
-        let m = TestMarket::new("BTC".to_string(), "USDC".to_string());
+        let m = Market::new("BTC".to_string(), "USDC".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&m, &Utc::now(), &market_data).await.unwrap(),
+            solve_price(&market_data, &m, &Utc::now()).await.unwrap(),
             // BTC-USD / USDC-USD
-            Some(20_000.0 / 0.9998)
+            20_000.0 / 0.9998
         );
 
-        let m = TestMarket::new("SOL".to_string(), "BTC".to_string());
+        let m = Market::new("SOL".to_string(), "BTC".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&m, &Utc::now(), &market_data).await.unwrap(),
+            solve_price(&market_data, &m, &Utc::now()).await.unwrap(),
             // SOL-ETH * ETH-BTC
-            Some(0.02047 * 0.0779)
+            0.02047 * 0.0779
         );
 
-        let m = TestMarket::new("ADA".to_string(), "DOT".to_string());
+        let m = Market::new("ADA".to_string(), "DOT".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&m, &Utc::now(), &market_data).await.unwrap(),
+            solve_price(&market_data, &m, &Utc::now()).await.unwrap(),
             // ADA-ETH * ETH-BTC / DOT-BTC
-            Some(0.0002891 * 0.0779 / 0.0003616)
+            0.0002891 * 0.0779 / 0.0003616
         );
     }
 }

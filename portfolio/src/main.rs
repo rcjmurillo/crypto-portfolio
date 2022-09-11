@@ -14,8 +14,8 @@ use futures::future::join_all;
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
-use coingecko::Client as CoinGeckoClient;
 use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
+use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use exchange::operations::{
@@ -103,8 +103,9 @@ pub async fn main() -> Result<()> {
             let ops = get_operations()?
                 .into_iter()
                 .map(|o: DbOperation| o.try_into());
-            let coin_tracker =
-                BalanceTracker::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
+            let coin_tracker = BalanceTracker::new(CoinGeckoClient::with_config(
+                config.coingecko.as_ref().expect("missing coingecko config"),
+            ));
             let mut handles = Vec::new();
             for (i, op) in ops.into_iter().enumerate() {
                 coin_tracker.batch_operation(op?).await;
@@ -136,8 +137,9 @@ pub async fn main() -> Result<()> {
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
             // let prices_fetcher =
             //     PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
-            let prices_fetcher =
-                PricesFetcher::new(AssetPrices::new(CoinGeckoClient::new()));
+            let prices_fetcher = PricesFetcher::new(AssetPrices::new(
+                CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config")),
+            ));
             let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations
@@ -149,9 +151,9 @@ pub async fn main() -> Result<()> {
 
             results.iter().for_each(|r| match r {
                 Err(err) => log::error!("{}", err),
-                Ok(_) => () 
+                Ok(_) => (),
             });
-            
+
             log::info!("fetch done!");
         }
         PortfolioAction::RevenueReport {
@@ -159,10 +161,12 @@ pub async fn main() -> Result<()> {
         } => {
             let ops_storage = Db;
             let ops = ops_storage.get_ops().await?;
-            let asset_prices = AssetPrices::new(BinanceFetcher::<RegionGlobal>::new());
 
-            let mut stream =
-                OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, &asset_prices);
+            let mut stream = OperationsStream::from_ops(
+                ops.clone(),
+                ConsumeStrategy::Fifo,
+                CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config")),
+            );
 
             for op in ops {
                 if let Operation::Revenue {

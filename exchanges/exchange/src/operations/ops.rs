@@ -9,10 +9,10 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, span, Level};
 
 use crate::operations::{db, storage::Storage};
+use market::{self, Asset, Market, MarketData};
 
 use crate::{
-    exchange::Asset, AssetPair, AssetsInfo, Candle, Deposit, ExchangeClient, ExchangeDataFetcher,
-    Loan, Repay, Trade, TradeSide, Withdraw,
+    Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -156,20 +156,20 @@ impl TryFrom<db::Operation> for Operation {
     }
 }
 
-pub struct BalanceTracker<T: AssetsInfo> {
+pub struct BalanceTracker<T> {
     coin_balances: RwLock<HashMap<String, AssetBalance>>,
     operations_seen: RwLock<HashSet<String>>,
     batch: RwLock<Vec<Operation>>,
-    asset_info: T,
+    market_data: T,
 }
 
-impl<T: AssetsInfo> BalanceTracker<T> {
+impl<T: MarketData> BalanceTracker<T> {
     pub fn new(asset_info: T) -> Self {
         BalanceTracker {
             coin_balances: RwLock::new(HashMap::new()),
             operations_seen: RwLock::new(HashSet::new()),
             batch: RwLock::new(Vec::new()),
-            asset_info,
+            market_data: asset_info,
         }
     }
 
@@ -213,7 +213,9 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = self.asset_info.usd_price_at(asset, &time).await?;
+                let usd_price =
+                    market::solve_price(&self.market_data, &Market::new(asset, "USD"), &time)
+                        .await?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
                 debug!("end")
@@ -227,7 +229,9 @@ impl<T: AssetsInfo> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
                 debug!("start");
-                let usd_price = self.asset_info.usd_price_at(asset, &time).await?;
+                let usd_price =
+                    market::solve_price(&self.market_data, &Market::new(asset, "USD"), &time)
+                        .await?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
                 debug!("end");
@@ -371,7 +375,7 @@ impl<T> PricesFetcher<T> {
 }
 
 #[async_trait]
-impl<T: AssetsInfo + Send + Sync> OperationsProcesor for PricesFetcher<T> {
+impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
     async fn process(
         &self,
         mut receiver: mpsc::Receiver<Operation>,
@@ -399,53 +403,21 @@ impl<T: AssetsInfo + Send + Sync> OperationsProcesor for PricesFetcher<T> {
 /// stores buckets to prices in the db, buckets are periods of time
 /// defined by number of days of span.
 pub struct AssetPrices<T> {
-    client: T,
+    market_data: T,
 }
 
-impl<T: AssetsInfo> AssetPrices<T> {
-    pub fn new(client: T) -> Self {
-        Self { client }
+impl<T: MarketData> AssetPrices<T> {
+    pub fn new(market_data: T) -> Self {
+        Self { market_data }
     }
 
     /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
     /// from different markets.
     async fn usd_price_at(&self, asset: &Asset, datetime: &DateTime<Utc>) -> Result<f64> {
-        if asset.starts_with("USD") || asset.ends_with("USD") {
+        if asset.to_lowercase() == "usd" {
             return Ok(1.0);
         }
-        let mut last_err = None;
-        // multiple tries from different markets in case one is not available
-        for usd_asset in ["USDT", "USDC", "USD"] {
-            if usd_asset == asset {
-                continue;
-            }
-            match self
-                .client
-                .price_at(&AssetPair::new(asset, usd_asset), &datetime)
-                .await
-            {
-                Err(err) => {
-                    last_err = Some(err);
-                    continue; // try with the next one
-                }
-                ok => return ok,
-            }
-        }
-        Err(
-            anyhow!("couldn't get USD price for {} at {}", asset, datetime)
-                .context(last_err.unwrap()),
-        )
-    }
-}
-
-#[async_trait]
-impl<T: AssetsInfo + Send + Sync> AssetsInfo for AssetPrices<T> {
-    async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
-        self.client.price_at(asset_pair, time).await
-    }
-
-    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-        self.usd_price_at(asset, time).await
+        market::solve_price(&self.market_data, &Market::new(asset, "usd"), &datetime).await
     }
 }
 
@@ -1104,11 +1076,11 @@ mod tests {
 
     #[tokio::test]
     async fn track_operations() -> Result<()> {
-        struct TestAssetInfo {
+        struct TestMarketData {
             prices: Mutex<Vec<f64>>,
         }
 
-        impl TestAssetInfo {
+        impl TestMarketData {
             fn new() -> Self {
                 Self {
                     prices: Mutex::new(vec![7000.0, 25.0, 95.0]),
@@ -1117,22 +1089,25 @@ mod tests {
         }
 
         #[async_trait]
-        impl AssetsInfo for TestAssetInfo {
-            async fn price_at(&self, asset_pair: &AssetPair, _time: &DateTime<Utc>) -> Result<f64> {
+        impl MarketData for TestMarketData {
+            async fn has_market(&self, market: &Market) -> Result<bool> {
+                Ok(true)
+            }
+
+            async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
+                Ok(None)
+            }
+            async fn price_at(&self, market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
                 Ok(
-                    match (asset_pair.base.as_str(), asset_pair.quote.as_str()) {
+                    match (market.base.as_str(), market.quote.as_str()) {
                         ("USDT" | "USD", "USDT" | "USD") => 1.0,
                         _ => self.prices.lock().await.remove(0),
                     },
                 )
             }
-
-            async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-                self.usd_price_at(asset, time).await
-            }
         }
 
-        let coin_tracker = BalanceTracker::new(TestAssetInfo::new());
+        let coin_tracker = BalanceTracker::new(TestMarketData::new());
         let ops = vec![
             Operation::BalanceIncrease {
                 id: 1,

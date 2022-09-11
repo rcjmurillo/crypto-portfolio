@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::operations::Operation;
-use crate::{AssetPair, AssetsInfo};
+use market::{Market, MarketData};
+
+use super::AssetPrices;
 
 #[derive(Debug)]
 pub struct Sale {
@@ -111,17 +113,16 @@ pub enum ConsumeStrategy {
 ///     This strategy (Last-in, first-out) works by using the newer-to-oldest purchase
 ///     operations when there are a multiple operations which can be used to compute the
 ///     profit/loss of a sale.
-pub struct OperationsStream<'a> {
+pub struct OperationsStream<T> {
     ops: Vec<Operation>,
-    assets_info: &'a (dyn AssetsInfo + Sync + Send),
+    market_data: T,
 }
 
-impl<'a> OperationsStream<'a> {
-    pub fn from_ops(
-        ops: Vec<Operation>,
-        strategy: ConsumeStrategy,
-        assets_info: &'a (dyn AssetsInfo + Sync + Send),
-    ) -> Self {
+impl<T> OperationsStream<T>
+where
+    T: MarketData,
+{
+    pub fn from_ops(ops: Vec<Operation>, strategy: ConsumeStrategy, market_data: T) -> Self {
         let mut ops = ops
             .into_iter()
             .filter(|op| matches!(op, Operation::Cost { .. }))
@@ -140,7 +141,7 @@ impl<'a> OperationsStream<'a> {
         });
         Self {
             ops: ops.into(),
-            assets_info,
+            market_data,
         }
     }
 
@@ -192,10 +193,8 @@ impl<'a> OperationsStream<'a> {
                         *paid_amount * (amount_to_fulfill / *purchased_amount),
                     )
                 };
-                let price = self
-                    .assets_info
-                    .usd_price_at(&asset, time)
-                    .await?;
+                let m = Market::new(&asset, "usd");
+                let price = market::solve_price(&self.market_data, &m, time).await?;
                 amount_to_fulfill -= amount_fulfilled;
                 let purchase_cost = paid_amount_used * price;
                 cost += purchase_cost;
@@ -205,10 +204,12 @@ impl<'a> OperationsStream<'a> {
                 *purchased_amount -= amount_fulfilled;
                 *paid_amount -= paid_amount_used;
 
-                let price_at_sale = self
-                    .assets_info
-                    .usd_price_at(&sale.asset, &sale.datetime)
-                    .await?;
+                let price_at_sale = market::solve_price(
+                    &self.market_data,
+                    &Market::new(&sale.asset, "usd"),
+                    &sale.datetime,
+                )
+                .await?;
 
                 let sale_revenue = amount_fulfilled * price_at_sale;
                 consumed_ops.push(Purchase {
@@ -216,10 +217,12 @@ impl<'a> OperationsStream<'a> {
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
                     cost: paid_amount_used * price,
-                    price: self
-                        .assets_info
-                        .usd_price_at(&sale.asset, time)
-                        .await?,
+                    price: market::solve_price(
+                        &self.market_data,
+                        &Market::new(&sale.asset, "usd"),
+                        time,
+                    )
+                    .await?,
                     paid_with: asset.to_string(),
                     paid_with_amount: paid_amount_used,
                     datetime: *time,
@@ -238,10 +241,12 @@ impl<'a> OperationsStream<'a> {
             }
         }
 
-        let sale_asset_price = self
-            .assets_info
-            .usd_price_at(&sale.asset, &sale.datetime)
-            .await?;
+        let sale_asset_price = market::solve_price(
+            &self.market_data,
+            &Market::new(&sale.asset, "usd"),
+            &sale.datetime,
+        )
+        .await?;
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
             (r, c) if r >= c => MatchResult {
@@ -262,7 +267,10 @@ impl<'a> OperationsStream<'a> {
 }
 
 #[async_trait]
-impl<'a> SaleMatcher for OperationsStream<'a> {
+impl<T> SaleMatcher for OperationsStream<T>
+where
+    T: MarketData + Send + Sync,
+{
     async fn match_sale(&mut self, sale: &Sale) -> Result<MatchResult> {
         // consume purchase amounts from the stream to fulfill the sale amount
         self.consume(sale).await
@@ -277,10 +285,8 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    use crate::{
-        exchange::Asset,
-        operations::{storage::Storage, Operation::*}
-    };
+    use crate::operations::{storage::Storage, Operation::*};
+    use market::Asset;
 
     struct DummyStorage {
         ops: Vec<Operation>,
@@ -296,11 +302,11 @@ mod tests {
         }
     }
 
-    struct DummyAssetsInfo {
+    struct DummyMarketData {
         last_price: Arc<Mutex<f64>>,
     }
 
-    impl DummyAssetsInfo {
+    impl DummyMarketData {
         pub fn new() -> Self {
             Self {
                 last_price: Arc::new(Mutex::new(0.0)),
@@ -309,8 +315,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl AssetsInfo for DummyAssetsInfo {
-        async fn price_at(&self, _asset_pair: &AssetPair, _time: &DateTime<Utc>) -> Result<f64> {
+    impl MarketData for DummyMarketData {
+        async fn has_market(&self, market: &Market) -> Result<bool> {
+            Ok(true)
+        }
+        async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
+            Ok(None)
+        }
+        async fn price_at(&self, _market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
             let nums: Vec<_> = (1usize..10).map(|n| n as f64).collect();
             let mut gen = Gen::new(100);
             let mut p: f64 = *gen.choose(&nums[..]).unwrap();
@@ -320,10 +332,6 @@ mod tests {
             }
             *last_price = p;
             Ok(p)
-        }
-
-        async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-            self.price_at(&AssetPair::new(asset, "USD"), time).await
         }
     }
 
@@ -400,8 +408,8 @@ mod tests {
 
     quickcheck! {
         fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
-            let asset_prices = DummyAssetsInfo::new();
-            let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &asset_prices);
+            let market_data = DummyMarketData::new();
+            let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
             stream.ops().iter().all(|op| matches!(op, Operation::Cost{..}))
         }
     }
@@ -413,8 +421,8 @@ mod tests {
                 return TestResult::discard();
             }
             let sales = into_sales(&ops);
-            let assets_info = DummyAssetsInfo::new();
-            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+            let market_data = DummyMarketData::new();
+            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -436,17 +444,15 @@ mod tests {
                 return TestResult::discard();
             }
             let sales = into_sales(&ops);
-            let assets_info = DummyAssetsInfo::new();
-            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+            let market_data = DummyMarketData::new();
+            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("could not build tokio runtime");
             for s in sales {
                 match rt.block_on(stream.consume(&s)) {
-                    Ok(
-                        MatchResult { purchases, .. },
-                    ) => {
+                    Ok(MatchResult { purchases, .. }) => {
                         if purchases.len() == 0 {
                             return TestResult::failed();
                         }
@@ -495,9 +501,9 @@ mod tests {
                     asset: asset.clone(),
                     datetime: *time,
                 };
-                let assets_info = DummyAssetsInfo::new();
+                let market_data = DummyMarketData::new();
                 let mut stream =
-                    OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, &assets_info);
+                    OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

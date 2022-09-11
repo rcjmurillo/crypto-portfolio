@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Context, Error as AnyhowError, Result};
+use anyhow::{anyhow, Error as AnyhowError, Result};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use structopt::{self, StructOpt};
@@ -13,7 +13,8 @@ use toml;
 use crate::errors::Error;
 use binance::Config as BinanceConfig;
 use coinbase::Config as CoinbaseConfig;
-use exchange::{Asset, AssetPair};
+use coingecko::Config as CoingeckoConfig;
+use market::{Asset, Market};
 
 fn read_config_file(path: &OsStr) -> std::result::Result<Config, OsString> {
     match Config::from_file_path(path.into()) {
@@ -31,7 +32,7 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeConfig {
-    // all the asset pairs to work with, only asset pairs included here will
+    // all the markets to work with, only markets included here will
     // appear in the report.
     pub symbols: Option<Vec<String>>,
     pub assets: Option<Vec<Asset>>,
@@ -56,6 +57,7 @@ pub struct Config {
     pub binance_us: Option<ExchangeConfig>,
     pub coinbase: Option<ExchangeConfig>,
     pub coinbase_pro: Option<ExchangeConfig>,
+    pub coingecko: Option<CoingeckoConfig>,
 }
 
 impl Config {
@@ -84,8 +86,8 @@ impl TryFrom<ExchangeConfig> for BinanceConfig {
                 .symbols
                 .ok_or_else(|| anyhow!("missing symbols in binance config"))?
                 .iter()
-                .map(|s| AssetPair::try_from_str(&s))
-                .collect::<Result<Vec<AssetPair>>>()?,
+                .map(|s| Market::try_from_str(&s))
+                .collect::<Result<Vec<Market>>>()?,
         })
     }
 }

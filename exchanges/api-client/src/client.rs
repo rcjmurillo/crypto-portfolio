@@ -10,12 +10,9 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use reqwest::{header::HeaderMap, StatusCode};
 use reqwest::{header::HeaderValue, Url};
-use tokio::sync::RwLock;
 use tower::Service;
 
 use crate::errors::Error as ApiError;
-
-type Cache = HashMap<String, Arc<Bytes>>;
 
 enum ValueState {
     Closure(Box<dyn Fn() -> String + Send + Sync>),
@@ -179,31 +176,11 @@ async fn validate_response(resp: reqwest::Response) -> Result<reqwest::Response>
     }
 }
 
-async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<Arc<Bytes>> {
+async fn make_request(req: Request) -> Result<Response> {
     let client = reqwest::Client::new();
 
-    let cache = local_cache.read().await;
     let query_str = req.query_params.map(|q| q.materialize());
-    let cache_key = match req.cache_response {
-        true => {
-            // form a cache key = endpoint + cacheable query params
-            let key = match query_str.as_ref() {
-                Some(q) => format!("{}{}", req.url.path(), q.cacheable_query),
-                None => req.url.path().to_string(),
-            };
-            match &cache.get(&key) {
-                Some(v) => {
-                    return Ok(Arc::clone(v));
-                }
-                None => (),
-            }
-            Some(key)
-        }
-        false => None,
-    };
-    drop(cache);
-
-    let full_url = match query_str {
+    let full_url = match query_str.as_ref() {
         Some(q) => {
             format!("{}?{}", req.url, q.full_query)
         }
@@ -220,16 +197,8 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
 
     match validate_response(resp?).await {
         Ok(resp) => {
-            let resp_bytes = Arc::new(resp.bytes().await?);
-            if let Some(cache_key) = cache_key {
-                let cache = Arc::clone(&local_cache);
-                cache
-                    .write()
-                    .await
-                    .insert(cache_key, Arc::clone(&resp_bytes));
-            }
             log::debug!("successful response");
-            Ok(resp_bytes)
+            Ok(Response{bytes: resp.bytes().await?, query_string: query_str})
         }
         Err(err) => {
             log::debug!("response error: {:?}", err);
@@ -239,15 +208,11 @@ async fn make_request(local_cache: Arc<RwLock<Cache>>, req: Request) -> Result<A
 }
 
 #[derive(Clone)]
-pub struct ApiClient {
-    cache: Arc<RwLock<Cache>>,
-}
+pub struct ApiClient;
 
 impl<'a> ApiClient {
     pub fn new() -> Self {
-        Self {
-            cache: Arc::new(RwLock::new(Cache::new())),
-        }
+        Self
     }
 
     pub async fn make_request(
@@ -256,7 +221,7 @@ impl<'a> ApiClient {
         query_params: Option<Query>,
         headers: Option<HeaderMap>,
         cache_response: bool,
-    ) -> Result<Arc<Bytes>> {
+    ) -> Result<Response> {
         let url = Url::parse(endpoint)?;
         log::debug!(
             "making request to {} {:?}",
@@ -275,30 +240,12 @@ impl<'a> ApiClient {
             req_builder = req_builder.headers(headers.unwrap());
         }
         let req = req_builder.cache_response(cache_response).build()?;
-        make_request(self.cache.clone(), req).await
-    }
-}
-
-impl Service<Request> for Arc<ApiClient> {
-    type Response = Arc<Bytes>;
-
-    type Error = anyhow::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-
-    fn poll_ready(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(())) // always ready to make more requests!
-    }
-
-    fn call(&mut self, req: Request) -> Self::Future {
-        Box::pin(make_request(self.cache.clone(), req))
+        make_request(req).await
     }
 }
 
 impl Service<Request> for ApiClient {
-    type Response = Arc<Bytes>;
+    type Response = Response;
 
     type Error = anyhow::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -311,7 +258,7 @@ impl Service<Request> for ApiClient {
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        Box::pin(make_request(self.cache.clone(), req))
+        Box::pin(make_request(req))
     }
 }
 
@@ -329,4 +276,9 @@ pub struct Request {
     #[builder(setter(strip_option), default)]
     pub headers: Option<HeaderMap>,
     pub cache_response: bool,
+}
+
+pub struct Response {
+    pub bytes: Bytes,
+    pub query_string: Option<QueryString>,
 }

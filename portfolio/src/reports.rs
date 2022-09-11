@@ -3,10 +3,11 @@ use std::{cmp::Ordering, collections::HashMap};
 use anyhow::Result;
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
-use binance::{BinanceFetcher, ApiGlobal, RegionGlobal};
-use exchange::{AssetsInfo, operations::{BalanceTracker}};
+use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
+use exchange::operations::BalanceTracker;
+use market::MarketData;
 
-pub async fn asset_balances<T: AssetsInfo>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
+pub async fn asset_balances<T: MarketData>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
     let binance_client = BinanceFetcher::<RegionGlobal>::new();
 
     let mut coin_balances = HashMap::<String, f64>::new();

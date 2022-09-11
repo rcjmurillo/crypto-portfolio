@@ -9,7 +9,8 @@ use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
     client::{BinanceFetcher, ApiGlobal, ApiUs, RegionGlobal, RegionUs},
 };
-use exchange::{self, Asset, AssetPair, AssetsInfo, Candle, ExchangeClient, ExchangeDataFetcher};
+use exchange::{self, Candle, ExchangeClient, ExchangeDataFetcher};
+use market::{Asset, Market, MarketData};
 
 impl From<FiatOrder> for exchange::Deposit {
     fn from(d: FiatOrder) -> Self {
@@ -252,13 +253,13 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
 impl ExchangeClient for BinanceFetcher<RegionGlobal> {
     async fn prices(
         &self,
-        asset_pair: &AssetPair,
+        market: &Market,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
         self.fetch_prices_in_range(
             &ApiGlobal::Klines.to_string(),
-            asset_pair,
+            market,
             start.timestamp_millis().try_into()?,
             end.timestamp_millis().try_into()?,
         )
@@ -342,21 +343,21 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
     }
 }
 
-#[async_trait]
-impl AssetsInfo for BinanceFetcher<RegionGlobal> {
-    async fn price_at(&self, asset_pair: &AssetPair, time: &DateTime<Utc>) -> Result<f64> {
-        self.fetch_price_at(
-            &ApiGlobal::Prices.to_string(),
-            &asset_pair.join(""),
-            time,
-        )
-        .await
-    }
+// #[async_trait]
+// impl AssetsInfo for BinanceFetcher<RegionGlobal> {
+//     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
+//         self.fetch_price_at(
+//             &ApiGlobal::Prices.to_string(),
+//             &market.join(""),
+//             time,
+//         )
+//         .await
+//     }
 
-    async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-        self.price_at(&AssetPair::new(asset, "USD"), time).await
-    }
-}
+//     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
+//         self.price_at(&Market::new(asset, "USD"), time).await
+//     }
+// }
 
 fn flatten_results<T, U>(results: Vec<Result<Vec<T>>>) -> Result<Vec<U>>
 where

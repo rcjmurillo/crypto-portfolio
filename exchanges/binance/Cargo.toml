@@ -9,6 +9,7 @@ edition = "2021"
 [dependencies]
 api-client = { path = "../api-client" }
 exchange = { path = "../exchange" }
+market = { path = "../market" }
 anyhow = "1.0.58"
 async-trait = "0.1.50"
 bytes = "1.0.1"

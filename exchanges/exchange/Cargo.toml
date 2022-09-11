@@ -5,6 +5,7 @@ authors = ["Ricardo Murillo <rcjmurillo@gmail.com>"]
 edition = "2021"
 
 [dependencies]
+market = { path = "../market" }
 anyhow = "1.0.58"
 async-trait = "0.1.50"
 bytes = "1.0.1"
