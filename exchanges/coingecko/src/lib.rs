@@ -260,8 +260,6 @@ impl MarketData for Client<'_> {
         log::debug!("getting price for market: {:?}", market);
         let base_coin_info = self.fetch_coin_info(&market.base).await?;
         let quote_coin_info = self.fetch_coin_info(&market.quote).await?;
-        println!("base coin info: {} {:?}", market.base, base_coin_info);
-        println!("quote coin info: {} {:?}", market.quote, quote_coin_info);
         let ts = time.timestamp().try_into()?;
         // the API provides hourly granularity if we request a range <= 90 days
         let bucket_size = 90 * 24 * 60 * 60; // seconds
