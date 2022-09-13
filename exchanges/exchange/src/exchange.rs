@@ -20,12 +20,6 @@ pub trait ExchangeDataFetcher {
     async fn withdraws(&self) -> Result<Vec<Withdraw>>;
 }
 
-// #[async_trait]
-// pub trait AssetsInfo {
-//     async fn price_at(&self, market: &AssetPair, time: &DateTime<Utc>) -> Result<f64>;
-//     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64>;
-// }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Candle {
     pub open_time: u64,

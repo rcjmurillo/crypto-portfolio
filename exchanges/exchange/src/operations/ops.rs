@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, span, Level};
 
 use crate::operations::{db, storage::Storage};
-use market::{self, Asset, Market, MarketData};
+use market::{self, Asset, Market, MarketData, CURRENCIES};
 
 use crate::{
     Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
@@ -383,6 +383,7 @@ impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
     ) -> Result<()> {
         log::info!("syncing asset prices to db...");
         while let Some(op) = receiver.recv().await {
+            log::debug!("processing op {:?}", op);
             // the `.usd_price_at(..)` call will make the DB to populate with
             // bucket of prices corresponding to each processed transaction.
             match &op {
@@ -414,9 +415,24 @@ impl<T: MarketData> AssetPrices<T> {
     /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
     /// from different markets.
     async fn usd_price_at(&self, asset: &Asset, datetime: &DateTime<Utc>) -> Result<f64> {
+        log::debug!("fetching usd price for {}", asset);
         if asset.to_lowercase() == "usd" {
             return Ok(1.0);
         }
+
+        // TODO: migrate this method into the MarketData trait, each might have or not a way to compute this.
+        // If the symbol is a currency, given data sources and exchanges doesn't have markets for currencies
+        // it'll be approximated to using other markets.
+        // e.g. to approximate the price of the EUR-USD market, it can be done by getting the price of BTC-USD
+        // and the price of BTC-EUR and then divide BTC-USD / BTC-EUR to approximate the price.
+        if CURRENCIES.contains(&asset.to_lowercase().as_str()) {
+            let btc_usd = market::solve_price(&self.market_data, &Market::new("btc", "usd"), &datetime)
+                .await?;
+            let btc_eur = market::solve_price(&self.market_data, &Market::new("btc", asset), &datetime)
+                .await?;
+            return Ok(btc_usd / btc_eur);
+        }
+
         market::solve_price(&self.market_data, &Market::new(asset, "usd"), &datetime).await
     }
 }
@@ -433,41 +449,41 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    log::info!("[{}] fetching margin trades...", prefix);
-    all_ops.extend(
-        c.margin_trades()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching loans...", prefix);
-    all_ops.extend(
-        c.loans()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching repays...", prefix);
-    all_ops.extend(
-        c.repays()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching deposits...", prefix);
-    all_ops.extend(
-        c.deposits()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching withdraws...", prefix);
-    all_ops.extend(
-        c.withdraws()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
+    // log::info!("[{}] fetching margin trades...", prefix);
+    // all_ops.extend(
+    //     c.margin_trades()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching loans...", prefix);
+    // all_ops.extend(
+    //     c.loans()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching repays...", prefix);
+    // all_ops.extend(
+    //     c.repays()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching deposits...", prefix);
+    // all_ops.extend(
+    //     c.deposits()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching withdraws...", prefix);
+    // all_ops.extend(
+    //     c.withdraws()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
     // log::info!("[{}] fetching operations...", prefix);
     // all_ops.extend(c.operations().await.unwrap());
     log::info!("[{}] ALL DONE!!!", prefix);
@@ -1098,12 +1114,10 @@ mod tests {
                 Ok(None)
             }
             async fn price_at(&self, market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
-                Ok(
-                    match (market.base.as_str(), market.quote.as_str()) {
-                        ("USDT" | "USD", "USDT" | "USD") => 1.0,
-                        _ => self.prices.lock().await.remove(0),
-                    },
-                )
+                Ok(match (market.base.as_str(), market.quote.as_str()) {
+                    ("USDT" | "USD", "USDT" | "USD") => 1.0,
+                    _ => self.prices.lock().await.remove(0),
+                })
             }
         }
 

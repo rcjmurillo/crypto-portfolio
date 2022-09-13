@@ -32,7 +32,7 @@ pub struct FiatOrder {
 #[serde(rename_all = "camelCase")]
 pub struct Deposit {
     #[serde(alias="txId")]
-    pub id: String,
+    pub tx_id: String,
     #[serde(with = "float_from_str")]
     pub amount: f64,
     #[serde(alias = "asset")]

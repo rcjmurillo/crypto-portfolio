@@ -71,11 +71,11 @@ fn mk_fetchers(
         fetchers.push(("Binance Global", Box::new(binance_client)));
     }
 
-    if let Some(conf) = config.binance_us.clone() {
-        let config_binance_us: Config = conf.try_into().unwrap();
-        let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-        fetchers.push(("Binance US", Box::new(binance_client_us)));
-    }
+    // if let Some(conf) = config.binance_us.clone() {
+    //     let config_binance_us: Config = conf.try_into().unwrap();
+    //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
+    //     fetchers.push(("Binance US", Box::new(binance_client_us)));
+    // }
 
     if let Some(file_fetcher) = file_fetcher {
         fetchers.push(("Custom Operations", Box::new(file_fetcher)));

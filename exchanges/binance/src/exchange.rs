@@ -42,7 +42,7 @@ impl From<FiatOrder> for exchange::Withdraw {
 impl From<Deposit> for exchange::Deposit {
     fn from(d: Deposit) -> Self {
         Self {
-            source_id: d.id,
+            source_id: d.tx_id,
             source: "binance".to_string(),
             asset: d.coin,
             amount: d.amount,
@@ -342,22 +342,6 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
         Ok(withdraws)
     }
 }
-
-// #[async_trait]
-// impl AssetsInfo for BinanceFetcher<RegionGlobal> {
-//     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
-//         self.fetch_price_at(
-//             &ApiGlobal::Prices.to_string(),
-//             &market.join(""),
-//             time,
-//         )
-//         .await
-//     }
-
-//     async fn usd_price_at(&self, asset: &Asset, time: &DateTime<Utc>) -> Result<f64> {
-//         self.price_at(&Market::new(asset, "USD"), time).await
-//     }
-// }
 
 fn flatten_results<T, U>(results: Vec<Result<Vec<T>>>) -> Result<Vec<U>>
 where

@@ -16,9 +16,9 @@ use tower::{
 };
 
 use api_client::{ApiClient, Cache, Query, RequestBuilder};
-use market::{Market, MarketData};
+use market::{Market, MarketData, CURRENCIES};
 
-const REQUESTS_PER_MINUTE: u64 = 10;
+const REQUESTS_PER_PERIOD: u64 = 1;
 const API_HOST: &'static str = "api.coingecko.com";
 
 enum Api {
@@ -81,7 +81,7 @@ impl<'a> Client<'a> {
         Self {
             api_service: Mutex::new(Cache::new(RateLimit::new(
                 ApiClient::new(),
-                Rate::new(REQUESTS_PER_MINUTE, Duration::from_secs(60)),
+                Rate::new(REQUESTS_PER_PERIOD, Duration::from_secs(3)),
             ))),
             config,
         }
@@ -91,10 +91,17 @@ impl<'a> Client<'a> {
         // todo: cache this vector
         let coins = self.fetch_coins_list().await?;
 
+        // todo: handle this better
         if symbol.to_lowercase().as_str() == "usd" {
             return Ok(CoinInfo {
                 id: "usd".to_string(),
                 symbol: "usd".to_string(),
+            });
+        }
+        if symbol.to_lowercase().as_str() == "eur" {
+            return Ok(CoinInfo {
+                id: "eur".to_string(),
+                symbol: "eur".to_string(),
             });
         }
 
@@ -200,14 +207,33 @@ impl<'a> Client<'a> {
 #[async_trait]
 impl MarketData for Client<'_> {
     async fn has_market(&self, market: &Market) -> Result<bool> {
+        log::debug!("checking if market exists: {:?}", market);
         let supported_vs_currencies = self.supported_vs_currencies().await?;
         // per tests with the API, for any symbol that's in the supported vs currencies, it's possible
-        // to get a market with any other symbol as base and that symbol as quote/vs_currency.
-        Ok(supported_vs_currencies.contains(&market.quote))
+        // to get a market with any other symbol as base (except currencies) and that symbol as quote/vs_currency.
+        Ok(supported_vs_currencies.contains(&market.quote.to_lowercase())
+            && !CURRENCIES.contains(&market.base.to_lowercase().as_str()))
     }
 
     async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
+        log::debug!("getting proxy markets for: {:?}", market);
         let supported_vs_currencies = self.supported_vs_currencies().await?;
+
+        // case when the both symbols are currencies
+        match (
+            CURRENCIES.contains(&market.base.to_lowercase().as_str()),
+            CURRENCIES.contains(&market.quote.to_lowercase().as_str()),
+        ) {
+            (true, true) => {
+                return Ok(Some(vec![
+                    Market::new("btc", market.base.to_lowercase()),
+                    Market::new("btc", market.quote.to_lowercase()),
+                ]))
+            }
+            (true, false) => return Err(anyhow!("invalid market {}", market)),
+            (_, _) => (), // valid market, continue
+        }
+
         // to keep this simple for now, this is going to use some big coins that
         // must be in the supported vs currencies. Try with each one of them and stop
         // when one of them is in the list.
@@ -219,8 +245,8 @@ impl MarketData for Client<'_> {
             }
             if supported_vs_currencies.contains(&(*quote_symbol).to_string()) {
                 return Ok(Some(vec![
-                    Market::new(market.base.clone(), quote_symbol),
-                    Market::new(market.quote.clone(), quote_symbol),
+                    Market::new(market.base.to_lowercase(), quote_symbol),
+                    Market::new(market.quote.to_lowercase(), quote_symbol),
                 ]));
             }
         }
@@ -231,6 +257,7 @@ impl MarketData for Client<'_> {
     }
 
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
+        log::debug!("getting price for market: {:?}", market);
         let base_coin_info = self.fetch_coin_info(&market.base).await?;
         let quote_coin_info = self.fetch_coin_info(&market.quote).await?;
         println!("base coin info: {} {:?}", market.base, base_coin_info);

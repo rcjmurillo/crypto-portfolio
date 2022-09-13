@@ -146,6 +146,8 @@ where
     }
 
     pub async fn consume(&mut self, sale: &Sale) -> Result<MatchResult> {
+        log::debug!("consuming sale {:?}", sale);
+
         // consume purchase operations until we fulfill this amount
         let mut amount_to_fulfill = sale.amount;
         let mut consumed_ops = Vec::new();
