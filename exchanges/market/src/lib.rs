@@ -91,6 +91,7 @@ pub fn is_fiat(asset: &str) -> bool {
     FIAT_CURRENCIES.contains(&asset)
 }
 
+// TODO: unify with the method below
 pub async fn solve_price<T>(market_data: &T, market: &Market, time: &DateTime<Utc>) -> Result<f64>
 where
     T: MarketData + ?Sized,
