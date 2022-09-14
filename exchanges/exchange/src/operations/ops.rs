@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, span, Level};
+use tracing::{debug, span, Level};
 
 use crate::operations::{db, storage::Storage};
-use market::{self, Asset, Market, MarketData, CURRENCIES};
+use market::{self, Asset, Market, MarketData};
 
 use crate::{
-    Candle, Deposit, ExchangeClient, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
+    ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -425,7 +425,7 @@ impl<T: MarketData> AssetPrices<T> {
         // it'll be approximated to using other markets.
         // e.g. to approximate the price of the EUR-USD market, it can be done by getting the price of BTC-USD
         // and the price of BTC-EUR and then divide BTC-USD / BTC-EUR to approximate the price.
-        if CURRENCIES.contains(&asset.to_lowercase().as_str()) {
+        if market::is_fiat(&asset.to_lowercase().as_str()) {
             let btc_usd = market::solve_price(&self.market_data, &Market::new("btc", "usd"), &datetime)
                 .await?;
             let btc_eur = market::solve_price(&self.market_data, &Market::new("btc", asset), &datetime)
@@ -519,7 +519,7 @@ pub async fn fetch_ops<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Status;
+    use crate::{Status, Deposit};
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
     use Operation::*;

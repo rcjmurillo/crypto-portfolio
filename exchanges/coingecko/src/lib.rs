@@ -16,7 +16,7 @@ use tower::{
 };
 
 use api_client::{ApiClient, Cache, Query, RequestBuilder};
-use market::{Market, MarketData, CURRENCIES};
+use market::{Market, MarketData};
 
 const REQUESTS_PER_PERIOD: u64 = 1;
 const API_HOST: &'static str = "api.coingecko.com";
@@ -206,31 +206,32 @@ impl<'a> Client<'a> {
 
 #[async_trait]
 impl MarketData for Client<'_> {
-    async fn has_market(&self, market: &Market) -> Result<bool> {
-        log::debug!("checking if market exists: {:?}", market);
+    async fn has_market(&self, m: &Market) -> Result<bool> {
+        log::debug!("checking if market exists: {:?}", m);
         let supported_vs_currencies = self.supported_vs_currencies().await?;
         // per tests with the API, for any symbol that's in the supported vs currencies, it's possible
         // to get a market with any other symbol as base (except currencies) and that symbol as quote/vs_currency.
-        Ok(supported_vs_currencies.contains(&market.quote.to_lowercase())
-            && !CURRENCIES.contains(&market.base.to_lowercase().as_str()))
+        Ok(supported_vs_currencies.contains(&m.quote.to_lowercase())
+            && !market::is_fiat(&m.base.to_lowercase().as_str()))
     }
 
-    async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
-        log::debug!("getting proxy markets for: {:?}", market);
+    async fn proxy_markets_for(&self, m: &Market) -> Result<Option<Vec<Market>>> {
+        log::debug!("getting proxy markets for: {:?}", m);
         let supported_vs_currencies = self.supported_vs_currencies().await?;
 
         // case when the both symbols are currencies
         match (
-            CURRENCIES.contains(&market.base.to_lowercase().as_str()),
-            CURRENCIES.contains(&market.quote.to_lowercase().as_str()),
+            market::is_fiat(&m.base.to_lowercase().as_str()),
+            market::is_fiat(&m.quote.to_lowercase().as_str()),
         ) {
             (true, true) => {
                 return Ok(Some(vec![
-                    Market::new("btc", market.base.to_lowercase()),
-                    Market::new("btc", market.quote.to_lowercase()),
+                    Market::new("btc", m.base.to_lowercase()),
+                    Market::new("btc", m.quote.to_lowercase()),
                 ]))
             }
-            (true, false) => return Err(anyhow!("invalid market {}", market)),
+            // a fiat currency shouldn't be used as base asset if the quote is a crypto asset
+            (true, false) => return Err(anyhow!("invalid market {}", m)),
             (_, _) => (), // valid market, continue
         }
 
@@ -240,13 +241,13 @@ impl MarketData for Client<'_> {
         let common_quote_symbols = vec!["usd", "btc", "eth"];
         for quote_symbol in common_quote_symbols.iter() {
             // just in case, this shouldn't happen
-            if *quote_symbol == market.quote {
+            if *quote_symbol == m.quote {
                 continue;
             }
             if supported_vs_currencies.contains(&(*quote_symbol).to_string()) {
                 return Ok(Some(vec![
-                    Market::new(market.base.to_lowercase(), quote_symbol),
-                    Market::new(market.quote.to_lowercase(), quote_symbol),
+                    Market::new(m.base.to_lowercase(), quote_symbol),
+                    Market::new(m.quote.to_lowercase(), quote_symbol),
                 ]));
             }
         }
