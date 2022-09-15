@@ -2,6 +2,8 @@
 //! Defines common ground for fetching prices from any source and
 //! a standardized behavior and approximate market (symbol pairs) prices.
 
+mod conversion;
+
 use std::{fmt::Display, pin::Pin, sync::Arc, task::Poll};
 
 use anyhow::{anyhow, Result};
@@ -223,23 +225,6 @@ where
         }
     }
 }
-
-// #[async_trait]
-// impl<T> MarketData for Arc<T>
-// where
-//     T: MarketData + Send + Sync,
-// {
-//     async fn has_market(&self, market: &Market) -> Result<bool> {
-//         (*self).has_market(market).await
-//     }
-
-//     async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
-//         (*self).proxy_markets_for(market).await
-//     }
-//     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
-//         (*self).price_at(market, time).await
-//     }
-// }
 
 struct Request {
     market: Market,
