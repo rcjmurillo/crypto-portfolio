@@ -16,7 +16,7 @@ pub type Asset = String;
 
 pub const FIAT_CURRENCIES: &[&str] = &["usd", "eur"];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Market {
     pub base: Asset,
     pub quote: Asset,
