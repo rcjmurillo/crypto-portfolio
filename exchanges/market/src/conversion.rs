@@ -39,9 +39,9 @@ struct State<'a, T> {
 /// In other words, this performs unit conversions where the base asset is the enumerator
 /// unit and the quote asset is the denominator unit.
 pub fn conversion_chain<'a: 'b, 'b>(
-    target: Market,
+    target: &'a Market,
     markets: &'a Vec<Market>,
-) -> Option<Vec<MarketType<'_>>> {
+) -> Option<Vec<MarketType<'a>>> {
     // returns an iterator that will keep track of the last market that was used to search
     // for more markets to create the conversion chain.
     let filter_markets = |asset: &'b String| {
@@ -154,17 +154,17 @@ mod tests {
         ];
 
         assert_eq!(
-            conversion_chain(m!(ADA - ETH), &markets),
+            conversion_chain(&m!(ADA - ETH), &markets),
             Some(vec![asis!(ADA - BTC), asis!(BTC - USD), inv!(ETH - USD)])
         );
 
         assert_eq!(
-            conversion_chain(m!(ADA - USD), &markets),
+            conversion_chain(&m!(ADA - USD), &markets),
             Some(vec![asis!(ADA - BTC), asis!(BTC - USD)])
         );
 
         assert_eq!(
-            conversion_chain(m!(ADA - EUR), &markets),
+            conversion_chain(&m!(ADA - EUR), &markets),
             Some(vec![
                 asis!(ADA - BTC),
                 asis!(BTC - USD),
@@ -175,17 +175,17 @@ mod tests {
         );
 
         assert_eq!(
-            conversion_chain(m!(UNI - USD), &markets),
+            conversion_chain(&m!(UNI - USD), &markets),
             Some(vec![asis!(UNI - ETH), asis!(ETH - USD)])
         );
 
         assert_eq!(
-            conversion_chain(m!(UNI - BTC), &markets),
+            conversion_chain(&m!(UNI - BTC), &markets),
             Some(vec![asis!(UNI - ETH), asis!(ETH - USD), inv!(BTC - USD)])
         );
 
         assert_eq!(
-            conversion_chain(m!(UNI - ADA), &markets),
+            conversion_chain(&m!(UNI - ADA), &markets),
             Some(vec![
                 asis!(UNI - ETH),
                 asis!(ETH - USD),
@@ -194,9 +194,9 @@ mod tests {
             ])
         );
 
-        assert_eq!(conversion_chain(m!(ADA - DOT), &markets), None);
+        assert_eq!(conversion_chain(&m!(ADA - DOT), &markets), None);
 
-        assert_eq!(conversion_chain(m!(DOT - ADA), &markets), None);
+        assert_eq!(conversion_chain(&m!(DOT - ADA), &markets), None);
     }
 
     #[test]
