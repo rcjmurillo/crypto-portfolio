@@ -1099,6 +1099,10 @@ mod tests {
                 Ok(true)
             }
 
+            fn normalize(&self, market: &Market) -> Result<Market> {
+                Ok(market.clone())
+            }
+
             async fn markets(&self) -> Result<Vec<Market>> {
                 Ok(vec![])
             }

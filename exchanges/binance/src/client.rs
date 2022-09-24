@@ -1204,6 +1204,10 @@ impl MarketData for BinanceFetcher<RegionGlobal> {
             .is_some())
     }
 
+    fn normalize(&self, market: &Market) -> Result<Market> {
+        Ok(Market::new(market.base.to_ascii_uppercase(), market.quote.to_ascii_uppercase()))
+    }
+
     async fn markets(&self) -> Result<Vec<Market>> {
         let symbols = self
             .fetch_exchange_symbols(ApiGlobal::ExchangeInfo.as_ref())

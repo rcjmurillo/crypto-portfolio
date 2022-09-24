@@ -73,6 +73,7 @@ impl TryFrom<String> for Market {
 /// Data source for markets
 pub trait MarketData {
     async fn has_market(&self, market: &Market) -> Result<bool>;
+    fn normalize(&self, market: &Market) -> Result<Market>;
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64>;
     // all available markets in the data source
     async fn markets(&self) -> Result<Vec<Market>>;
@@ -95,7 +96,7 @@ where
         Ok(Some(market_data.price_at(market, time).await?))
     } else {
         let markets = market_data.markets().await?;
-        match conversion_chain(market, &markets) {
+        match conversion_chain(&market_data.normalize(market)?, &markets) {
             Some(conv_chain) => {
                 let mut price = 1.0;
                 for market_type in conv_chain {
@@ -191,6 +192,10 @@ mod tests {
     impl MarketData for TestMarketData {
         async fn has_market(&self, market: &Market) -> Result<bool> {
             Ok(self.markets().contains(market))
+        }
+
+        fn normalize(&self, market: &Market) -> Result<Market> {
+            Ok(market.clone())
         }
 
         async fn markets(&self) -> Result<Vec<Market>> {

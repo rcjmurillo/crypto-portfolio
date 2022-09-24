@@ -192,7 +192,7 @@ pub async fn main() -> Result<()> {
                     {
                         Ok(mr) => println!("\nSale of {} {} at {}:\n> {}", amount, asset, time, mr),
                         Err(err) => println!(
-                            "error when consuming of {} {} at {}: {}",
+                            "error when consuming {} {} at {}: {}",
                             amount, asset, time, err
                         ),
                     }

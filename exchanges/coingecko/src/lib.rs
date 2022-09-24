@@ -267,6 +267,10 @@ impl MarketData for Client<'_> {
             && !market::is_fiat(&m.base.to_lowercase().as_str()))
     }
 
+    fn normalize(&self, market: &Market) -> Result<Market> {
+        Ok(Market::new(market.base.to_ascii_lowercase(), market.quote.to_ascii_lowercase()))
+    }
+
     async fn markets(&self) -> Result<Vec<Market>> {
         self.fetch_coin_markets().await
     }
