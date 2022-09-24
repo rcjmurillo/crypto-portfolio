@@ -109,10 +109,10 @@ pub fn conversion_chain<'a: 'b, 'b>(
                 match states.pop() {
                     Some(state) => {
                         curr_state = state;
-                        // remove the latest added item as it's not valid anymore
+                        // remove the last item added as it's not valid anymore
                         chain.pop();
                     }
-                    // no more states to search on
+                    // no more states/paths to search on
                     None => return None,
                 }
             }
