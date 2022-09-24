@@ -36,7 +36,7 @@ impl Market {
         }
     }
 
-    /// try to create the string from an incoming string expected to be0
+    /// try to create the string from an incoming string expected to be
     /// a pair of assets joined by '-'.
     pub fn try_from_str(assets: &str) -> Result<Self> {
         let parts: Vec<&str> = assets.split("-").collect();
