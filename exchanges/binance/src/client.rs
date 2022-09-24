@@ -1200,97 +1200,20 @@ impl MarketData for BinanceFetcher<RegionGlobal> {
             .await?;
         Ok(symbols
             .iter()
-            .find(|s| s.base_asset == market.base)
-            .map_or(false, |_| true))
+            .find(|s| s.base_asset == market.base && s.quote_asset == market.quote)
+            .is_some())
     }
 
     async fn markets(&self) -> Result<Vec<Market>> {
-        Ok(vec![])
+        let symbols = self
+            .fetch_exchange_symbols(ApiGlobal::ExchangeInfo.as_ref())
+            .await?;
+        Ok(symbols
+            .into_iter()
+            .map(|s| Market::new(s.base_asset, s.quote_asset))
+            .collect())
     }
 
-    // async fn proxy_markets_for(&self, m: &Market) -> Result<Option<Vec<Market>>> {
-    //     let markets = self
-    //         .fetch_exchange_symbols(ApiGlobal::ExchangeInfo.as_ref())
-    //         .await?;
-
-    //     // when the assets are fiat currencies
-    //     match (market::is_fiat(&m.base), market::is_fiat(&m.quote)) {
-    //         (false, true) => {
-    //             // search for another market with the same fiat currency as base, if found, check
-    //             // if another market exists that uses the found market's base as base and the target
-    //             // base market as quote asset.
-    //             // e.g.: given BTC-USD search for markets with USD as quote asset, if ETH-USD is found
-    //             // check if the market ETH-BTC exists, if so return [ETH-USD, ETH-BTC] as proxy markets.
-    //             for found_market in markets.iter().filter(|s| s.quote_asset == m.quote) {
-    //                 let m1 = Market::new(
-    //                     found_market.base_asset.clone(),
-    //                     found_market.quote_asset.clone(),
-    //                 );
-    //                 let m2 = Market::new(found_market.base_asset.clone(), m.base.clone());
-    //                 if self.has_market(&m2).await? {
-    //                     return Ok(Some(vec![m1, m2]));
-    //                 }
-    //             }
-    //             return Err(anyhow!("couldn't find proxy markets for {}", m));
-    //         }
-    //         (true, true) => {
-    //             // pretty high change that there exists a market where these high cap
-    //             // assets are base to avoid the heavy search.
-    //             let high_cap_assets = ["BTC", "ETH", "ADA", "XRP"];
-    //             for hc in high_cap_assets {
-    //                 let m1 = Market::new(hc, m.quote.clone());
-    //                 let m2 = Market::new(hc, m.base.clone());
-    //                 if self.has_market(&m1).await? && self.has_market(&m2).await? {
-    //                     return Ok(Some(vec![m1, m2]));
-    //                 }
-    //             }
-
-    //             // search for a market that has the target quote asset as quote, then check if there is a market
-    //             // with the same base asset of the found market and the target base asset as quote.
-    //             // e.g. given the market EUR-USD, after searching we found the market BTC-USD, then we
-    //             // check if the market BTC-EUR exists and return [BTC-USD, BTC-EUR] as proxy markets if so.
-    //             for found_market in markets.iter().filter(|s| s.quote_asset == m.quote) {
-    //                 let m1 = Market::new(found_market.base_asset.clone(), m.quote.clone());
-    //                 let m2 = Market::new(found_market.base_asset.clone(), m.base.clone());
-    //                 if self.has_market(&m2).await? {
-    //                     return Ok(Some(vec![m1, m2]));
-    //                 }
-    //             }
-    //             return Err(anyhow!("couldn't find proxy markets for {}", m));
-    //         }
-    //         // a fiat currency shouldn't be used as base asset if the quote is a crypto asset
-    //         (true, false) => return Err(anyhow!("invalid market {}", m)),
-    //         // continue with the logic below
-    //         (false, false) => (),
-    //     }
-
-    //     // when the base asset is a crypto currency
-    //     // pretty high change that there exists a market where these high cap
-    //     // assets are quote to avoid the heavy search.
-    //     let high_cap_assets = ["USDT", "BTC", "ETH"];
-    //     for hc in high_cap_assets {
-    //         if m.base == hc || m.quote == hc {
-    //             continue;
-    //         }
-    //         let m1 = Market::new(m.base.clone(), hc);
-    //         let m2 = Market::new(m.quote.clone(), hc);
-    //         if self.has_market(&m1).await? && self.has_market(&m2).await? {
-    //             return Ok(Some(vec![m1, m2]));
-    //         }
-    //     }
-    //     // search for a market that has the target base asset as base, then check if there is a market
-    //     // with the same quote asset of the found market and the target quote asset as base.
-    //     // e.g. given a market DOT-BTC, after searching we found the market DOT-USDT, then we
-    //     // check if the market BTC-USDT exists and return [DOT-USDT, BTC-USDT] as proxy markets if so.
-    //     for found_market in markets.iter().filter(|s| s.base_asset == m.base) {
-    //         let m1 = Market::new(m.base.clone(), found_market.quote_asset.clone());
-    //         let m2 = Market::new(m.quote.clone(), found_market.quote_asset.clone());
-    //         if self.has_market(&m2).await? {
-    //             return Ok(Some(vec![m1, m2]));
-    //         }
-    //     }
-    //     Err(anyhow!("couldn't find proxy markets for {}", m))
-    // }
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
         self.fetch_price_at(
             &ApiGlobal::Klines.as_ref(),
