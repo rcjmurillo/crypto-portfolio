@@ -91,14 +91,12 @@ where
     U: MarketData,
     T: Deref<Target = U>,
 {
-    log::debug!("solving price for {:?}", market);
     if market_data.has_market(market).await? {
         Ok(Some(market_data.price_at(market, time).await?))
     } else {
         let markets = market_data.markets().await?;
         match conversion_chain(market, &markets) {
             Some(conv_chain) => {
-                log::debug!("conversion chain for {:?}: {:?}", market, conv_chain);
                 let mut price = 1.0;
                 for market_type in conv_chain {
                     price *= match market_type {

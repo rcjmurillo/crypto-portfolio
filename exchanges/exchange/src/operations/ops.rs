@@ -213,9 +213,10 @@ impl<T: MarketData> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
                 debug!("start");
+                let usd_market = Market::new(asset, "USD");
                 let usd_price =
-                    market::solve_price(&self.market_data, &Market::new(asset, "USD"), &time)
-                        .await?;
+                    market::solve_price(&self.market_data, &usd_market, &time)
+                        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
                 debug!("end")
@@ -229,9 +230,10 @@ impl<T: MarketData> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
                 debug!("start");
+                let usd_market = Market::new(asset, "USD");
                 let usd_price =
-                    market::solve_price(&self.market_data, &Market::new(asset, "USD"), &time)
-                        .await?;
+                    market::solve_price(&self.market_data, &usd_market, &time)
+                        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
                 debug!("end");
@@ -420,20 +422,9 @@ impl<T: MarketData> AssetPrices<T> {
             return Ok(1.0);
         }
 
-        // TODO: migrate this method into the MarketData trait, each might have or not a way to compute this.
-        // If the symbol is a currency, given data sources and exchanges doesn't have markets for currencies
-        // it'll be approximated to using other markets.
-        // e.g. to approximate the price of the EUR-USD market, it can be done by getting the price of BTC-USD
-        // and the price of BTC-EUR and then divide BTC-USD / BTC-EUR to approximate the price.
-        if market::is_fiat(&asset.to_lowercase().as_str()) {
-            let btc_usd = market::solve_price(&self.market_data, &Market::new("btc", "usd"), &datetime)
-                .await?;
-            let btc_eur = market::solve_price(&self.market_data, &Market::new("btc", asset), &datetime)
-                .await?;
-            return Ok(btc_usd / btc_eur);
-        }
-
-        market::solve_price(&self.market_data, &Market::new(asset, "usd"), &datetime).await
+        let usd_market = Market::new(asset.to_ascii_lowercase(), "usd");
+        market::solve_price(&self.market_data, &usd_market, &datetime).await?
+            .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))
     }
 }
 
@@ -449,43 +440,41 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    // log::info!("[{}] fetching margin trades...", prefix);
-    // all_ops.extend(
-    //     c.margin_trades()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching loans...", prefix);
-    // all_ops.extend(
-    //     c.loans()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching repays...", prefix);
-    // all_ops.extend(
-    //     c.repays()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching deposits...", prefix);
-    // all_ops.extend(
-    //     c.deposits()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching withdraws...", prefix);
-    // all_ops.extend(
-    //     c.withdraws()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching operations...", prefix);
-    // all_ops.extend(c.operations().await.unwrap());
+    log::info!("[{}] fetching margin trades...", prefix);
+    all_ops.extend(
+        c.margin_trades()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching loans...", prefix);
+    all_ops.extend(
+        c.loans()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching repays...", prefix);
+    all_ops.extend(
+        c.repays()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching deposits...", prefix);
+    all_ops.extend(
+        c.deposits()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching withdraws...", prefix);
+    all_ops.extend(
+        c.withdraws()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
     log::info!("[{}] ALL DONE!!!", prefix);
     Ok(all_ops)
 }
@@ -1110,9 +1099,10 @@ mod tests {
                 Ok(true)
             }
 
-            async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
-                Ok(None)
+            async fn markets(&self) -> Result<Vec<Market>> {
+                Ok(vec![])
             }
+
             async fn price_at(&self, market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
                 Ok(match (market.base.as_str(), market.quote.as_str()) {
                     ("USDT" | "USD", "USDT" | "USD") => 1.0,

@@ -22,7 +22,7 @@ impl<'a> MarketType<'a> {
 
 /// Store the state of the current path, with this data we can resume searching
 /// on a different path by fetching the next element from the filtered iterator.
-/// The seen set will prevent cycles when searching in case we already saw a 
+/// The seen set will prevent cycles when searching in case we already saw a
 /// given market when creating the conversion chain.
 #[derive(Debug)]
 struct State<'a, T> {
@@ -33,8 +33,8 @@ struct State<'a, T> {
 /// A simple backtracking search to find the conversion chain for the given market.
 /// It will search for an initial market that has the target's base asset as base,
 /// then it will add markets to the chain to cancel terms until it finds a market that
-/// has the target's quote. 
-/// This is like solving a routing problem where we want to find the path to go from 
+/// has the target's quote.
+/// This is like solving a routing problem where we want to find the path to go from
 /// A to B and the nodes can only be connected if they share an attribute's value.
 /// In other words, this performs unit conversions where the base asset is the enumerator
 /// unit and the quote asset is the denominator unit.

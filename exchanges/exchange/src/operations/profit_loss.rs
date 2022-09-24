@@ -196,7 +196,9 @@ where
                     )
                 };
                 let m = Market::new(&asset, "usd");
-                let price = market::solve_price(&self.market_data, &m, time).await?;
+                let price = market::solve_price(&self.market_data, &m, time)
+                    .await?
+                    .ok_or_else(|| anyhow!("couldn't find price for {:?}", m))?;
                 amount_to_fulfill -= amount_fulfilled;
                 let purchase_cost = paid_amount_used * price;
                 cost += purchase_cost;
@@ -206,25 +208,24 @@ where
                 *purchased_amount -= amount_fulfilled;
                 *paid_amount -= paid_amount_used;
 
+                let usd_market = Market::new(&sale.asset, "usd");
                 let price_at_sale = market::solve_price(
                     &self.market_data,
-                    &Market::new(&sale.asset, "usd"),
+                    &usd_market,
                     &sale.datetime,
                 )
-                .await?;
+                .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
 
                 let sale_revenue = amount_fulfilled * price_at_sale;
+                let usd_market = Market::new(&sale.asset, "usd");
                 consumed_ops.push(Purchase {
                     source: source.clone(),
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
                     cost: paid_amount_used * price,
-                    price: market::solve_price(
-                        &self.market_data,
-                        &Market::new(&sale.asset, "usd"),
-                        time,
-                    )
-                    .await?,
+                    price: market::solve_price(&self.market_data, &usd_market, time)
+                        .await?
+                        .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?,
                     paid_with: asset.to_string(),
                     paid_with_amount: paid_amount_used,
                     datetime: *time,
@@ -243,12 +244,13 @@ where
             }
         }
 
+        let usd_market = Market::new(&sale.asset, "usd");
         let sale_asset_price = market::solve_price(
             &self.market_data,
-            &Market::new(&sale.asset, "usd"),
+            &usd_market,
             &sale.datetime,
         )
-        .await?;
+        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
         let revenue = sale.amount * sale_asset_price;
         Ok(match (revenue, cost) {
             (r, c) if r >= c => MatchResult {
@@ -321,8 +323,8 @@ mod tests {
         async fn has_market(&self, market: &Market) -> Result<bool> {
             Ok(true)
         }
-        async fn proxy_markets_for(&self, market: &Market) -> Result<Option<Vec<Market>>> {
-            Ok(None)
+        async fn markets(&self) -> Result<Vec<Market>> {
+            Ok(vec![])
         }
         async fn price_at(&self, _market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
             let nums: Vec<_> = (1usize..10).map(|n| n as f64).collect();

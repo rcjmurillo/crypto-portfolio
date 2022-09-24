@@ -7,7 +7,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{convert::TryInto, time::Duration};
 use tokio::sync::Mutex;
 use tower::{
@@ -23,6 +23,7 @@ const API_HOST: &'static str = "api.coingecko.com";
 
 enum Api {
     CoinsList,
+    CoinsMarkets,
     CoinsMarketChartRange,
     SupportedVsCurrencies,
 }
@@ -31,6 +32,7 @@ impl AsRef<str> for Api {
     fn as_ref(&self) -> &str {
         match self {
             Self::CoinsList => "/api/v3/coins/list",
+            Self::CoinsMarkets => "/api/v3/coins/markets",
             Self::CoinsMarketChartRange => "/api/v3/coins/{}/market_chart/range",
             Self::SupportedVsCurrencies => "/api/v3/simple/supported_vs_currencies",
         }
@@ -107,29 +109,24 @@ impl<'a> Client<'a> {
 
         let symbol = symbol.to_lowercase();
 
+        // if there is an explicit mapping in the config file, that takes presedence
+        if let Some(id_mapping) = self.config.symbol_mappings.get(&symbol) {
+             return Ok(CoinInfo { id: id_mapping.clone(), symbol: symbol });
+        }
+
         let mut found = coins.into_iter().fold(vec![], |mut acc, c| {
             if c.symbol == symbol {
                 acc.push(c);
             }
             acc
         });
+
         if found.len() > 1 {
-            println!("found multiple: {:?}", found);
-            found
-                .into_iter()
-                .find(|c| {
-                    self.config
-                        .symbol_mappings
-                        .get(&symbol)
-                        .filter(|sid| *sid == &c.id)
-                        .is_some()
-                })
-                .ok_or(anyhow!("couldn't find symbol {}", symbol))
+            Err(anyhow!("multiple coins found for symbol {}: {:?}", symbol, found))
         } else {
-            println!("found a single one: {:?}", found);
             found
                 .pop()
-                .ok_or(anyhow!("couldn't find symbol {}", symbol))
+                .ok_or_else(|| anyhow!("couldn't find coin info for symbol {}", symbol))
         }
     }
 
@@ -160,6 +157,61 @@ impl<'a> Client<'a> {
         let coins: Vec<CoinInfo> = self.from_json(&resp)?;
 
         Ok(coins)
+    }
+
+    async fn fetch_coin_markets(&self) -> Result<Vec<Market>> {
+        #[derive(Deserialize)]
+        struct MarketResponse {
+            id: String,
+            symbol: String,
+            market_cap: f64,
+        }
+        let mut svc = self.api_service.lock().await;
+        let url = Api::CoinsMarkets.as_ref();
+
+        let mut markets = Vec::new();
+        let mut seen = HashSet::new();
+        let vs_currencies = ["usd", "eur", "btc", "eth", "bnb"];
+
+        for vs_coin in vs_currencies {
+            log::debug!("fetching markets for vs_currency={}", vs_coin);
+            let mut page = 0;
+            loop {
+                let mut query = Query::new();
+                query
+                    .cached_param("vs_currency", vs_coin)
+                    .cached_param("per_page", 250)
+                    .cached_param("order", "market_cap_desc")
+                    .cached_param("page", page);
+
+                let request = RequestBuilder::default()
+                    .url(Url::parse(&format!("https://{}", API_HOST))?.join(&url)?)
+                    .query_params(query)
+                    .cache_response(true)
+                    .build()?;
+
+                let resp = svc.call(request).await?;
+                let resp_markets: Vec<MarketResponse> = self.from_json(&resp)?;
+                if page == 5 || resp_markets.len() == 0 {
+                    break;
+                }
+                log::debug!(
+                    "got markets {} for vs_currency={}",
+                    resp_markets.len(),
+                    vs_coin
+                );
+                for m in resp_markets {
+                    let mkey = (m.id, vs_coin);
+                    if !seen.contains(&mkey) {
+                        markets.push(Market::new(m.symbol, vs_coin));
+                        seen.insert(mkey);
+                    }
+                }
+                page += 1;
+            }
+        }
+
+        Ok(markets)
     }
 
     async fn fetch_coin_market_chart_range(
@@ -215,52 +267,18 @@ impl MarketData for Client<'_> {
             && !market::is_fiat(&m.base.to_lowercase().as_str()))
     }
 
-    async fn proxy_markets_for(&self, m: &Market) -> Result<Option<Vec<Market>>> {
-        log::debug!("getting proxy markets for: {:?}", m);
-        let supported_vs_currencies = self.supported_vs_currencies().await?;
-
-        // case when the both symbols are currencies
-        match (
-            market::is_fiat(&m.base.to_lowercase().as_str()),
-            market::is_fiat(&m.quote.to_lowercase().as_str()),
-        ) {
-            (true, true) => {
-                return Ok(Some(vec![
-                    Market::new("btc", m.base.to_lowercase()),
-                    Market::new("btc", m.quote.to_lowercase()),
-                ]))
-            }
-            // a fiat currency shouldn't be used as base asset if the quote is a crypto asset
-            (true, false) => return Err(anyhow!("invalid market {}", m)),
-            (_, _) => (), // valid market, continue
-        }
-
-        // to keep this simple for now, this is going to use some big coins that
-        // must be in the supported vs currencies. Try with each one of them and stop
-        // when one of them is in the list.
-        let common_quote_symbols = vec!["usd", "btc", "eth"];
-        for quote_symbol in common_quote_symbols.iter() {
-            // just in case, this shouldn't happen
-            if *quote_symbol == m.quote {
-                continue;
-            }
-            if supported_vs_currencies.contains(&(*quote_symbol).to_string()) {
-                return Ok(Some(vec![
-                    Market::new(m.base.to_lowercase(), quote_symbol),
-                    Market::new(m.quote.to_lowercase(), quote_symbol),
-                ]));
-            }
-        }
-        Err(anyhow!(
-            "common quote symbols {:?} not present in supported vs currencies",
-            common_quote_symbols
-        ))
+    async fn markets(&self) -> Result<Vec<Market>> {
+        self.fetch_coin_markets().await
     }
 
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
         log::debug!("getting price for market: {:?}", market);
-        let base_coin_info = self.fetch_coin_info(&market.base).await?;
-        let quote_coin_info = self.fetch_coin_info(&market.quote).await?;
+        let base_coin_info = self
+            .fetch_coin_info(&market.base.to_ascii_lowercase())
+            .await?;
+        let quote_coin_info = self
+            .fetch_coin_info(&market.quote.to_ascii_lowercase())
+            .await?;
         let ts = time.timestamp().try_into()?;
         // the API provides hourly granularity if we request a range <= 90 days
         let bucket_size = 90 * 24 * 60 * 60; // seconds
@@ -275,6 +293,15 @@ impl MarketData for Client<'_> {
                 end_ts + 60 * 60,
             )
             .await?;
+
+        if prices.len() == 0 {
+            return Err(anyhow!(
+                "got empty response for market {} prices at {}",
+                market,
+                time
+            ));
+        }
+
         // find the index of the first price with timestamp greater than one we're looking for.
         // The price used will be the one right before this one.
         // note: the API expects the timestamps in seconds but the response includes
@@ -283,7 +310,10 @@ impl MarketData for Client<'_> {
         let index = prices
             .iter()
             .position(|p| p.timestamp > ts_ms)
-            .ok_or(anyhow!("couldn't find price in list of prices"))?;
+            .ok_or(anyhow!(
+                "couldn't find price for {} in response list of prices",
+                market
+            ))?;
         Ok(prices[index - 1].price)
     }
 }
