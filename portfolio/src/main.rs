@@ -10,7 +10,7 @@ mod reports;
 use std::{convert::TryInto, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use futures::future::join_all;
+use futures::{future::join_all, stream, StreamExt};
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
@@ -71,11 +71,11 @@ fn mk_fetchers(
         fetchers.push(("Binance Global", Box::new(binance_client)));
     }
 
-    // if let Some(conf) = config.binance_us.clone() {
-    //     let config_binance_us: Config = conf.try_into().unwrap();
-    //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-    //     fetchers.push(("Binance US", Box::new(binance_client_us)));
-    // }
+    if let Some(conf) = config.binance_us.clone() {
+        let config_binance_us: Config = conf.try_into().unwrap();
+        let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
+        fetchers.push(("Binance US", Box::new(binance_client_us)));
+    }
 
     if let Some(file_fetcher) = file_fetcher {
         fetchers.push(("Custom Operations", Box::new(file_fetcher)));
@@ -103,9 +103,13 @@ pub async fn main() -> Result<()> {
             let ops = get_operations()?
                 .into_iter()
                 .map(|o: DbOperation| o.try_into());
-            let coin_tracker = BalanceTracker::new(CoinGeckoClient::with_config(
+
+            let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
-            ));
+            );
+            cg.init().await?;
+
+            let coin_tracker = BalanceTracker::new(cg);
             let mut handles = Vec::new();
             for (i, op) in ops.into_iter().enumerate() {
                 coin_tracker.batch_operation(op?).await;
@@ -115,11 +119,21 @@ pub async fn main() -> Result<()> {
             }
             handles.push(coin_tracker.process_batch());
 
-            join_all(handles).await.into_iter().try_for_each(|op| {
-                op.map_err(|err| anyhow!(err).context("couldn't process batch"))
-            })?;
+            for batch_result in stream::iter(handles)
+                .buffer_unordered(1000)
+                .collect::<Vec<_>>()
+                .await
+            {
+                log::debug!(
+                    "batch processed {:?}",
+                    batch_result.map_err(|err| anyhow!(err).context("couldn't process batch"))
+                );
+            }
 
-            reports::asset_balances(&coin_tracker).await?;
+            let binance_client = BinanceFetcher::<RegionGlobal>::with_config(
+                config.binance.expect("missing binance config").try_into()?,
+            );
+            reports::asset_balances(&coin_tracker, binance_client).await?;
             println!();
         }
         PortfolioAction::Sync => {
@@ -137,9 +151,11 @@ pub async fn main() -> Result<()> {
             let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
             // let prices_fetcher =
             //     PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
-            let prices_fetcher = PricesFetcher::new(AssetPrices::new(
-                CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config")),
-            ));
+            let mut cg = CoinGeckoClient::with_config(
+                config.coingecko.as_ref().expect("missing coingecko config"),
+            );
+            cg.init().await?;
+            let prices_fetcher = PricesFetcher::new(AssetPrices::new(cg));
             let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations
@@ -162,11 +178,11 @@ pub async fn main() -> Result<()> {
             let ops_storage = Db;
             let ops = ops_storage.get_ops().await?;
 
-            let mut stream = OperationsStream::from_ops(
-                ops.clone(),
-                ConsumeStrategy::Fifo,
-                CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config")),
+            let mut cg = CoinGeckoClient::with_config(
+                config.coingecko.as_ref().expect("missing coingecko config"),
             );
+            cg.init().await?;
+            let mut stream = OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, cg);
 
             for op in ops {
                 if let Operation::Revenue {

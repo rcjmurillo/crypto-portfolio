@@ -32,6 +32,8 @@ fn read_file(path: &OsStr) -> std::result::Result<File, OsString> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExchangeConfig {
+    pub api_key: Option<String>,
+    pub secret_key: Option<String>,
     // all the markets to work with, only markets included here will
     // appear in the report.
     pub symbols: Option<Vec<String>>,
@@ -88,6 +90,8 @@ impl TryFrom<ExchangeConfig> for BinanceConfig {
                 .iter()
                 .map(|s| Market::try_from_str(&s))
                 .collect::<Result<Vec<Market>>>()?,
+            api_key: c.api_key.expect("missing api key env var"),
+            secret_key: c.secret_key.expect("missing secret key env var"),
         })
     }
 }

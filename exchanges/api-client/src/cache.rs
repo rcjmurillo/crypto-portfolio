@@ -35,7 +35,6 @@ where
             .unwrap_or(req.url.path().to_string());
 
         if let Some(value) = self.entries.read().await.get(&key) {
-            log::debug!("cache hit for {}", key);
             return Ok(value.clone());
         }
 

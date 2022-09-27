@@ -52,11 +52,21 @@ pub struct Credentials<Region> {
     region: PhantomData<Region>,
 }
 
+impl <Region> Credentials<Region> {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            api_key: config.api_key.clone(),
+            secret_key: config.secret_key.clone(),
+            region: PhantomData,
+        }
+    }
+}
+
 impl Credentials<RegionGlobal> {
     fn new() -> Self {
         Self {
-            api_key: env::var("BINANCE_API_KEY").unwrap(),
-            secret_key: env::var("BINANCE_API_SECRET").unwrap(),
+            api_key: env::var("BINANCE_API_KEY").expect("missing BINANCE_API_KEY env var"),
+            secret_key: env::var("BINANCE_API_SECRET").expect("missing BINANCE_API_SECRET env var"),
             region: PhantomData,
         }
     }
@@ -268,6 +278,8 @@ impl EndpointServices<RegionGlobal> {
 
 #[derive(Clone)]
 pub struct Config {
+    pub api_key: String,
+    pub secret_key: String,
     pub start_date: NaiveDate,
     pub symbols: Vec<Market>,
 }
@@ -277,6 +289,8 @@ impl Config {
         Self {
             start_date: Utc::now().naive_utc().date(),
             symbols: Vec::new(),
+            api_key: "".to_string(),
+            secret_key: "".to_string(),
         }
     }
 }
@@ -625,8 +639,8 @@ impl BinanceFetcher<RegionGlobal> {
     pub fn with_config(config: Config) -> Self {
         Self {
             api_client: ApiClient::new(),
+            credentials: Credentials::from_config(&config),
             config: Some(config),
-            credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
             endpoint_services: EndpointServices::<RegionGlobal>::new(),
         }
@@ -1028,8 +1042,8 @@ impl BinanceFetcher<RegionUs> {
     pub fn with_config(config: Config) -> Self {
         Self {
             api_client: ApiClient::new(),
+            credentials: Credentials::from_config(&config),
             config: Some(config),
-            credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
             endpoint_services: EndpointServices::<RegionUs>::new(),
         }
@@ -1056,11 +1070,7 @@ impl BinanceFetcher<RegionUs> {
                 .cached_param("fiatCurrency", "USD")
                 .cached_param("startTime", curr_start.timestamp_millis())
                 .cached_param("endTime", end.timestamp_millis())
-                .lazy_param("timestamp", move || {
-                    let now = now.timestamp_millis().to_string();
-                    println!("generating timestamp: {}", now);
-                    now
-                })
+                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
                 .cached_param("recvWindow", 60000);
             self.sign_request(&mut query);
 

@@ -8,8 +8,10 @@ use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize};
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
+use std::sync::Arc;
 use std::{convert::TryInto, time::Duration};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tower::{
     limit::{rate::Rate, RateLimit},
     Service,
@@ -76,6 +78,7 @@ pub struct Config {
 pub struct Client<'a> {
     api_service: Mutex<Cache<RateLimit<ApiClient>>>,
     config: &'a Config,
+    markets: Option<Vec<Market>>,
 }
 
 impl<'a> Client<'a> {
@@ -86,7 +89,18 @@ impl<'a> Client<'a> {
                 Rate::new(REQUESTS_PER_PERIOD, Duration::from_secs(3)),
             ))),
             config,
+            markets: None,
         }
+    }
+
+    pub async fn init(&mut self) -> Result<()> {
+        self.fetch_markets().await?;
+        Ok(())
+    }
+
+    pub async fn fetch_markets(&mut self) -> Result<()> {
+        self.markets = Some(self.fetch_coin_markets().await?);
+        Ok(())
     }
 
     async fn fetch_coin_info(&self, symbol: &str) -> Result<CoinInfo> {
@@ -111,7 +125,10 @@ impl<'a> Client<'a> {
 
         // if there is an explicit mapping in the config file, that takes presedence
         if let Some(id_mapping) = self.config.symbol_mappings.get(&symbol) {
-             return Ok(CoinInfo { id: id_mapping.clone(), symbol: symbol });
+            return Ok(CoinInfo {
+                id: id_mapping.clone(),
+                symbol: symbol,
+            });
         }
 
         let mut found = coins.into_iter().fold(vec![], |mut acc, c| {
@@ -122,7 +139,11 @@ impl<'a> Client<'a> {
         });
 
         if found.len() > 1 {
-            Err(anyhow!("multiple coins found for symbol {}: {:?}", symbol, found))
+            Err(anyhow!(
+                "multiple coins found for symbol {}: {:?}",
+                symbol,
+                found
+            ))
         } else {
             found
                 .pop()
@@ -164,12 +185,12 @@ impl<'a> Client<'a> {
         struct MarketResponse {
             id: String,
             symbol: String,
-            market_cap: f64,
         }
         let mut svc = self.api_service.lock().await;
         let url = Api::CoinsMarkets.as_ref();
 
         let mut markets = Vec::new();
+
         let mut seen = HashSet::new();
         let vs_currencies = ["usd", "eur", "btc", "eth", "bnb"];
 
@@ -259,24 +280,26 @@ impl<'a> Client<'a> {
 #[async_trait]
 impl MarketData for Client<'_> {
     async fn has_market(&self, m: &Market) -> Result<bool> {
-        log::debug!("checking if market exists: {:?}", m);
         let supported_vs_currencies = self.supported_vs_currencies().await?;
         // per tests with the API, for any symbol that's in the supported vs currencies, it's possible
         // to get a market with any other symbol as base (except currencies) and that symbol as quote/vs_currency.
         Ok(supported_vs_currencies.contains(&m.quote.to_lowercase())
             && !market::is_fiat(&m.base.to_lowercase().as_str()))
+        // Ok(supported_vs_currencies.contains(&m.quote.to_lowercase()))
     }
 
     fn normalize(&self, market: &Market) -> Result<Market> {
-        Ok(Market::new(market.base.to_ascii_lowercase(), market.quote.to_ascii_lowercase()))
+        Ok(Market::new(
+            market.base.to_ascii_lowercase(),
+            market.quote.to_ascii_lowercase(),
+        ))
     }
 
     async fn markets(&self) -> Result<Vec<Market>> {
-        self.fetch_coin_markets().await
+        Ok(self.markets.clone().unwrap())
     }
 
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {
-        log::debug!("getting price for market: {:?}", market);
         let base_coin_info = self
             .fetch_coin_info(&market.base.to_ascii_lowercase())
             .await?;
@@ -291,10 +314,8 @@ impl MarketData for Client<'_> {
             .fetch_coin_market_chart_range(
                 &base_coin_info.id,
                 &quote_coin_info.symbol,
-                // given the API uses an hourly granularity, substract and add an hour to
-                // the range boundaries to make sure the timestamp we're looking for is included.
-                start_ts - 60 * 60,
-                end_ts + 60 * 60,
+                start_ts,
+                end_ts,
             )
             .await?;
 
@@ -311,14 +332,17 @@ impl MarketData for Client<'_> {
         // note: the API expects the timestamps in seconds but the response includes
         // timestamps in milliseconds.
         let ts_ms = time.timestamp_millis().try_into()?;
-        let index = prices
+        prices
             .iter()
-            .position(|p| p.timestamp > ts_ms)
+            .find(|p| p.timestamp.abs_diff(ts_ms) <= 60 * 60 * 1000)
+            .map(|p| p.price)
             .ok_or(anyhow!(
-                "couldn't find price for {} in response list of prices",
-                market
-            ))?;
-        Ok(prices[index - 1].price)
+                "couldn't find price for {} for {} in response list of prices [{:?}, ..., {:?}]",
+                market,
+                ts_ms,
+                prices.first(),
+                prices.last(),
+            ))
     }
 }
 

@@ -7,9 +7,7 @@ use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
 use exchange::operations::BalanceTracker;
 use market::MarketData;
 
-pub async fn asset_balances<T: MarketData>(balance_tracker: &BalanceTracker<T>) -> Result<()> {
-    let binance_client = BinanceFetcher::<RegionGlobal>::new();
-
+pub async fn asset_balances<T: MarketData>(balance_tracker: &BalanceTracker<T>, binance_client: BinanceFetcher<RegionGlobal>) -> Result<()> {
     let mut coin_balances = HashMap::<String, f64>::new();
 
     let mut all_assets_usd_unrealized_position = 0.0;

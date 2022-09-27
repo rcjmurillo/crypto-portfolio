@@ -187,8 +187,6 @@ async fn make_request(req: Request) -> Result<Response> {
         None => req.url.to_string(),
     };
 
-    log::debug!("full url: {}", full_url);
-
     let mut r = client.get(&full_url);
     if let Some(h) = req.headers {
         r = r.headers(h);
@@ -196,10 +194,7 @@ async fn make_request(req: Request) -> Result<Response> {
     let resp = r.send().await;
 
     match validate_response(resp?).await {
-        Ok(resp) => {
-            log::debug!("successful response");
-            Ok(Response{bytes: resp.bytes().await?, query_string: query_str})
-        }
+        Ok(resp) => Ok(Response{bytes: resp.bytes().await?, query_string: query_str}),
         Err(err) => {
             log::debug!("response error: {:?}", err);
             Err(err)

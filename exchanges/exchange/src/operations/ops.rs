@@ -182,26 +182,22 @@ impl<T: MarketData> BalanceTracker<T> {
             Operation::BalanceIncrease { asset, amount, .. } => {
                 let span = span!(Level::DEBUG, "tracking balance increase");
                 let _enter = span.enter();
-                debug!("start");
                 assert!(
                     *amount >= 0.0,
                     "balance increase operation amount can't be negative"
                 );
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.amount += amount;
-                debug!("end");
             }
             Operation::BalanceDecrease { asset, amount, .. } => {
                 let span = span!(Level::DEBUG, "tracking balance decrease");
                 let _enter = span.enter();
-                debug!("start");
                 assert!(
                     *amount >= 0.0,
                     "balance decrease operation amount can't be negative"
                 );
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.amount -= amount;
-                debug!("end");
             }
             Operation::Cost {
                 for_asset,
@@ -212,14 +208,12 @@ impl<T: MarketData> BalanceTracker<T> {
             } => {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
-                debug!("start");
                 let usd_market = Market::new(asset, "USD");
                 let usd_price =
                     market::solve_price(&self.market_data, &usd_market, &time)
                         .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
-                debug!("end")
             }
             Operation::Revenue {
                 asset,
@@ -229,14 +223,12 @@ impl<T: MarketData> BalanceTracker<T> {
             } => {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
-                debug!("start");
                 let usd_market = Market::new(asset, "USD");
                 let usd_price =
                     market::solve_price(&self.market_data, &usd_market, &time)
                         .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
-                debug!("end");
             }
         }
         Ok(())
