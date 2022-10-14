@@ -8,16 +8,14 @@ use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize};
 use std::collections::{HashMap, HashSet};
-use std::ops::Deref;
-use std::sync::Arc;
 use std::{convert::TryInto, time::Duration};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tower::{
     limit::{rate::Rate, RateLimit},
     Service,
 };
 
-use api_client::{ApiClient, Cache, Query, RequestBuilder};
+use api_client::{ApiClient, Cache, Query, RedisCache, RequestBuilder};
 use market::{Market, MarketData};
 
 const REQUESTS_PER_PERIOD: u64 = 1;
@@ -76,7 +74,7 @@ pub struct Config {
 }
 
 pub struct Client<'a> {
-    api_service: Mutex<Cache<RateLimit<ApiClient>>>,
+    api_service: Mutex<Cache<RateLimit<ApiClient>, RedisCache>>,
     config: &'a Config,
     markets: Option<Vec<Market>>,
 }
@@ -84,10 +82,13 @@ pub struct Client<'a> {
 impl<'a> Client<'a> {
     pub fn with_config(config: &'a Config) -> Self {
         Self {
-            api_service: Mutex::new(Cache::new(RateLimit::new(
-                ApiClient::new(),
-                Rate::new(REQUESTS_PER_PERIOD, Duration::from_secs(3)),
-            ))),
+            api_service: Mutex::new(Cache::new(
+                RateLimit::new(
+                    ApiClient::new(),
+                    Rate::new(REQUESTS_PER_PERIOD, Duration::from_secs(3)),
+                ),
+                RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
+            )),
             config,
             markets: None,
         }
@@ -162,6 +163,7 @@ impl<'a> Client<'a> {
             .cache_response(true)
             .build()?;
 
+        svc.await_until_ready(&request).await?;
         let resp = svc.call(request).await?;
         self.from_json(&resp)
     }
@@ -174,6 +176,7 @@ impl<'a> Client<'a> {
             .cache_response(true)
             .build()?;
 
+        svc.await_until_ready(&request).await?;
         let resp = svc.call(request).await?;
         let coins: Vec<CoinInfo> = self.from_json(&resp)?;
 
@@ -211,6 +214,7 @@ impl<'a> Client<'a> {
                     .cache_response(true)
                     .build()?;
 
+                svc.await_until_ready(&request).await?;
                 let resp = svc.call(request).await?;
                 let resp_markets: Vec<MarketResponse> = self.from_json(&resp)?;
                 if page == 5 || resp_markets.len() == 0 {
@@ -262,6 +266,7 @@ impl<'a> Client<'a> {
             prices: Vec<CoinPrice>,
         }
 
+        svc.await_until_ready(&request).await?;
         let resp = svc.call(request).await?;
         let CoinPrices { prices } = self.from_json(&resp)?;
 
@@ -272,7 +277,7 @@ impl<'a> Client<'a> {
         match serde_json::from_slice(&resp_bytes.clone()) {
             Ok(val) => Ok(val),
             Err(err) => Err(anyhow!(err.to_string())
-                .context(format!("couldn't parse: {:?}", resp_bytes.clone()))),
+                .context(format!("couldn't parse coingecko API response: {:?}", resp_bytes.clone()))),
         }
     }
 }
@@ -296,7 +301,7 @@ impl MarketData for Client<'_> {
     }
 
     async fn markets(&self) -> Result<Vec<Market>> {
-        Ok(self.markets.clone().unwrap())
+        Ok(self.markets.clone().expect("missing markets"))
     }
 
     async fn price_at(&self, market: &Market, time: &DateTime<Utc>) -> Result<f64> {

@@ -25,7 +25,7 @@ pub struct QueryString {
     pub cacheable_query: String,
 }
 
-/// Allows to manipulate a query string. It's also possible to add lazy paramaters which delay 
+/// Allows to manipulate a query string. It's also possible to add lazy paramaters which delay
 /// the evaluation of the parameter value until just before the request is sent.
 #[derive(Clone)]
 pub struct Query {
@@ -89,6 +89,7 @@ impl Query {
 
     // Materialize the query string, it'll run any lazy parameter clousures.
     pub fn materialize(&self) -> QueryString {
+        // TODO: use form_urlencoded to produce the final strings
         let all_params: Vec<&str> = self
             .params
             .read()
@@ -194,9 +195,12 @@ async fn make_request(req: Request) -> Result<Response> {
     let resp = r.send().await;
 
     match validate_response(resp?).await {
-        Ok(resp) => Ok(Response{bytes: resp.bytes().await?, query_string: query_str}),
+        Ok(resp) => Ok(Response {
+            bytes: resp.bytes().await?,
+            query_string: query_str,
+        }),
         Err(err) => {
-            log::debug!("response error: {:?}", err);
+            log::debug!("response error for {:?}: {:?}", full_url, err);
             Err(err)
         }
     }
@@ -226,8 +230,7 @@ impl<'a> ApiClient {
 
         // fixme: accept Request once all usages have been replaced
         let mut req_builder = RequestBuilder::default();
-        let mut req_builder = req_builder
-            .url(Url::parse(endpoint)?);
+        let mut req_builder = req_builder.url(Url::parse(endpoint)?);
         if query_params.is_some() {
             req_builder = req_builder.query_params(query_params.unwrap());
         }
@@ -271,6 +274,15 @@ pub struct Request {
     #[builder(setter(strip_option), default)]
     pub headers: Option<HeaderMap>,
     pub cache_response: bool,
+}
+
+impl Request {
+    pub fn cache_key(&self) -> String {
+        self.query_params
+            .as_ref()
+            .map(|q| format!("{}?{}", self.url.as_str(), q.materialize().cacheable_query))
+            .unwrap_or(self.url.to_string())
+    }
 }
 
 pub struct Response {

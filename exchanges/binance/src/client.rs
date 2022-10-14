@@ -1,6 +1,6 @@
-use std::{collections::HashMap, env, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Context, Error, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -24,7 +24,8 @@ use tower::{
 };
 
 use api_client::{
-    errors::Error as ClientError, ApiClient, Cache, Query, Request, RequestBuilder, Response,
+    errors::Error as ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder,
+    Response,
 };
 use exchange::Candle;
 use market::{Market, MarketData};
@@ -52,7 +53,7 @@ pub struct Credentials<Region> {
     region: PhantomData<Region>,
 }
 
-impl <Region> Credentials<Region> {
+impl<Region> Credentials<Region> {
     fn from_config(config: &Config) -> Self {
         Self {
             api_key: config.api_key.clone(),
@@ -106,8 +107,8 @@ impl AsRef<str> for ApiUs {
             Self::Klines => "/api/v3/klines",
             Self::Prices => "/api/v3/ticker/price",
             Self::ExchangeInfo => "/api/v3/exchangeInfo",
-            Self::Deposits => "/wapi/v3/depositHistory.html",
-            Self::Withdraws => "/wapi/v3/withdrawHistory.html",
+            Self::Deposits => "/sapi/v1/capital/deposit/hisrec",
+            Self::Withdraws => "/sapi/v1/capital/withdraw/history",
             Self::FiatDeposits => "/sapi/v1/fiatpayment/query/deposit/history",
             Self::FiatWithdraws => "/sapi/v1/fiatpayment/query/withdraw/history",
         }
@@ -190,11 +191,19 @@ impl From<&ApiGlobal> for Rate {
 }
 
 macro_rules! endpoint_services {
-    ($client:expr, $($endpoint:expr),+) => {{
+    ($client:expr, $cache_storage:expr, $($endpoint:expr),+) => {{
         let retry_layer = RetryLayer::new(RetryErrorResponse(5));
         let mut services = HashMap::new();
         $(
-            services.insert($endpoint.to_string(), Mutex::new(Cache::new(RateLimit::new(retry_layer.layer($client), $endpoint.to_rate()))));
+            services.insert(
+                $endpoint.to_string(),
+                Mutex::new(
+                    Cache::new(
+                        RateLimit::new(retry_layer.layer($client), $endpoint.to_rate()),
+                        $cache_storage
+                    )
+                )
+            );
         )+
         services
     }};
@@ -202,13 +211,22 @@ macro_rules! endpoint_services {
 
 struct EndpointServices<Region> {
     client: ApiClient,
-    services: HashMap<String, Mutex<Cache<RateLimit<Retry<RetryErrorResponse, ApiClient>>>>>,
+    services:
+        HashMap<String, Mutex<Cache<RateLimit<Retry<RetryErrorResponse, ApiClient>>, RedisCache>>>,
     region: PhantomData<Region>,
 }
 
 impl<Region> EndpointServices<Region> {
-    pub async fn route(&self, request: Request) -> Result<Arc<Bytes>> {
-        log::debug!("routing url: {}", request.url);
+    pub async fn route(&self, request: Request) -> Result<Bytes> {
+        log::debug!(
+            "routing url: {}?{}",
+            request.url,
+            request
+                .query_params
+                .as_ref()
+                .map(|qp| qp.materialize().full_query)
+                .unwrap_or_default()
+        );
         let mut svc = self
             .services
             .get(request.url.path())
@@ -216,7 +234,7 @@ impl<Region> EndpointServices<Region> {
             .lock()
             .await;
 
-        // await until the service is ready
+        svc.await_until_ready(&request).await?;
         svc.call(request).await
     }
 }
@@ -233,6 +251,7 @@ impl EndpointServices<RegionUs> {
 
         s.services = endpoint_services![
             s.client.clone(),
+            RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -258,6 +277,7 @@ impl EndpointServices<RegionGlobal> {
 
         s.services = endpoint_services![
             s.client.clone(),
+            RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -315,7 +335,7 @@ impl Policy<Request, Response, Error> for RetryErrorResponse {
                     match client_error.into() {
                         ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
                             log::debug!(
-                                "it took to long to send the request for {} to, retrying",
+                                "it took too long to send the request for {} to, retrying",
                                 req.url
                             );
                             if self.0 > 0 {
@@ -367,8 +387,11 @@ impl<'a, Region> BinanceFetcher<Region> {
     async fn from_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
         match serde_json::from_slice(&resp_bytes.clone()) {
             Ok(val) => Ok(val),
-            Err(err) => Err(anyhow!(err.to_string())
-                .context(format!("couldn't parse: {:?}", resp_bytes.clone()))),
+            Err(err) => Err(anyhow!(err.to_string()).context(format!(
+                "couldn't parse binance API response: {:?} {}",
+                resp_bytes.clone(),
+                std::any::type_name::<T>()
+            ))),
         }
     }
 
@@ -406,8 +429,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             .build()?;
         let resp = self.endpoint_services.route(req).await?;
 
-        let EndpointResponse { symbols } =
-            self.from_json::<EndpointResponse>(resp.as_ref()).await?;
+        let EndpointResponse { symbols } = self.from_json::<EndpointResponse>(&resp).await?;
         Ok(symbols)
     }
 
@@ -417,7 +439,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             .cache_response(true)
             .build()?;
         let resp = self.endpoint_services.route(req).await?;
-        self.from_json(resp.as_ref()).await
+        self.from_json(&resp).await
     }
 
     pub async fn fetch_price_at(
@@ -446,7 +468,7 @@ impl<'a, Region> BinanceFetcher<Region> {
 
         let resp = self.endpoint_services.route(req).await?;
 
-        let klines: Vec<Vec<Value>> = self.from_json(resp.as_ref()).await?;
+        let klines: Vec<Vec<Value>> = self.from_json(&resp).await?;
         let s = &klines[0];
         let high = s[2].as_str().unwrap().parse::<f64>().unwrap();
         let low = s[3].as_str().unwrap().parse::<f64>().unwrap();
@@ -520,7 +542,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         {
             match resp {
                 Ok(resp) => {
-                    let klines = self.from_json::<Vec<Vec<Value>>>(resp.as_ref()).await?;
+                    let klines = self.from_json::<Vec<Vec<Value>>>(&resp).await?;
                     all_prices.extend(klines.iter().map(|x| Candle {
                         open_time: x[0].as_u64().unwrap(),
                         close_time: x[6].as_u64().unwrap(),
@@ -580,7 +602,7 @@ impl<'a, Region> BinanceFetcher<Region> {
 
             match resp {
                 Ok(resp) => {
-                    let mut binance_trades = self.from_json::<Vec<Trade>>(resp.as_ref()).await?;
+                    let mut binance_trades = self.from_json::<Vec<Trade>>(&resp).await?;
                     binance_trades.sort_by_key(|k| k.time);
                     let fetch_more = binance_trades.len() >= 1000;
                     log::debug!(
@@ -690,7 +712,7 @@ impl BinanceFetcher<RegionGlobal> {
 
                 match resp {
                     Ok(resp) => {
-                        let Response { data } = self.from_json(&resp.as_ref()).await?;
+                        let Response { data } = self.from_json(&resp).await.context("query")?;
                         if data.len() > 0 {
                             orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
                             current_page += 1;
@@ -738,7 +760,7 @@ impl BinanceFetcher<RegionGlobal> {
 
         let resp = self.endpoint_services.route(req).await?;
 
-        self.from_json::<T>(resp.as_ref()).await
+        self.from_json::<T>(&resp).await
     }
 
     async fn fetch_margin_pairs(&self, endpoint: &str) -> Result<Vec<Market>> {
@@ -873,7 +895,7 @@ impl BinanceFetcher<RegionGlobal> {
 
                     let resp = self.endpoint_services.route(req).await?;
 
-                    let txns_resp = self.from_json::<Response<T>>(resp.as_ref()).await;
+                    let txns_resp = self.from_json::<Response<T>>(&resp).await;
                     match txns_resp {
                         Ok(result_txns) => {
                             txns.extend(result_txns.rows);
@@ -978,7 +1000,7 @@ impl BinanceFetcher<RegionGlobal> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let deposit_list: Vec<Deposit> = self.from_json(resp.as_ref()).await?;
+            let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
             deposits.extend(deposit_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1016,7 +1038,7 @@ impl BinanceFetcher<RegionGlobal> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let withdraw_list: Vec<Withdraw> = self.from_json(resp.as_ref()).await?;
+            let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
             withdraws.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1085,7 +1107,7 @@ impl BinanceFetcher<RegionUs> {
 
             let Response {
                 asset_log_record_list,
-            } = self.from_json(&resp.as_ref()).await?;
+            } = self.from_json(&&resp).await?;
             orders.extend(asset_log_record_list.into_iter().filter_map(|x| {
                 if x.status == "Successful" {
                     Some(x)
@@ -1113,12 +1135,6 @@ impl BinanceFetcher<RegionUs> {
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct DepositResponse {
-            deposit_list: Vec<Deposit>,
-        }
-
         let mut deposits = Vec::<Deposit>::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1146,7 +1162,7 @@ impl BinanceFetcher<RegionUs> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let DepositResponse { deposit_list } = self.from_json(resp.as_ref()).await?;
+            let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
             deposits.extend(deposit_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1159,12 +1175,6 @@ impl BinanceFetcher<RegionUs> {
 
     pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
         let mut withdraws = Vec::<Withdraw>::new();
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Response {
-            withdraw_list: Vec<Withdraw>,
-        }
 
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
@@ -1190,7 +1200,7 @@ impl BinanceFetcher<RegionUs> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let Response { withdraw_list } = self.from_json(resp.as_ref()).await?;
+            let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
             withdraws.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1215,7 +1225,10 @@ impl MarketData for BinanceFetcher<RegionGlobal> {
     }
 
     fn normalize(&self, market: &Market) -> Result<Market> {
-        Ok(Market::new(market.base.to_ascii_uppercase(), market.quote.to_ascii_uppercase()))
+        Ok(Market::new(
+            market.base.to_ascii_uppercase(),
+            market.quote.to_ascii_uppercase(),
+        ))
     }
 
     async fn markets(&self) -> Result<Vec<Market>> {
