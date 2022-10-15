@@ -36,11 +36,6 @@ where
         }
     }
 
-    /// Check if the cache already contains a response for the provided request
-    // pub async fn check(&self, req: &Request) -> Result<bool> {
-    //     Ok(req.cache_response && self.storage.read().await.exists(&req.cache_key()).await?)
-    // }
-
     /// Check if the cache already contains a response for the provided request, if so
     /// return immediately, otherwise, await until the inner service is ready.
     pub async fn await_until_ready(&self, req: &Request) -> Result<()> {
