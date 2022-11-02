@@ -1,10 +1,10 @@
-use std::{collections::HashMap, env, hash::Hash, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, env, marker::PhantomData, sync::Arc};
 
 use anyhow::{anyhow, Context, Error, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
@@ -12,7 +12,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Url,
 };
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use tokio::sync::Mutex;
@@ -27,7 +27,10 @@ use api_client::{
     errors::Error as ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder,
     Response,
 };
-use exchange::Candle;
+use exchange::{
+    operations::storage::{Record, Redis as RedisStorage},
+    Candle,
+};
 use market::{Market, MarketData};
 
 use crate::{
@@ -365,6 +368,7 @@ pub struct BinanceFetcher<Region> {
     pub api_client: ApiClient,
     pub credentials: Credentials<Region>,
     pub domain: &'static str,
+    storage: RedisStorage,
 }
 
 impl<'a, Region> BinanceFetcher<Region> {
@@ -572,8 +576,16 @@ impl<'a, Region> BinanceFetcher<Region> {
         endpoint: &str,
         extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
-        let mut trades = Vec::<Trade>::new();
-        let mut last_id: u64 = 0;
+        // todo: send this as param
+        let storage_key = format!("{}.binance.trade.[{}]", self.domain, endpoint);
+
+        let trades: Vec<Trade> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::new());
+        let mut new_trades = Vec::new();
+        let mut last_id = trades.last().map(|t| t.id + 1).unwrap_or(0);
 
         let mut query = Query::new();
         query
@@ -617,27 +629,31 @@ impl<'a, Region> BinanceFetcher<Region> {
                         log::debug!("last_id updated to {}", last_id);
                     };
                     for mut t in binance_trades.into_iter() {
-                        t.base_asset = symbol.base.clone();
-                        t.quote_asset = symbol.quote.clone();
-                        trades.push(t);
+                        t.base_asset = Some(symbol.base.clone());
+                        t.quote_asset = Some(symbol.quote.clone());
+                        new_trades.push(t);
                     }
                     if !fetch_more {
                         break;
                     }
                 }
-                Err(err) => match err.downcast::<ClientError>() {
-                    Ok(client_error) => {
-                        return Err(anyhow!(client_error).context(format!(
-                            "couldn't fetch trades from {}{:?} for symbol: {}",
-                            endpoint,
-                            qstr,
-                            symbol.join("")
-                        )));
-                    }
-                    Err(err) => return Err(err),
-                },
+                Err(err) => {
+                    let client_error = err.downcast::<ClientError>()?;
+                    return Err(anyhow!(client_error).context(format!(
+                        "couldn't fetch trades from {}{:?} for symbol: {}",
+                        endpoint,
+                        qstr,
+                        symbol.join("")
+                    )));
+                }
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_trades)
+            .await?;
+        let mut trades = trades;
+        trades.extend(new_trades);
         Ok(trades)
     }
 
@@ -655,6 +671,7 @@ impl BinanceFetcher<RegionGlobal> {
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
             api_client: ApiClient::new(),
+            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -665,6 +682,7 @@ impl BinanceFetcher<RegionGlobal> {
             config: Some(config),
             domain: API_DOMAIN_GLOBAL,
             endpoint_services: EndpointServices::<RegionGlobal>::new(),
+            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -675,10 +693,20 @@ impl BinanceFetcher<RegionGlobal> {
             data: Vec<FiatOrder>,
         }
 
-        let mut orders: Vec<FiatOrder> = Vec::new();
+        let storage_key = format!("{}.binance.fiat_orders.{}", self.domain, tx_type);
 
+        let orders: Vec<FiatOrder> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::new());
+        let mut new_orders = Vec::new();
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = orders
+            .last()
+            .map(|x| x.create_time.naive_utc())
+            .unwrap_or(self.data_start_date().and_hms(0, 0, 0));
+
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
@@ -714,7 +742,8 @@ impl BinanceFetcher<RegionGlobal> {
                     Ok(resp) => {
                         let Response { data } = self.from_json(&resp).await.context("query")?;
                         if data.len() > 0 {
-                            orders.extend(data.into_iter().filter(|x| x.status == "Successful"));
+                            new_orders
+                                .extend(data.into_iter().filter(|x| x.status == "Successful"));
                             current_page += 1;
                         } else {
                             break;
@@ -730,6 +759,13 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
+        self.storage
+            .insert_records(&storage_key, &new_orders)
+            .await?;
+
+        let mut orders = orders;
+        orders.extend(new_orders);
+
         Ok(orders)
     }
 
@@ -741,7 +777,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_fiat_orders("1").await
     }
 
-    /// Fetch from endpoint with not params and deserialize to the specified type
+    /// Fetch from endpoint with no params and deserialize to the specified type
     async fn fetch_from_endpoint<T: DeserializeOwned>(&self, endpoint: &str) -> Result<T> {
         let mut query = Query::new();
         query
@@ -837,29 +873,45 @@ impl BinanceFetcher<RegionGlobal> {
         Ok(trades)
     }
 
-    pub async fn fetch_margin_transactions<T: DeserializeOwned>(
+    pub async fn fetch_margin_transactions<T>(
         &self,
         asset: &String,
         isolated_symbol: Option<&Market>,
         endpoint: &str,
-    ) -> Result<Vec<T>> {
+    ) -> Result<Vec<T>>
+    where
+        T: Serialize + DeserializeOwned + Record<Id = u64>,
+    {
         #[derive(Deserialize)]
         struct Response<U> {
             rows: Vec<U>,
             total: u16,
         }
 
-        let txns = Vec::<T>::new();
+        let storage_key = format!("{}.binance.margin_transactions.[{}]", self.domain, endpoint);
+        let txns: Vec<T> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<T>::new());
+        let mut new_txns = Vec::new();
 
         let now = Utc::now().naive_utc();
-        let start = self.data_start_date().and_hms(0, 0, 0);
+        let start = txns
+            .last()
+            .map(|tx| tx.datetime().naive_utc() + Duration::milliseconds(1))
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
         let archived_cutoff = now - Duration::days(30 * 6);
         let archived_cutoff = archived_cutoff.date().and_hms_micro(23, 59, 59, 99999);
         // ranges to query for archived/recent trades
-        let ranges = [
-            (start, archived_cutoff, true),
-            (archived_cutoff + Duration::milliseconds(1), now, false),
-        ];
+        let ranges = if start < archived_cutoff {
+            vec![
+                (start, archived_cutoff, true),
+                (archived_cutoff + Duration::milliseconds(1), now, false),
+            ]
+        } else {
+            vec![(start, now, false)]
+        };
 
         for (rstart, rend, archived) in ranges {
             let mut curr_start = rstart;
@@ -869,7 +921,6 @@ impl BinanceFetcher<RegionGlobal> {
                 let curr_end = std::cmp::min(curr_start + Duration::days(89), rend); // inclusive
                 let mut current_page: usize = 1;
 
-                let mut txns = Vec::<T>::new();
                 loop {
                     let mut query = Query::new();
                     query.cached_param("asset", &asset);
@@ -898,7 +949,7 @@ impl BinanceFetcher<RegionGlobal> {
                     let txns_resp = self.from_json::<Response<T>>(&resp).await;
                     match txns_resp {
                         Ok(result_txns) => {
-                            txns.extend(result_txns.rows);
+                            new_txns.extend(result_txns.rows);
                             if result_txns.total >= 100 {
                                 current_page += 1;
                             } else {
@@ -914,7 +965,7 @@ impl BinanceFetcher<RegionGlobal> {
                                         // Even though the margin pairs are verified above, sometimes
                                         // the data returned by the exchange is not accurate.
                                         ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
-                                            log::debug!(
+                                            log::warn!(
                                                 "ignoring asset {} for margin trades isolated_symbol={:?}",
                                                 asset,
                                                 isolated_symbol.and_then(|a| Some(a.join(""))).unwrap_or_else(|| "".to_string())
@@ -922,7 +973,7 @@ impl BinanceFetcher<RegionGlobal> {
                                             break;
                                         }
                                         ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
-                                            log::debug!(
+                                            log::error!(
                                                 "it took to long to send the request for asset={} isolated_symbol={}, retrying",
                                                 asset,
                                                 isolated_symbol.and_then(|a| Some(a.join(""))).unwrap_or_else(|| "".to_string())
@@ -930,13 +981,13 @@ impl BinanceFetcher<RegionGlobal> {
                                             continue;
                                         }
                                         err => {
-                                            log::debug!("err: {:?}", err);
+                                            log::error!("err: {:?}", err);
                                             return Err(anyhow!(err));
                                         }
                                     }
                                 }
                                 Err(err) => {
-                                    log::debug!("err: {:?}", err);
+                                    log::error!("err: {:?}", err);
                                     return Err(err);
                                 }
                             }
@@ -951,6 +1002,10 @@ impl BinanceFetcher<RegionGlobal> {
                 }
             }
         }
+
+        self.storage.insert_records(&storage_key, &txns).await?;
+        let mut txns = txns;
+        txns.extend(new_txns);
 
         Ok(txns)
     }
@@ -974,10 +1029,20 @@ impl BinanceFetcher<RegionGlobal> {
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
-        let mut deposits = Vec::<Deposit>::new();
+        let endpoint = ApiGlobal::Deposits.to_string();
+        let storage_key = format!("binance.crypto_deposits[d={},e={}]", self.domain, endpoint);
+        let mut deposits: Vec<Deposit> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<Deposit>::new());
+        let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = deposits
+            .last()
+            .map(|d| (d.insert_time + Duration::milliseconds(1)).naive_utc())
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows max 90 days between start and end
@@ -992,7 +1057,7 @@ impl BinanceFetcher<RegionGlobal> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(Url::parse(self.domain)?.join(ApiGlobal::Deposits.to_string().as_str())?)
+                .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1001,21 +1066,41 @@ impl BinanceFetcher<RegionGlobal> {
             let resp = self.endpoint_services.route(req).await?;
 
             let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
-            deposits.extend(deposit_list);
+            new_deposits.extend(deposit_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_deposits)
+            .await?;
+        deposits.extend(new_deposits);
+
         Ok(deposits)
     }
 
     pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
-        let mut withdraws = Vec::<Withdraw>::new();
+        let endpoint = ApiGlobal::Withdraws.to_string();
+        let storage_key = format!(
+            "binance.crypto_withdrawals[d={},e={}]",
+            self.domain, endpoint
+        );
+        let mut withdraws: Vec<Withdraw> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<Withdraw>::new());
+        let mut new_withdraws = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = withdraws
+            .last()
+            .map(|w| (w.apply_time + Duration::milliseconds(1)).naive_utc())
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
@@ -1030,7 +1115,7 @@ impl BinanceFetcher<RegionGlobal> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(Url::parse(self.domain)?.join(ApiGlobal::Withdraws.to_string().as_str())?)
+                .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1039,13 +1124,19 @@ impl BinanceFetcher<RegionGlobal> {
             let resp = self.endpoint_services.route(req).await?;
 
             let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
-            withdraws.extend(withdraw_list);
+            new_withdraws.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_withdraws)
+            .await?;
+        withdraws.extend(new_withdraws);
+
         Ok(withdraws)
     }
 }
@@ -1058,6 +1149,7 @@ impl BinanceFetcher<RegionUs> {
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
             endpoint_services: EndpointServices::<RegionUs>::new(),
+            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -1068,6 +1160,7 @@ impl BinanceFetcher<RegionUs> {
             config: Some(config),
             domain: API_DOMAIN_US,
             endpoint_services: EndpointServices::<RegionUs>::new(),
+            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -1089,10 +1182,12 @@ impl BinanceFetcher<RegionUs> {
 
             let mut query = Query::new();
             query
-                .cached_param("fiatCurrency", "USD")
-                .cached_param("startTime", curr_start.timestamp_millis())
+                // .cached_param("fiatCurrency", "USD")
                 .cached_param("endTime", end.timestamp_millis())
-                .lazy_param("timestamp", move || now.timestamp_millis().to_string())
+                .cached_param("startTime", curr_start.timestamp_millis())
+                .lazy_param("timestamp", move || {
+                    Utc::now().timestamp_millis().to_string()
+                })
                 .cached_param("recvWindow", 60000);
             self.sign_request(&mut query);
 
@@ -1108,13 +1203,11 @@ impl BinanceFetcher<RegionUs> {
             let Response {
                 asset_log_record_list,
             } = self.from_json(&&resp).await?;
-            orders.extend(asset_log_record_list.into_iter().filter_map(|x| {
-                if x.status == "Successful" {
-                    Some(x)
-                } else {
-                    None
-                }
-            }));
+            orders.extend(
+                asset_log_record_list
+                    .into_iter()
+                    .filter(|x| x.status == "Successful"),
+            );
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;

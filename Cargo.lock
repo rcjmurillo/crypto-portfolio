@@ -514,6 +514,7 @@ dependencies = [
  "log",
  "market",
  "quickcheck",
+ "redis",
  "reqwest",
  "rusqlite",
  "serde",

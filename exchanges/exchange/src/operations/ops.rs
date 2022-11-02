@@ -11,9 +11,7 @@ use tracing::{debug, span, Level};
 use crate::operations::{db, storage::Storage};
 use market::{self, Asset, Market, MarketData};
 
-use crate::{
-    ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
-};
+use crate::ExchangeDataFetcher;
 
 #[derive(Clone, Debug, Deserialize)]
 pub enum OperationStatus {
@@ -209,9 +207,9 @@ impl<T: MarketData> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking cost");
                 let _enter = span.enter();
                 let usd_market = Market::new(asset, "USD");
-                let usd_price =
-                    market::solve_price(&self.market_data, &usd_market, &time)
-                        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
+                let usd_price = market::solve_price(&self.market_data, &usd_market, &time)
+                    .await?
+                    .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(for_asset.clone()).or_default();
                 coin_balance.usd_position += -amount * usd_price;
             }
@@ -224,9 +222,9 @@ impl<T: MarketData> BalanceTracker<T> {
                 let span = span!(Level::DEBUG, "tracking revenue");
                 let _enter = span.enter();
                 let usd_market = Market::new(asset, "USD");
-                let usd_price =
-                    market::solve_price(&self.market_data, &usd_market, &time)
-                        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
+                let usd_price = market::solve_price(&self.market_data, &usd_market, &time)
+                    .await?
+                    .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
                 let coin_balance = balance.entry(asset.clone()).or_default();
                 coin_balance.usd_position += amount * usd_price;
             }
@@ -409,13 +407,13 @@ impl<T: MarketData> AssetPrices<T> {
     /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
     /// from different markets.
     async fn usd_price_at(&self, asset: &Asset, datetime: &DateTime<Utc>) -> Result<f64> {
-        log::debug!("fetching usd price for {}", asset);
         if asset.to_lowercase() == "usd" {
             return Ok(1.0);
         }
 
         let usd_market = Market::new(asset.to_ascii_lowercase(), "usd");
-        market::solve_price(&self.market_data, &usd_market, &datetime).await?
+        market::solve_price(&self.market_data, &usd_market, &datetime)
+            .await?
             .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))
     }
 }
@@ -432,27 +430,27 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    log::info!("[{}] fetching margin trades...", prefix);
-    all_ops.extend(
-        c.margin_trades()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching loans...", prefix);
-    all_ops.extend(
-        c.loans()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching repays...", prefix);
-    all_ops.extend(
-        c.repays()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
+    // log::info!("[{}] fetching margin trades...", prefix);
+    // all_ops.extend(
+    //     c.margin_trades()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching loans...", prefix);
+    // all_ops.extend(
+    //     c.loans()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
+    // log::info!("[{}] fetching repays...", prefix);
+    // all_ops.extend(
+    //     c.repays()
+    //         .await?
+    //         .into_iter()
+    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
+    // );
     log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
         c.deposits()
@@ -500,7 +498,7 @@ pub async fn fetch_ops<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Status, Deposit};
+    use crate::{Deposit, Status, Trade, TradeSide, Withdraw, Loan, Repay};
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
     use Operation::*;

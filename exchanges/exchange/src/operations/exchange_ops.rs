@@ -27,6 +27,8 @@ use crate::{
 
 impl From<Trade> for Vec<Operation> {
     fn from(trade: Trade) -> Self {
+        assert!(trade.base_asset != "", "missing base asset on trade {trade:?}");
+        assert!(trade.quote_asset != "", "missing quote asset on trade {trade:?}");
         let mut ops = match trade.side {
             TradeSide::Buy => vec![
                 Operation::BalanceIncrease {

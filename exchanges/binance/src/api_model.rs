@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use exchange::operations::storage::Record;
+use serde::{Deserialize, Serialize};
 
 fn default_currency_usd() -> String {
     "USD".into()
@@ -9,10 +10,10 @@ fn default_zero() -> f64 {
     0.0
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FiatOrder {
-    #[serde(alias="orderId", alias="orderNo")]
+    #[serde(alias = "orderId", alias = "orderNo")]
     pub id: String,
     #[serde(default = "default_currency_usd")]
     pub fiat_currency: String,
@@ -28,10 +29,20 @@ pub struct FiatOrder {
     pub create_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Record for FiatOrder {
+    type Id = String;
+    fn id(&self) -> &Self::Id {
+        &self.id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.create_time
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Deposit {
-    #[serde(alias="txId")]
+    #[serde(alias = "txId")]
     pub tx_id: String,
     #[serde(with = "float_from_str")]
     pub amount: f64,
@@ -42,7 +53,17 @@ pub struct Deposit {
     pub insert_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Record for Deposit {
+    type Id = String;
+    fn id(&self) -> &Self::Id {
+        &self.tx_id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.insert_time
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Withdraw {
     pub id: String,
@@ -57,7 +78,17 @@ pub struct Withdraw {
     pub apply_time: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Record for Withdraw {
+    type Id = String;
+    fn id(&self) -> &Self::Id {
+        &self.id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.apply_time
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Trade {
     order_id: i64,
@@ -75,13 +106,23 @@ pub struct Trade {
     pub is_buyer: bool,
 
     // computed
-    #[serde(skip)]
-    pub base_asset: String,
-    #[serde(skip)]
-    pub quote_asset: String,
+    // #[serde(skip)]
+    pub base_asset: Option<String>,
+    // #[serde(skip)]
+    pub quote_asset: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Record for Trade {
+    type Id = u64;
+    fn id(&self) -> &Self::Id {
+        &self.id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.time
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginLoan {
     pub tx_id: u64,
@@ -93,7 +134,17 @@ pub struct MarginLoan {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+impl Record for MarginLoan {
+    type Id = u64;
+    fn id(&self) -> &Self::Id {
+        &self.tx_id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginRepay {
     pub tx_id: u64,
@@ -107,6 +158,16 @@ pub struct MarginRepay {
     pub status: String,
     #[serde(with = "datetime_from_str")]
     pub timestamp: DateTime<Utc>,
+}
+
+impl Record for MarginRepay {
+    type Id = u64;
+    fn id(&self) -> &Self::Id {
+        &self.tx_id
+    }
+    fn datetime(&self) -> DateTime<Utc> {
+        self.timestamp
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -125,7 +186,7 @@ pub struct SymbolPrice {
 }
 
 pub(crate) mod float_from_str {
-    use serde::{de, Deserialize, Deserializer};
+    use serde::{de, Deserialize, Deserializer, Serializer};
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
     where
@@ -143,11 +204,18 @@ pub(crate) mod float_from_str {
             StringOrFloat::Float(i) => Ok(i),
         }
     }
+
+    pub fn serialize<S>(val: &f64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_f64(*val)
+    }
 }
 
 pub(crate) mod datetime_from_str {
     use chrono::{DateTime, TimeZone, Utc};
-    use serde::{de, Deserialize, Deserializer};
+    use serde::{de, Deserialize, Deserializer, Serializer};
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
     where
@@ -167,5 +235,12 @@ pub(crate) mod datetime_from_str {
                 .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
                 .map_err(de::Error::custom)?,
         })
+    }
+
+    pub fn serialize<S>(val: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_i64(val.timestamp_millis())
     }
 }

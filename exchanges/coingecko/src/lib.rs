@@ -148,7 +148,7 @@ impl<'a> Client<'a> {
         } else {
             found
                 .pop()
-                .ok_or_else(|| anyhow!("couldn't find coin info for symbol {}", symbol))
+                .ok_or_else(|| anyhow!("couldn't find coin info for symbol '{}'", symbol))
         }
     }
 
@@ -315,6 +315,7 @@ impl MarketData for Client<'_> {
         // the API provides hourly granularity if we request a range <= 90 days
         let bucket_size = 90 * 24 * 60 * 60; // seconds
         let (start_ts, end_ts) = bucketize_timestamp(ts, bucket_size);
+        let end_ts = std::cmp::min(Utc::now().timestamp().try_into().unwrap(), end_ts);
         let prices = self
             .fetch_coin_market_chart_range(
                 &base_coin_info.id,
@@ -342,9 +343,11 @@ impl MarketData for Client<'_> {
             .find(|p| p.timestamp.abs_diff(ts_ms) <= 60 * 60 * 1000)
             .map(|p| p.price)
             .ok_or(anyhow!(
-                "couldn't find price for {} for {} in response list of prices [{:?}, ..., {:?}]",
+                "couldn't find price for {} at {} in response list of prices start={} end={} [{:?}, ..., {:?}]",
                 market,
                 ts_ms,
+                start_ts,
+                end_ts,
                 prices.first(),
                 prices.last(),
             ))
