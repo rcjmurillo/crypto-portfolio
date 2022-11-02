@@ -1228,10 +1228,20 @@ impl BinanceFetcher<RegionUs> {
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
-        let mut deposits = Vec::<Deposit>::new();
+        let endpoint = ApiUs::Deposits.to_string();
+        let storage_key = format!("binance.crypto_deposits[d={},e={}]", self.domain, endpoint);
+        let mut deposits: Vec<Deposit> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<Deposit>::new());
+        let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = deposits
+            .last()
+            .map(|d| (d.insert_time + Duration::milliseconds(1)).naive_utc())
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
@@ -1247,7 +1257,7 @@ impl BinanceFetcher<RegionUs> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(Url::parse(self.domain)?.join(ApiUs::Deposits.to_string().as_str())?)
+                .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1256,21 +1266,40 @@ impl BinanceFetcher<RegionUs> {
             let resp = self.endpoint_services.route(req).await?;
 
             let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
-            deposits.extend(deposit_list);
+            new_deposits.extend(deposit_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_deposits)
+            .await?;
+        deposits.extend(new_deposits);
+
         Ok(deposits)
     }
 
     pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
-        let mut withdraws = Vec::<Withdraw>::new();
+        let endpoint = ApiUs::Withdraws.to_string();
+        let storage_key = format!(
+            "binance.crypto_withdrawals[d={},e={}]",
+            self.domain, endpoint
+        );
+        let mut withdraws: Vec<Withdraw> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<Withdraw>::new());
+        let mut new_withdraws = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = withdraws
+            .last()
+            .map(|w| (w.apply_time + Duration::milliseconds(1)).naive_utc())
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
@@ -1285,7 +1314,7 @@ impl BinanceFetcher<RegionUs> {
             self.sign_request(&mut query);
 
             let req = RequestBuilder::default()
-                .url(Url::parse(self.domain)?.join(ApiUs::Withdraws.to_string().as_str())?)
+                .url(Url::parse(self.domain)?.join(endpoint.as_str())?)
                 .query_params(query)
                 .headers(self.default_headers())
                 .cache_response(true)
@@ -1294,13 +1323,19 @@ impl BinanceFetcher<RegionUs> {
             let resp = self.endpoint_services.route(req).await?;
 
             let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
-            withdraws.extend(withdraw_list);
+            new_withdraws.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
                 break;
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_withdraws)
+            .await?;
+        withdraws.extend(new_withdraws);
+
         Ok(withdraws)
     }
 }
