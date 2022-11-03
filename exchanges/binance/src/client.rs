@@ -221,7 +221,7 @@ struct EndpointServices<Region> {
 
 impl<Region> EndpointServices<Region> {
     pub async fn route(&self, request: Request) -> Result<Bytes> {
-        log::debug!(
+        log::trace!(
             "routing url: {}?{}",
             request.url,
             request
@@ -1171,10 +1171,20 @@ impl BinanceFetcher<RegionUs> {
             asset_log_record_list: Vec<FiatOrder>,
         }
 
-        let mut orders: Vec<FiatOrder> = Vec::new();
+        let storage_key = format!("binance.fiat_orders[d={},e={}]", self.domain, endpoint);
+        let mut orders: Vec<FiatOrder> = self
+            .storage
+            .get_records(&storage_key)
+            .await?
+            .unwrap_or_else(|| Vec::<FiatOrder>::new());
+        let mut new_orders = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = self.data_start_date().and_hms(0, 0, 0);
+        let mut curr_start = orders
+            .last()
+            .map(|o| (o.create_time + Duration::milliseconds(1)).naive_utc())
+            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+
         loop {
             let now = Utc::now().naive_utc();
             // the API only allows 90 days between start and end
@@ -1203,7 +1213,7 @@ impl BinanceFetcher<RegionUs> {
             let Response {
                 asset_log_record_list,
             } = self.from_json(&&resp).await?;
-            orders.extend(
+            new_orders.extend(
                 asset_log_record_list
                     .into_iter()
                     .filter(|x| x.status == "Successful"),
@@ -1213,6 +1223,11 @@ impl BinanceFetcher<RegionUs> {
                 break;
             }
         }
+
+        self.storage
+            .insert_records(&storage_key, &new_orders)
+            .await?;
+        orders.extend(new_orders);
 
         Ok(orders)
     }

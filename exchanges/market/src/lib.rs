@@ -80,7 +80,7 @@ pub trait MarketData {
 }
 
 pub fn is_fiat(asset: &str) -> bool {
-    FIAT_CURRENCIES.contains(&asset)
+    FIAT_CURRENCIES.contains(&asset.to_lowercase().as_str())
 }
 
 pub async fn solve_price<T, U>(

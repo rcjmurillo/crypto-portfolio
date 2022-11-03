@@ -192,8 +192,7 @@ pub async fn main() -> Result<()> {
                     ..
                 } = op
                 {
-                    if &asset == "EUR"
-                        || asset.starts_with("USD")
+                    if market::is_fiat(&asset)
                         || report_asset.as_ref().map_or(false, |a| a != &asset)
                     {
                         continue;
