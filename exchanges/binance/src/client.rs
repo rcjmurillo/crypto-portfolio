@@ -457,8 +457,8 @@ impl<'a, Region> BinanceFetcher<Region> {
         datetime: &DateTime<Utc>,
     ) -> Result<f64> {
         let time = datetime.timestamp_millis();
-        let start_time = time - 30 * 60;
-        let end_time = time + 30 * 60;
+        let start_time = time - 30 * 60 * 1000;
+        let end_time = time + 30 * 60 * 1000;
 
         let mut query = Query::new();
         query
@@ -477,6 +477,11 @@ impl<'a, Region> BinanceFetcher<Region> {
         let resp = self.endpoint_services.route(req).await?;
 
         let klines: Vec<Vec<Value>> = self.from_json(&resp).await?;
+
+        if klines.is_empty() {
+            return Err(anyhow!("couldn't find price for {symbol} at {datetime}"));
+        }
+
         let s = &klines[0];
         let high = s[2].as_str().unwrap().parse::<f64>().unwrap();
         let low = s[3].as_str().unwrap().parse::<f64>().unwrap();

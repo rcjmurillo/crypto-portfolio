@@ -6,10 +6,10 @@ mod conversion;
 
 use std::{fmt::Display, ops::Deref, pin::Pin, sync::Arc, task::Poll};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::Future;
+use futures::{ready, Future};
 use tower::Service;
 
 use crate::conversion::{conversion_chain, MarketType};
@@ -112,12 +112,19 @@ where
     }
 }
 
-struct Request {
+#[derive(Clone)]
+pub struct Request {
     market: Market,
     time: DateTime<Utc>,
 }
 
-struct MarketPriceService<T>(Arc<T>);
+impl Request {
+    pub fn new(market: Market, time: DateTime<Utc>) -> Self {
+        Self { market, time }
+    }
+}
+
+pub struct MarketPriceService<T>(Arc<T>);
 
 impl<T> MarketPriceService<T>
 where
@@ -149,9 +156,58 @@ where
     }
 }
 
+/// A services that uses a wraps two services and uses the 2nd one as fallback
+/// if calling the first one fails.
+pub struct Fallback<S1, S2> {
+    inner1: S1,
+    inner2: S2,
+}
+
+impl<S1, S2> Fallback<S1, S2> {
+    pub fn new(s1: S1, s2: S2) -> Self {
+        Self {
+            inner1: s1,
+            inner2: s2,
+        }
+    }
+}
+
+impl<S1, S2> Service<Request> for Fallback<S1, S2>
+where
+    S1: Service<Request, Error = anyhow::Error>,
+    S1::Future: Send + 'static,
+    S1::Response: Send,
+    S1::Error: Send,
+    S2: Service<Request, Response = S1::Response, Error = S1::Error>,
+    S2::Future: Send + 'static,
+{
+    type Response = S1::Response;
+    type Error = S1::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // check that both services are ready
+        ready!(self.inner1.poll_ready(cx))?;
+        ready!(self.inner2.poll_ready(cx))?;
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request) -> Self::Future {
+        let f1 = self.inner1.call(req.clone());
+        let f2 = self.inner2.call(req);
+
+        Box::pin(async move {
+            match f1.await {
+                Ok(resp) => Ok(resp),
+                Err(err) => f2.await.map_err(|err2| err2.context(err)),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::vec;
 
     use anyhow::Result;
@@ -225,7 +281,10 @@ mod tests {
         let market_data = TestMarketData;
         assert!(market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
+            solve_price(&market_data, &m, &Utc::now())
+                .await
+                .unwrap()
+                .unwrap(),
             // direct BTC-USD
             19_000.0
         );
@@ -235,11 +294,17 @@ mod tests {
 
         println!(
             "{} {}",
-            solve_price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
+            solve_price(&market_data, &m, &Utc::now())
+                .await
+                .unwrap()
+                .unwrap(),
             19_000.0 * (1.0 / 0.9998)
         );
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
+            solve_price(&market_data, &m, &Utc::now())
+                .await
+                .unwrap()
+                .unwrap(),
             // BTC-USD * (1 / USDC-USD)
             19_000.0 * (1.0 / 0.9998),
             5.0
@@ -248,7 +313,10 @@ mod tests {
         let m = Market::new("SOL".to_string(), "BTC".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
+            solve_price(&market_data, &m, &Utc::now())
+                .await
+                .unwrap()
+                .unwrap(),
             // SOL-ETH * ETH-BTC
             0.02354 * 0.07113673,
             0.0000001
@@ -257,7 +325,10 @@ mod tests {
         let m = Market::new("ADA".to_string(), "DOT".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
+            solve_price(&market_data, &m, &Utc::now())
+                .await
+                .unwrap()
+                .unwrap(),
             // ADA-ETH * (1 / DOT-ETH)
             0.0003274 * (1.0 / 0.004655),
             0.0001

@@ -376,8 +376,6 @@ impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
         log::info!("syncing asset prices to db...");
         while let Some(op) = receiver.recv().await {
             log::debug!("processing op {:?}", op);
-            // the `.usd_price_at(..)` call will make the DB to populate with
-            // bucket of prices corresponding to each processed transaction.
             match &op {
                 Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
                     self.asset_prices.usd_price_at(asset, time).await?;
@@ -498,7 +496,7 @@ pub async fn fetch_ops<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Deposit, Status, Trade, TradeSide, Withdraw, Loan, Repay};
+    use crate::{Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw};
     use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
     use tokio::sync::Mutex;
     use Operation::*;

@@ -1183,6 +1183,7 @@ dependencies = [
  "structopt",
  "tokio",
  "toml",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]
