@@ -12,7 +12,7 @@ use std::{convert::TryInto, time::Duration};
 use tokio::sync::Mutex;
 use tower::{
     limit::{rate::Rate, RateLimit},
-    Service,
+    Service, ServiceExt,
 };
 
 use api_client::{ApiClient, Cache, Query, RedisCache, RequestBuilder};
@@ -163,8 +163,13 @@ impl<'a> Client<'a> {
             .cache_response(true)
             .build()?;
 
-        svc.await_until_ready(&request).await?;
-        let resp = svc.call(request).await?;
+        let resp = svc
+            .ready()
+            .await
+            .map_err(|e| anyhow!(e))?
+            .call(request)
+            .await
+            .map_err(|e| anyhow!(e))?;
         self.from_json(&resp)
     }
 
@@ -176,8 +181,13 @@ impl<'a> Client<'a> {
             .cache_response(true)
             .build()?;
 
-        svc.await_until_ready(&request).await?;
-        let resp = svc.call(request).await?;
+        let resp = svc
+            .ready()
+            .await
+            .map_err(|e| anyhow!(e))?
+            .call(request)
+            .await
+            .map_err(|e| anyhow!(e))?;
         let coins: Vec<CoinInfo> = self.from_json(&resp)?;
 
         Ok(coins)
@@ -214,8 +224,13 @@ impl<'a> Client<'a> {
                     .cache_response(true)
                     .build()?;
 
-                svc.await_until_ready(&request).await?;
-                let resp = svc.call(request).await?;
+                let resp = svc
+                    .ready()
+                    .await
+                    .map_err(|e| anyhow!(e))?
+                    .call(request)
+                    .await
+                    .map_err(|e| anyhow!(e))?;
                 let resp_markets: Vec<MarketResponse> = self.from_json(&resp)?;
                 if page == 5 || resp_markets.len() == 0 {
                     break;
@@ -266,8 +281,13 @@ impl<'a> Client<'a> {
             prices: Vec<CoinPrice>,
         }
 
-        svc.await_until_ready(&request).await?;
-        let resp = svc.call(request).await?;
+        let resp = svc
+            .ready()
+            .await
+            .map_err(|e| anyhow!(e))?
+            .call(request)
+            .await
+            .map_err(|e| anyhow!(e))?;
         let CoinPrices { prices } = self.from_json(&resp)?;
 
         Ok(prices)
@@ -276,8 +296,10 @@ impl<'a> Client<'a> {
     fn from_json<T: DeserializeOwned>(&self, resp_bytes: &Bytes) -> Result<T> {
         match serde_json::from_slice(&resp_bytes.clone()) {
             Ok(val) => Ok(val),
-            Err(err) => Err(anyhow!(err.to_string())
-                .context(format!("couldn't parse coingecko API response: {:?}", resp_bytes.clone()))),
+            Err(err) => Err(anyhow!(err.to_string()).context(format!(
+                "couldn't parse coingecko API response: {:?}",
+                resp_bytes.clone()
+            ))),
         }
     }
 }

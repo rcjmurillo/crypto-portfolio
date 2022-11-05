@@ -3,3 +3,5 @@ target/
 .envrc
 
 *.db
+
+.vscode

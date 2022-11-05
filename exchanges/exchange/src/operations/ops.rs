@@ -430,27 +430,27 @@ async fn ops_from_fetcher<'a>(
             .into_iter()
             .flat_map(|t| -> Vec<Operation> { t.into() }),
     );
-    // log::info!("[{}] fetching margin trades...", prefix);
-    // all_ops.extend(
-    //     c.margin_trades()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching loans...", prefix);
-    // all_ops.extend(
-    //     c.loans()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
-    // log::info!("[{}] fetching repays...", prefix);
-    // all_ops.extend(
-    //     c.repays()
-    //         .await?
-    //         .into_iter()
-    //         .flat_map(|t| -> Vec<Operation> { t.into() }),
-    // );
+    log::info!("[{}] fetching margin trades...", prefix);
+    all_ops.extend(
+        c.margin_trades()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching loans...", prefix);
+    all_ops.extend(
+        c.loans()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
+    log::info!("[{}] fetching repays...", prefix);
+    all_ops.extend(
+        c.repays()
+            .await?
+            .into_iter()
+            .flat_map(|t| -> Vec<Operation> { t.into() }),
+    );
     log::info!("[{}] fetching deposits...", prefix);
     all_ops.extend(
         c.deposits()

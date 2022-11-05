@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Error, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
@@ -20,7 +20,7 @@ use tower::{
     layer::Layer,
     limit::{rate::Rate, RateLimit},
     retry::{Policy, Retry, RetryLayer},
-    Service,
+    Service, ServiceExt,
 };
 
 use api_client::{
@@ -237,8 +237,12 @@ impl<Region> EndpointServices<Region> {
             .lock()
             .await;
 
-        svc.await_until_ready(&request).await?;
-        svc.call(request).await
+        svc.ready()
+            .await
+            .map_err(|e| anyhow!(e))?
+            .call(request)
+            .await
+            .map_err(|e| anyhow!(e))
     }
 }
 
@@ -577,7 +581,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
         // todo: send this as param
-        let storage_key = format!("{}.binance.trade.[{}]", self.domain, endpoint);
+        let storage_key = format!("binance.trade[d={},e={}]", self.domain, endpoint);
 
         let trades: Vec<Trade> = self
             .storage
@@ -693,7 +697,7 @@ impl BinanceFetcher<RegionGlobal> {
             data: Vec<FiatOrder>,
         }
 
-        let storage_key = format!("{}.binance.fiat_orders.{}", self.domain, tx_type);
+        let storage_key = format!("binance.fiat_orders[d={},t={}]", self.domain, tx_type);
 
         let orders: Vec<FiatOrder> = self
             .storage
@@ -888,7 +892,10 @@ impl BinanceFetcher<RegionGlobal> {
             total: u16,
         }
 
-        let storage_key = format!("{}.binance.margin_transactions.[{}]", self.domain, endpoint);
+        let storage_key = format!(
+            "binance.margin_transactions[d={},e={endpoint},s={isolated_symbol:?}]",
+            self.domain
+        );
         let txns: Vec<T> = self
             .storage
             .get_records(&storage_key)

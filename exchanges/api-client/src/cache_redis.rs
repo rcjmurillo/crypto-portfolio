@@ -29,9 +29,10 @@ impl RedisCache {
 impl Storage for RedisCache {
     type Output = Bytes;
     async fn get(&self, key: &str) -> Result<Option<Self::Output>> {
-        let mut conn = self.client.get_async_connection().await?;   
+        let mut conn = self.client.get_async_connection().await?;
         Ok(conn.get(key).await?)
     }
+
     async fn set(&mut self, key: &str, value: &Bytes) -> Result<()> {
         let mut conn = self.client.get_async_connection().await?;
         let r: String = conn.set(key, value.to_vec()).await?;
@@ -41,6 +42,7 @@ impl Storage for RedisCache {
             Err(anyhow!("failed to set key = {}", key))
         }
     }
+
     async fn exists(&self, key: &str) -> Result<bool> {
         let mut conn = self.client.get_async_connection().await?;
         Ok(conn.exists(key).await?)
