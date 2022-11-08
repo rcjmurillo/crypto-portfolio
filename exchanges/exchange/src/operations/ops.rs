@@ -357,12 +357,12 @@ impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
 /// Fetches prices for assets and stores on the db based on the processed
 /// operations.
 pub struct PricesFetcher<T> {
-    asset_prices: AssetPrices<T>,
+    market_data: T,
 }
 
 impl<T> PricesFetcher<T> {
-    pub fn new(asset_prices: AssetPrices<T>) -> Self {
-        Self { asset_prices }
+    pub fn new(market_data: T) -> Self {
+        Self { market_data }
     }
 }
 
@@ -378,7 +378,7 @@ impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
             log::debug!("processing op {:?}", op);
             match &op {
                 Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
-                    self.asset_prices.usd_price_at(asset, time).await?;
+                    self.market_data.price_at(&Market::new(asset, "usd"), time).await?;
                 }
                 _ => (),
             }
@@ -388,31 +388,6 @@ impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
         }
         debug!("channel for receiving ops closed in prices fetcher");
         Ok(())
-    }
-}
-
-/// stores buckets to prices in the db, buckets are periods of time
-/// defined by number of days of span.
-pub struct AssetPrices<T> {
-    market_data: T,
-}
-
-impl<T: MarketData> AssetPrices<T> {
-    pub fn new(market_data: T) -> Self {
-        Self { market_data }
-    }
-
-    /// Fetch the price of the asset in USD at the provided datetime, it'll try to fetch it
-    /// from different markets.
-    async fn usd_price_at(&self, asset: &Asset, datetime: &DateTime<Utc>) -> Result<f64> {
-        if asset.to_lowercase() == "usd" {
-            return Ok(1.0);
-        }
-
-        let usd_market = Market::new(asset.to_ascii_lowercase(), "usd");
-        market::solve_price(&self.market_data, &usd_market, &datetime)
-            .await?
-            .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))
     }
 }
 

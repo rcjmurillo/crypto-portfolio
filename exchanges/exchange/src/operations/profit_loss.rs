@@ -7,8 +7,6 @@ use chrono::{DateTime, Utc};
 use crate::operations::Operation;
 use market::{Market, MarketData};
 
-use super::AssetPrices;
-
 #[derive(Debug)]
 pub struct Sale {
     pub asset: String,
