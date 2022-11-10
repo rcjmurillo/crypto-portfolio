@@ -1,3 +1,4 @@
+use std::ascii::AsciiExt;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 
@@ -243,7 +244,7 @@ impl<T: MarketData> BalanceTracker<T> {
 
     pub async fn batch_operation(&self, op: Operation) {
         if self.operations_seen.read().await.contains(&op.id()) {
-            log::info!("ignoring duplicate operation {:?}", op);
+            log::warn!("ignoring duplicate operation {:?}", op);
             return;
         }
         self.operations_seen.write().await.insert(op.id());
@@ -302,7 +303,7 @@ impl<S: Storage> OperationsFlusher<S> {
                     .into_iter()
                     .inspect(|op| {
                         if seen_ops.contains(&op.id()) {
-                            log::info!("duplicate op {} {:?}", op.id(), op);
+                            log::warn!("duplicate op {} {:?}", op.id(), op);
                         } else {
                             seen_ops.insert(op.id());
                         }
@@ -373,15 +374,17 @@ impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
         mut receiver: mpsc::Receiver<Operation>,
         sender: Option<mpsc::Sender<Operation>>,
     ) -> Result<()> {
-        log::info!("syncing asset prices to db...");
         while let Some(op) = receiver.recv().await {
             log::debug!("processing op {:?}", op);
-            match &op {
-                Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
-                    self.market_data.price_at(&Market::new(asset, "usd"), time).await?;
-                }
-                _ => (),
-            }
+            // match &op {
+            //     Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
+            //         if asset.to_ascii_lowercase() == "usd" {
+            //             return Ok(1.0);
+            //         }
+            //         self.market_data.price_at(&Market::new(asset, "usd"), time).await?;
+            //     }
+            //     _ => (),
+            // }
             if let Some(sender) = sender.as_ref() {
                 sender.send(op).await?;
             }
@@ -449,7 +452,7 @@ pub async fn fetch_ops<'a>(
 
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
-        tokio::spawn(async move {
+        // tokio::spawn(async move {
             match ops_from_fetcher(name, f).await {
                 Ok(ops) => {
                     for op in ops {
@@ -460,9 +463,12 @@ pub async fn fetch_ops<'a>(
                     }
                     log::debug!("finished sending ops for fetcher {}", name);
                 }
-                Err(err) => log::error!("failed to fetch operations from {}: {}", name, err),
+                Err(err) => {
+                    log::error!("failed to fetch operations from {}: {}", name, err);
+                    break;
+                },
             };
-        });
+        // });
     }
 
     rx

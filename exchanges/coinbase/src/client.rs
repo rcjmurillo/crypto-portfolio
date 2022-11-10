@@ -11,7 +11,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::de::DeserializeOwned;
 use sha2::Sha256;
 
-use api_client::{errors::Error as ApiError, ApiClient, Query};
+use api_client::{errors::ApiError, ApiClient, Query};
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
 use market::Market;

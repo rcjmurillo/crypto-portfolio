@@ -23,7 +23,7 @@ use exchange::operations::{
     fetch_ops,
     profit_loss::{ConsumeStrategy, OperationsStream, Sale},
     storage::Storage,
-    AssetPrices, BalanceTracker, Operation, OperationsFlusher, OperationsProcesor, PricesFetcher,
+    BalanceTracker, Operation, OperationsFlusher, OperationsProcesor, PricesFetcher,
 };
 
 use crate::{
@@ -155,15 +155,15 @@ pub async fn main() -> Result<()> {
                 config.coingecko.as_ref().expect("missing coingecko config"),
             );
             cg.init().await?;
-            let prices_fetcher = PricesFetcher::new(AssetPrices::new(cg));
+            // let prices_fetcher = PricesFetcher::new(cg);
             let flusher = OperationsFlusher::new(Db);
 
             // pipeline to process operations
-            let (sender, receiver2) = mpsc::channel(100_000);
-            let f1 = prices_fetcher.process(receiver, Some(sender));
-            let f2 = flusher.process(receiver2, None);
+            // let (sender, receiver2) = mpsc::channel(100_000);
+            // let f1 = prices_fetcher.process(receiver, Some(sender));
+            let f2 = flusher.process(receiver, None);
 
-            let results = join_all(vec![f1, f2]).await;
+            let results = join_all(vec![f2]).await;
 
             results.iter().for_each(|r| match r {
                 Err(err) => log::error!("{}", err),
@@ -175,8 +175,23 @@ pub async fn main() -> Result<()> {
         PortfolioAction::RevenueReport {
             asset: report_asset,
         } => {
-            let ops_storage = Db;
-            let ops = ops_storage.get_ops().await?;
+            let config = Arc::new(config);
+            let file_fetcher = match ops_file {
+                Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
+                    Ok(fetcher) => Some(fetcher),
+                    Err(err) => {
+                        return Err(anyhow!(err).context("could read config from file"));
+                    }
+                },
+                None => None,
+            };
+
+            let mut ops = Vec::new();
+            let mut receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
+            while let Some(op) = receiver.recv().await {
+                // println!("adding {op:?}");
+                ops.push(op);
+            }
 
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),

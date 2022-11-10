@@ -12,6 +12,7 @@ exchange = { path = "../exchange" }
 market = { path = "../market" }
 anyhow = "1.0.58"
 async-trait = "0.1.50"
+thiserror = "1.0.31"
 bytes = "1.0.1"
 chrono = "0.4"
 hmac = "0.12.1"

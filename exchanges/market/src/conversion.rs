@@ -72,6 +72,7 @@ pub fn conversion_chain<'a: 'b, 'b>(
     loop {
         match curr_state.filtered.next() {
             Some(next) => {
+                log::trace!("searching from market {next:?}");
                 if curr_state.seen.contains(next.market()) {
                     continue;
                 }
@@ -104,6 +105,7 @@ pub fn conversion_chain<'a: 'b, 'b>(
                 };
             }
             None => {
+                log::trace!("backtracking");
                 // backtrack, take the last state off the stack and continue searching there
                 // from the `filtered` iterator's next element.
                 match states.pop() {

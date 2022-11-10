@@ -7,7 +7,7 @@ use futures::prelude::*;
 
 use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
-    client::{BinanceFetcher, ApiGlobal, ApiUs, RegionGlobal, RegionUs},
+    client::{ApiGlobal, ApiUs, BinanceFetcher, RegionGlobal, RegionUs},
 };
 use exchange::{self, Candle, ExchangeClient, ExchangeDataFetcher};
 use market::{Asset, Market, MarketData};
@@ -140,7 +140,12 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
                 handles.push(self.fetch_trades(&endpoint, symbol));
             }
         }
-        flatten_results(stream::iter(handles).buffer_unordered(500).collect::<Vec<_>>().await)
+        flatten_results(
+            stream::iter(handles)
+                .buffer_unordered(500)
+                .collect::<Vec<_>>()
+                .await,
+        )
     }
 
     async fn margin_trades(&self) -> Result<Vec<exchange::Trade>> {
@@ -158,7 +163,12 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
                 handles.push(self.fetch_margin_trades(symbol));
             }
         }
-        flatten_results(stream::iter(handles).buffer_unordered(500).collect::<Vec<_>>().await)
+        flatten_results(
+            stream::iter(handles)
+                .buffer_unordered(500)
+                .collect::<Vec<_>>()
+                .await,
+        )
     }
 
     async fn loans(&self) -> Result<Vec<exchange::Loan>> {
@@ -180,7 +190,12 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
                 handles.push(self.fetch_margin_loans(&symbol.base, Some(symbol)));
             }
         }
-        flatten_results(stream::iter(handles).buffer_unordered(500).collect::<Vec<_>>().await)
+        flatten_results(
+            stream::iter(handles)
+                .buffer_unordered(500)
+                .collect::<Vec<_>>()
+                .await,
+        )
     }
 
     async fn repays(&self) -> Result<Vec<exchange::Repay>> {
@@ -202,7 +217,12 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
                 handles.push(self.fetch_margin_repays(&symbol.base, Some(symbol)));
             }
         }
-        flatten_results(stream::iter(handles).buffer_unordered(500).collect::<Vec<_>>().await)
+        flatten_results(
+            stream::iter(handles)
+                .buffer_unordered(500)
+                .collect::<Vec<_>>()
+                .await,
+        )
     }
 
     async fn deposits(&self) -> Result<Vec<exchange::Deposit>> {
@@ -285,7 +305,12 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
                 handles.push(self.fetch_trades(&endpoint, &symbol));
             }
         }
-        flatten_results(stream::iter(handles).buffer_unordered(500).collect::<Vec<_>>().await)
+        flatten_results(
+            stream::iter(handles)
+                .buffer_unordered(500)
+                .collect::<Vec<_>>()
+                .await,
+        )
     }
 
     async fn margin_trades(&self) -> Result<Vec<exchange::Trade>> {

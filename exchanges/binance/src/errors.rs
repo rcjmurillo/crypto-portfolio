@@ -1,44 +1,38 @@
-use std::fmt;
-
-use api_client::errors::Error as ApiError;
+use api_client::errors::{ApiError, ClientError};
 
 use serde::Deserialize;
 
-#[derive(Debug)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
-    Api(ApiErrorKind),
+    #[error("unavailable symbol")]
+    UnavailableSymbol,
+    #[error("invalid timestamp")]
+    InvalidTimestamp,
+    #[error("Other error: {0}")]
     Other(String),
 }
 
-#[derive(Debug)]
-pub enum ApiErrorKind {
-    UnavailableSymbol,
-    InvalidTimestamp,
-    // add any other relevant error codes here
-    Other(i16),
-}
-
-impl From<Option<i16>> for ApiErrorKind {
+impl From<Option<i16>> for Error {
     fn from(code: Option<i16>) -> Self {
         match code {
-            Some(-11001) => ApiErrorKind::UnavailableSymbol,
-            Some(-1021) => ApiErrorKind::InvalidTimestamp,
-            Some(c) => ApiErrorKind::Other(c),
-            _ => ApiErrorKind::Other(0),
+            Some(-11001) => Error::UnavailableSymbol,
+            Some(-1021) => Error::InvalidTimestamp,
+            Some(c) => Error::Other(format!("error with code {c}")),
+            None => Error::Other("error response with no error code".to_string()),
         }
     }
 }
 
-impl From<&ApiError> for Error {
-    fn from(api_error: &ApiError) -> Self {
+impl From<&ClientError> for Error {
+    fn from(api_error: &ClientError) -> Self {
         match api_error {
-            ApiError::BadRequest { body } => {
+            ClientError::ApiError(ApiError::BadRequest { body }) => {
                 #[derive(Deserialize)]
                 struct ErrorResponse {
                     code: Option<i16>,
                 }
                 match serde_json::from_str::<ErrorResponse>(&body) {
-                    Ok(ErrorResponse { code, .. }) => Error::Api(code.into()),
+                    Ok(ErrorResponse { code, .. }) => code.into(),
                     Err(_) => Error::Other(format!("couldn't parse error response: {}", body)),
                 }
             }
@@ -47,14 +41,8 @@ impl From<&ApiError> for Error {
     }
 }
 
-impl From<ApiError> for Error {
-    fn from(api_error: ApiError) -> Self {
+impl From<ClientError> for Error {
+    fn from(api_error: ClientError) -> Self {
         Error::from(&api_error)
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
     }
 }

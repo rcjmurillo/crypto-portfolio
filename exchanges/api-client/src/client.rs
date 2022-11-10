@@ -12,7 +12,7 @@ use reqwest::{header::HeaderMap, StatusCode};
 use reqwest::{header::HeaderValue, Url};
 use tower::Service;
 
-use crate::errors::Error as ApiError;
+use crate::errors::{ApiError, ClientError};
 
 enum ValueState {
     Closure(Box<dyn Fn() -> String + Send + Sync>),
@@ -147,23 +147,25 @@ impl Query {
 
 async fn validate_response(resp: reqwest::Response) -> Result<reqwest::Response> {
     let status = resp.status();
+    let url = resp.url().to_string();
     match status {
         StatusCode::OK => Ok(resp),
         StatusCode::INTERNAL_SERVER_ERROR => {
-            Err(anyhow!(resp.text().await?).context(ApiError::Internal))
+            Err(anyhow::Error::from(ApiError::Internal(resp.text().await?)))
         }
         StatusCode::SERVICE_UNAVAILABLE => {
-            Err(anyhow!(resp.text().await?).context(ApiError::ServiceUnavailable))
+            Err(anyhow::Error::from(ApiError::ServiceUnavailable).context(resp.text().await?))
         }
         StatusCode::UNAUTHORIZED => {
-            Err(anyhow!(resp.text().await?).context(ApiError::Unauthorized))
+            Err(anyhow::Error::from(ApiError::Unauthorized).context(resp.text().await?))
         }
-        StatusCode::BAD_REQUEST => Err(anyhow!("bad request for {}", resp.url()).context(
-            ApiError::BadRequest {
-                body: resp.text().await?,
-            },
-        )),
-        StatusCode::NOT_FOUND => Err(anyhow!(resp.text().await?).context(ApiError::NotFound)),
+        StatusCode::BAD_REQUEST => Err(anyhow::Error::from(ApiError::BadRequest {
+            body: resp.text().await?,
+        })
+        .context(format!("bad request for {:?}", url))),
+        StatusCode::NOT_FOUND => {
+            Err(anyhow::Error::from(ApiError::NotFound).context(resp.text().await?))
+        }
         StatusCode::TOO_MANY_REQUESTS => {
             let default = HeaderValue::from(0isize);
             let h = resp.headers().get("retry-after").unwrap_or(&default);
@@ -171,13 +173,14 @@ async fn validate_response(resp: reqwest::Response) -> Result<reqwest::Response>
                 retry_after: h.to_str()?.parse::<usize>()?,
             }))
         }
-        status => Err(anyhow!("{}", resp.text().await?).context(ApiError::Other {
+        status => Err(anyhow::Error::from(ApiError::Other {
             status: status.into(),
-        })),
+        })
+        .context(format!("{}", resp.text().await?))),
     }
 }
 
-async fn make_request(req: Request) -> Result<Response> {
+async fn make_request(req: Request) -> Result<Response, ClientError> {
     let client = reqwest::Client::new();
 
     let query_str = req.query_params.map(|q| q.materialize());
@@ -192,16 +195,16 @@ async fn make_request(req: Request) -> Result<Response> {
     if let Some(h) = req.headers {
         r = r.headers(h);
     }
-    let resp = r.send().await;
+    let resp = r.send().await.map_err(|e| anyhow!(e))?;
 
-    match validate_response(resp?).await {
+    match validate_response(resp).await {
         Ok(resp) => Ok(Response {
-            bytes: resp.bytes().await?,
+            bytes: resp.bytes().await.map_err(|e| anyhow!(e))?,
             query_string: query_str,
         }),
         Err(err) => {
             log::debug!("response error for {:?}: {:?}", full_url, err);
-            Err(err)
+            Err(err.into())
         }
     }
 }
@@ -220,8 +223,8 @@ impl<'a> ApiClient {
         query_params: Option<Query>,
         headers: Option<HeaderMap>,
         cache_response: bool,
-    ) -> Result<Response> {
-        let url = Url::parse(endpoint)?;
+    ) -> Result<Response, ClientError> {
+        let url = Url::parse(endpoint).map_err(|e| anyhow!(e))?;
         log::debug!(
             "making request to {} {:?}",
             url.to_string(),
@@ -230,14 +233,17 @@ impl<'a> ApiClient {
 
         // fixme: accept Request once all usages have been replaced
         let mut req_builder = RequestBuilder::default();
-        let mut req_builder = req_builder.url(Url::parse(endpoint)?);
+        let mut req_builder = req_builder.url(Url::parse(endpoint).map_err(|e| anyhow!(e))?);
         if query_params.is_some() {
             req_builder = req_builder.query_params(query_params.unwrap());
         }
         if headers.is_some() {
             req_builder = req_builder.headers(headers.unwrap());
         }
-        let req = req_builder.cache_response(cache_response).build()?;
+        let req = req_builder
+            .cache_response(cache_response)
+            .build()
+            .map_err(|e| anyhow!(e))?;
         make_request(req).await
     }
 }
@@ -245,7 +251,7 @@ impl<'a> ApiClient {
 impl Service<Request> for ApiClient {
     type Response = Response;
 
-    type Error = anyhow::Error;
+    type Error = ClientError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(

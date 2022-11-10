@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, marker::PhantomData, sync::Arc};
 
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{anyhow, Context, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -24,8 +24,7 @@ use tower::{
 };
 
 use api_client::{
-    errors::Error as ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder,
-    Response,
+    errors::ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder, Response,
 };
 use exchange::{
     operations::storage::{Record, Redis as RedisStorage},
@@ -35,7 +34,7 @@ use market::{Market, MarketData};
 
 use crate::{
     api_model::*,
-    errors::{ApiErrorKind, Error as ApiError},
+    errors::{Error as ApiError},
 };
 
 const API_DOMAIN_GLOBAL: &str = "https://api.binance.com";
@@ -238,8 +237,7 @@ impl<Region> EndpointServices<Region> {
             .await;
 
         svc.ready()
-            .await
-            .map_err(|e| anyhow!(e))?
+            .await?
             .call(request)
             .await
             .map_err(|e| anyhow!(e))
@@ -327,36 +325,35 @@ impl Config {
 #[derive(Clone)]
 struct RetryErrorResponse(u8);
 
-impl Policy<Request, Response, Error> for RetryErrorResponse {
+impl Policy<Request, Response, ClientError> for RetryErrorResponse {
     type Future = future::Ready<Self>;
 
-    fn retry(&self, req: &Request, result: Result<&Response, &Error>) -> Option<Self::Future> {
+    fn retry(
+        &self,
+        req: &Request,
+        result: Result<&Response, &ClientError>,
+    ) -> Option<Self::Future> {
         match result {
             Ok(_) => {
                 // Treat all `Response`s as success,
                 // so don't retry...
                 None
             }
-            Err(err) => match err.downcast_ref::<ClientError>() {
-                Some(client_error) => {
-                    match client_error.into() {
-                        ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
-                            log::debug!(
-                                "it took too long to send the request for {} to, retrying",
-                                req.url
-                            );
-                            if self.0 > 0 {
-                                // Try again!
-                                Some(future::ready(RetryErrorResponse(self.0 - 1)))
-                            } else {
-                                // Used all our attempts, no retry...
-                                None
-                            }
-                        }
-                        _ => None,
+            Err(err) => match err.into() {
+                ApiError::InvalidTimestamp => {
+                    log::debug!(
+                        "it took too long to send the request for {} to, retrying",
+                        req.url
+                    );
+                    if self.0 > 0 {
+                        // Try again!
+                        Some(future::ready(RetryErrorResponse(self.0 - 1)))
+                    } else {
+                        // Used all our attempts, no retry...
+                        None
                     }
                 }
-                None => None,
+                _ => None,
             },
         }
     }
@@ -619,44 +616,50 @@ impl<'a, Region> BinanceFetcher<Region> {
                 .headers(self.default_headers())
                 .cache_response(true)
                 .build()?;
-            let resp = self.endpoint_services.route(req).await;
+            let resp = self.endpoint_services.route(req).await?;
 
-            match resp {
-                Ok(resp) => {
-                    let mut binance_trades = self.from_json::<Vec<Trade>>(&resp).await?;
-                    binance_trades.sort_by_key(|k| k.time);
-                    let fetch_more = binance_trades.len() >= 1000;
-                    log::debug!(
-                        "getting more trades for {} got {}",
-                        symbol.join(""),
-                        binance_trades.len()
-                    );
-                    if fetch_more {
-                        // the API will return id >= fromId, thus add one to not include
-                        // the last processed id.
-                        last_id = binance_trades.iter().last().unwrap().id + 1;
-                        log::debug!("last_id updated to {}", last_id);
-                    };
-                    for mut t in binance_trades.into_iter() {
-                        t.base_asset = Some(symbol.base.clone());
-                        t.quote_asset = Some(symbol.quote.clone());
-                        new_trades.push(t);
-                    }
-                    if !fetch_more {
-                        break;
-                    }
-                }
-                Err(err) => {
-                    let client_error = err.downcast::<ClientError>()?;
-                    return Err(anyhow!(client_error).context(format!(
-                        "couldn't fetch trades from {}{:?} for symbol: {}",
-                        endpoint,
-                        qstr,
-                        symbol.join("")
-                    )));
-                }
+            // match resp {
+            // Ok(resp) => {
+            let mut binance_trades = self
+                .from_json::<Vec<Trade>>(&resp)
+                .await
+                .map_err(|err| anyhow!("response error").context(err))?;
+            binance_trades.sort_by_key(|k| k.time);
+            let fetch_more = binance_trades.len() >= 1000;
+            log::debug!(
+                "getting more trades for {} got {}",
+                symbol.join(""),
+                binance_trades.len()
+            );
+            if fetch_more {
+                // the API will return id >= fromId, thus add one to not include
+                // the last processed id.
+                last_id = binance_trades.iter().last().unwrap().id + 1;
+                log::debug!("last_id updated to {}", last_id);
+            };
+            for mut t in binance_trades.into_iter() {
+                t.base_asset = Some(symbol.base.clone());
+                t.quote_asset = Some(symbol.quote.clone());
+                new_trades.push(t);
             }
+            if !fetch_more {
+                break;
+            }
+            // }
+            // Err(err) => {
+            //     println!("error when fetching margin trades: {err:?}");
+            // let client_error = err.downcast::<ClientError>()?;
+            // log::error!("error when fetching trades from {endpoint}: {client_error}");
+            // return Err(anyhow!(client_error).context(format!(
+            //     "couldn't fetch trades from {}{:?} for symbol: {}",
+            //     endpoint,
+            //     qstr,
+            //     symbol.join("")
+            // )));
+            //     return Err(err);
+            // }
         }
+        // }
 
         self.storage
             .insert_records(&storage_key, &new_trades)
@@ -831,7 +834,8 @@ impl BinanceFetcher<RegionGlobal> {
             .await?;
 
         let endpoint = ApiGlobal::MarginTrades.to_string();
-        let mut futures = Vec::new();
+        // let mut futures = Vec::new();
+        let mut trades = Vec::new();
 
         for is_isolated in &[true, false] {
             let mut extra_params = Query::new();
@@ -843,41 +847,81 @@ impl BinanceFetcher<RegionGlobal> {
             } else if !crossed_margin_pairs.contains(symbol) {
                 break;
             }
-            let fut = self.fetch_trades_from_endpoint(symbol, &endpoint, Some(extra_params));
+            let result = self
+                .fetch_trades_from_endpoint(symbol, &endpoint, Some(extra_params))
+                .await;
 
-            futures.push(fut);
-        }
-
-        let mut trades = Vec::new();
-
-        let results = futures::stream::iter(futures)
-            .buffer_unordered(1000)
-            .collect::<Vec<Result<Vec<Trade>>>>()
-            .await;
-        for result in results {
             match result {
                 Ok(result_trades) => trades.extend(result_trades),
-                Err(err) => match err.downcast::<ClientError>() {
-                    Ok(client_error) => {
-                        match client_error.into() {
-                            // ApiErrorKind::UnavailableSymbol means the symbol is not
-                            // available in the exchange, so we can just ignore it.
-                            // Even though the margin pairs are verified above, sometimes
-                            // the data returned by the exchange is not accurate.
-                            ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
-                                log::debug!(
-                                    "ignoring symbol {} for margin trades",
-                                    symbol.join(""),
-                                );
-                                break;
+                Err(err) => {
+                    for cause in err.chain() {
+                        match cause.downcast_ref::<ClientError>() {
+                            Some(client_error) => {
+                                println!("request error: {client_error:?}");
+                                match client_error.into() {
+                                    // ApiErrorKind::UnavailableSymbol means the symbol is not
+                                    // available in the exchange, so we can just ignore it.
+                                    // Even though the margin pairs are verified above, sometimes
+                                    // the data returned by the exchange is not accurate.
+                                    ApiError::UnavailableSymbol => {
+                                        println!(
+                                            "ignoring symbol {} for margin trades",
+                                            symbol.join(""),
+                                        );
+                                        break;
+                                    }
+                                    err => {
+                                        println!("downcasted another error: {err:?}");
+                                        return Err(anyhow!(err));
+                                    }
+                                }
                             }
-                            err => return Err(anyhow!(err)),
+                            None => {
+                                println!("downcast error: {err:?}");
+                            }
                         }
                     }
-                    Err(err) => return Err(err),
-                },
+                }
             }
+
+            // futures.push(fut);
         }
+
+        // let results = futures::stream::iter(futures)
+        //     .buffer_unordered(1000)
+        //     .collect::<Vec<Result<Vec<Trade>>>>()
+        //     .await;
+        // for result in results {
+        //     match result {
+        //         Ok(result_trades) => trades.extend(result_trades),
+        //         Err(err) => match err.downcast::<ClientError>() {
+        //             Ok(client_error) => {
+        //                 println!("request error: {client_error:?}");
+        //                 match client_error.into() {
+        //                     // ApiErrorKind::UnavailableSymbol means the symbol is not
+        //                     // available in the exchange, so we can just ignore it.
+        //                     // Even though the margin pairs are verified above, sometimes
+        //                     // the data returned by the exchange is not accurate.
+        //                     ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+        //                         log::debug!(
+        //                             "ignoring symbol {} for margin trades",
+        //                             symbol.join(""),
+        //                         );
+        //                         break;
+        //                     }
+        //                     err => {
+        //                         println!("downcasted another error: {err:?}");
+        //                         return Err(anyhow!(err));
+        //                     },
+        //                 }
+        //             }
+        //             Err(err) => {
+        //                 println!("downcast error: {err:?}");
+        //                 return Err(err);
+        //             },
+        //         },
+        //     }
+        // }
 
         Ok(trades)
     }
@@ -976,7 +1020,7 @@ impl BinanceFetcher<RegionGlobal> {
                                         // available in the exchange, so we can just ignore it.
                                         // Even though the margin pairs are verified above, sometimes
                                         // the data returned by the exchange is not accurate.
-                                        ApiError::Api(ApiErrorKind::UnavailableSymbol) => {
+                                        ApiError::UnavailableSymbol => {
                                             log::warn!(
                                                 "ignoring asset {} for margin trades isolated_symbol={:?}",
                                                 asset,
@@ -984,7 +1028,7 @@ impl BinanceFetcher<RegionGlobal> {
                                             );
                                             break;
                                         }
-                                        ApiError::Api(ApiErrorKind::InvalidTimestamp) => {
+                                        ApiError::InvalidTimestamp => {
                                             log::error!(
                                                 "it took to long to send the request for asset={} isolated_symbol={}, retrying",
                                                 asset,

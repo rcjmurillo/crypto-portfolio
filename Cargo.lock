@@ -125,6 +125,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.2",
+ "thiserror",
  "tokio",
  "tower",
 ]
