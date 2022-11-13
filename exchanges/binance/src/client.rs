@@ -32,10 +32,7 @@ use exchange::{
 };
 use market::{Market, MarketData};
 
-use crate::{
-    api_model::*,
-    errors::{Error as ApiError},
-};
+use crate::{api_model::*, errors::Error as ApiError};
 
 const API_DOMAIN_GLOBAL: &str = "https://api.binance.com";
 const API_DOMAIN_US: &str = "https://api.binance.us";
@@ -582,8 +579,12 @@ impl<'a, Region> BinanceFetcher<Region> {
         endpoint: &str,
         extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
-        // todo: send this as param
-        let storage_key = format!("binance.trade[d={},e={}]", self.domain, endpoint);
+        let storage_key = format!(
+            "binance.trade[d={},e={},ep={}]",
+            self.domain,
+            endpoint,
+            extra_params.as_ref().map_or_else(|| "none".to_string(), |q| q.materialize().cacheable_query)
+        );
 
         let trades: Vec<Trade> = self
             .storage
@@ -834,7 +835,6 @@ impl BinanceFetcher<RegionGlobal> {
             .await?;
 
         let endpoint = ApiGlobal::MarginTrades.to_string();
-        // let mut futures = Vec::new();
         let mut trades = Vec::new();
 
         for is_isolated in &[true, false] {
@@ -854,32 +854,24 @@ impl BinanceFetcher<RegionGlobal> {
             match result {
                 Ok(result_trades) => trades.extend(result_trades),
                 Err(err) => {
-                    for cause in err.chain() {
-                        match cause.downcast_ref::<ClientError>() {
-                            Some(client_error) => {
-                                println!("request error: {client_error:?}");
-                                match client_error.into() {
-                                    // ApiErrorKind::UnavailableSymbol means the symbol is not
-                                    // available in the exchange, so we can just ignore it.
-                                    // Even though the margin pairs are verified above, sometimes
-                                    // the data returned by the exchange is not accurate.
-                                    ApiError::UnavailableSymbol => {
-                                        println!(
-                                            "ignoring symbol {} for margin trades",
-                                            symbol.join(""),
-                                        );
-                                        break;
-                                    }
-                                    err => {
-                                        println!("downcasted another error: {err:?}");
-                                        return Err(anyhow!(err));
-                                    }
+                    match err.downcast::<ClientError>() {
+                        Ok(client_error) => {
+                            match client_error.into() {
+                                // ApiErrorKind::UnavailableSymbol means the symbol is not
+                                // available in the exchange, so we can just ignore it.
+                                // Even though the margin pairs are verified above, sometimes
+                                // the data returned by the exchange is not accurate.
+                                ApiError::UnavailableSymbol => {
+                                    log::warn!(
+                                        "ignoring symbol {} for margin trades",
+                                        symbol.join(""),
+                                    );
+                                    break;
                                 }
-                            }
-                            None => {
-                                println!("downcast error: {err:?}");
+                                err => return Err(anyhow!(err)),
                             }
                         }
+                        Err(err) => return Err(anyhow!(err)),
                     }
                 }
             }

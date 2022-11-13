@@ -113,7 +113,6 @@ impl TryFrom<ExchangeConfig> for CoinbaseConfig {
 #[derive(StructOpt)]
 pub enum PortfolioAction {
     Balances,
-    Sync,
     RevenueReport {
         #[structopt(long)]
         asset: Option<String>,

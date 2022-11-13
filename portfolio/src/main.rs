@@ -7,10 +7,10 @@ mod custom_ops;
 mod errors;
 mod reports;
 
-use std::{convert::TryInto, sync::Arc};
+use std::{convert::TryInto, fs::File, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use futures::{future::join_all, stream, StreamExt};
+use futures::{channel::mpsc::Receiver, future::join_all, stream, StreamExt};
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
@@ -83,6 +83,23 @@ fn mk_fetchers(
     fetchers
 }
 
+async fn mk_ops_receiver(
+    config: &cli::Config,
+    ops_file: Option<File>,
+) -> Result<mpsc::Receiver<Operation>> {
+    let file_fetcher = match ops_file {
+        Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
+            Ok(fetcher) => Some(fetcher),
+            Err(err) => {
+                return Err(anyhow!(err).context("could read config from file"));
+            }
+        },
+        None => None,
+    };
+
+    Ok(fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await)
+}
+
 #[tokio::main]
 pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -100,10 +117,7 @@ pub async fn main() -> Result<()> {
     match action {
         PortfolioAction::Balances => {
             const BATCH_SIZE: usize = 1000;
-            let ops = get_operations()?
-                .into_iter()
-                .map(|o: DbOperation| o.try_into());
-
+            let mut receiver = mk_ops_receiver(&config, ops_file).await?;
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
             );
@@ -111,11 +125,13 @@ pub async fn main() -> Result<()> {
 
             let coin_tracker = BalanceTracker::new(cg);
             let mut handles = Vec::new();
-            for (i, op) in ops.into_iter().enumerate() {
-                coin_tracker.batch_operation(op?).await;
+            let mut i = 0;
+            while let Some(op) = receiver.recv().await {
+                coin_tracker.batch_operation(op).await;
                 if i % BATCH_SIZE == 0 {
                     handles.push(coin_tracker.process_batch());
                 }
+                i += 1;
             }
             handles.push(coin_tracker.process_batch());
 
@@ -136,62 +152,18 @@ pub async fn main() -> Result<()> {
             reports::asset_balances(&coin_tracker, binance_client).await?;
             println!();
         }
-        PortfolioAction::Sync => {
-            let config = Arc::new(config);
-            let file_fetcher = match ops_file {
-                Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
-                    Ok(fetcher) => Some(fetcher),
-                    Err(err) => {
-                        return Err(anyhow!(err).context("could read config from file"));
-                    }
-                },
-                None => None,
-            };
-
-            let receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
-            // let prices_fetcher =
-            //     PricesFetcher::new(AssetPrices::new(BinanceFetcher::<RegionGlobal>::new()));
-            let mut cg = CoinGeckoClient::with_config(
-                config.coingecko.as_ref().expect("missing coingecko config"),
-            );
-            cg.init().await?;
-            // let prices_fetcher = PricesFetcher::new(cg);
-            let flusher = OperationsFlusher::new(Db);
-
-            // pipeline to process operations
-            // let (sender, receiver2) = mpsc::channel(100_000);
-            // let f1 = prices_fetcher.process(receiver, Some(sender));
-            let f2 = flusher.process(receiver, None);
-
-            let results = join_all(vec![f2]).await;
-
-            results.iter().for_each(|r| match r {
-                Err(err) => log::error!("{}", err),
-                Ok(_) => (),
-            });
-
-            log::info!("fetch done!");
-        }
         PortfolioAction::RevenueReport {
             asset: report_asset,
         } => {
-            let config = Arc::new(config);
-            let file_fetcher = match ops_file {
-                Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
-                    Ok(fetcher) => Some(fetcher),
-                    Err(err) => {
-                        return Err(anyhow!(err).context("could read config from file"));
-                    }
-                },
-                None => None,
-            };
+            let mut receiver = mk_ops_receiver(&config, ops_file).await?;
 
             let mut ops = Vec::new();
-            let mut receiver = fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await;
             while let Some(op) = receiver.recv().await {
-                // println!("adding {op:?}");
                 ops.push(op);
             }
+
+            println!("processing {} operations", ops.len());
+            // TODO: figure out why the ops are not being processed ???
 
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
@@ -208,7 +180,9 @@ pub async fn main() -> Result<()> {
                 } = op
                 {
                     if market::is_fiat(&asset)
-                        || report_asset.as_ref().map_or(false, |a| a != &asset)
+                        || report_asset
+                            .as_ref()
+                            .map_or(false, |a| !a.eq_ignore_ascii_case(&asset))
                     {
                         continue;
                     }
