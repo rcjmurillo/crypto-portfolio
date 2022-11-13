@@ -114,10 +114,12 @@ pub async fn main() -> Result<()> {
         ops_file,
     } = args;
 
+    let mut ops_receiver = mk_ops_receiver(&config, ops_file).await?;
+
     match action {
         PortfolioAction::Balances => {
             const BATCH_SIZE: usize = 1000;
-            let mut receiver = mk_ops_receiver(&config, ops_file).await?;
+            
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
             );
@@ -126,7 +128,7 @@ pub async fn main() -> Result<()> {
             let coin_tracker = BalanceTracker::new(cg);
             let mut handles = Vec::new();
             let mut i = 0;
-            while let Some(op) = receiver.recv().await {
+            while let Some(op) = ops_receiver.recv().await {
                 coin_tracker.batch_operation(op).await;
                 if i % BATCH_SIZE == 0 {
                     handles.push(coin_tracker.process_batch());
@@ -155,15 +157,10 @@ pub async fn main() -> Result<()> {
         PortfolioAction::RevenueReport {
             asset: report_asset,
         } => {
-            let mut receiver = mk_ops_receiver(&config, ops_file).await?;
-
             let mut ops = Vec::new();
-            while let Some(op) = receiver.recv().await {
+            while let Some(op) = ops_receiver.recv().await {
                 ops.push(op);
             }
-
-            println!("processing {} operations", ops.len());
-            // TODO: figure out why the ops are not being processed ???
 
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
