@@ -119,7 +119,7 @@ pub async fn main() -> Result<()> {
     match action {
         PortfolioAction::Balances => {
             const BATCH_SIZE: usize = 1000;
-            
+
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),
             );
@@ -191,7 +191,7 @@ pub async fn main() -> Result<()> {
                         })
                         .await
                     {
-                        Ok(mr) => println!("\nSale of {} {} at {}:\n> {}", amount, asset, time, mr),
+                        Ok(mr) => reports::sell_detail(asset.as_ref(), amount, time, mr)?,
                         Err(err) => println!(
                             "error when consuming {} {} at {}: {}",
                             amount, asset, time, err

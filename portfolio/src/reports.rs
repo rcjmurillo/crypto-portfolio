@@ -1,13 +1,17 @@
 use std::{cmp::Ordering, collections::HashMap};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
-use exchange::operations::BalanceTracker;
+use exchange::operations::{profit_loss::MatchResult, BalanceTracker};
 use market::MarketData;
 
-pub async fn asset_balances<T: MarketData>(balance_tracker: &BalanceTracker<T>, binance_client: BinanceFetcher<RegionGlobal>) -> Result<()> {
+pub async fn asset_balances<T: MarketData>(
+    balance_tracker: &BalanceTracker<T>,
+    binance_client: BinanceFetcher<RegionGlobal>,
+) -> Result<()> {
     let mut coin_balances = HashMap::<String, f64>::new();
 
     let mut all_assets_usd_unrealized_position = 0.0;
@@ -113,4 +117,44 @@ pub async fn asset_balances<T: MarketData>(balance_tracker: &BalanceTracker<T>, 
     assert!(print_stdout(summary_table.table()).is_ok());
 
     Ok(())
+}
+
+pub fn sell_detail(
+    asset: &str,
+    amount: f64,
+    datetime: DateTime<Utc>,
+    match_result: MatchResult,
+) -> Result<()> {
+    let mut table = Vec::new();
+
+    for p in match_result.purchases {
+        table.push(vec![
+            p.sale_result.cell(),
+            p.source.cell(),
+            p.amount.cell().justify(Justify::Right),
+            p.cost.cell().justify(Justify::Right),
+            p.price.cell().justify(Justify::Right),
+            format!("{} {}", p.paid_with_amount, p.paid_with)
+                .cell()
+                .justify(Justify::Right),
+            p.datetime.cell(),
+        ]);
+    }
+
+    let table = table
+        .table()
+        .title(vec![
+            "Sale result (USD)".cell(),
+            "Source".cell(),
+            "Amount".cell().justify(Justify::Right),
+            format!("{} Cost (USD)", amount).cell().justify(Justify::Right),
+            "Price USD".cell().justify(Justify::Right),
+            "Purchased with".cell().justify(Justify::Right),
+            "Datetime".cell(),
+        ])
+        .bold(true);
+
+    println!("\nSale of {} {} at {}:\n", amount, asset, datetime);
+
+    print_stdout(table.table()).map_err(|e| anyhow!(e))
 }

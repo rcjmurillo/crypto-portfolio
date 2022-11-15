@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Display};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -16,14 +16,14 @@ pub struct Sale {
 
 #[derive(Debug)]
 pub struct Purchase {
-    source: String,
-    amount: f64,
-    cost: f64,
-    price: f64,
-    paid_with: String,
-    paid_with_amount: f64,
-    datetime: DateTime<Utc>,
-    sale_result: OperationResult,
+    pub source: String,
+    pub amount: f64,
+    pub cost: f64,
+    pub price: f64,
+    pub paid_with: String,
+    pub paid_with_amount: f64,
+    pub datetime: DateTime<Utc>,
+    pub sale_result: OperationResult,
 }
 
 #[derive(Debug)]
@@ -32,10 +32,19 @@ pub enum OperationResult {
     Loss(f64),
 }
 
+impl Display for OperationResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OperationResult::Loss(n) => write!(f, "-{n}"),
+            OperationResult::Profit(n) => write!(f, "+{n}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct MatchResult {
-    result: OperationResult,
-    purchases: Vec<Purchase>,
+    pub result: OperationResult,
+    pub purchases: Vec<Purchase>,
 }
 
 impl fmt::Display for MatchResult {
