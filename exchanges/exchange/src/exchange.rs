@@ -38,7 +38,6 @@ pub trait ExchangeClient {
     ) -> Result<Vec<Candle>>;
 }
 
-
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum Status {
@@ -146,7 +145,7 @@ pub(crate) mod datetime_from_str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
+    use quickcheck::{Arbitrary, Gen};
 
     impl Arbitrary for Status {
         fn arbitrary(g: &mut Gen) -> Self {
@@ -157,7 +156,7 @@ mod tests {
     impl Arbitrary for Trade {
         fn arbitrary(g: &mut Gen) -> Self {
             let assets = ["ADA", "SOL", "MATIC"];
-            let quote_assets = ["BTC", "ETH", "AVAX"];
+            let quote_assets = ["BTC", "ETH", "AVAX", "USD"];
             let base_asset = g.choose(&assets).take().unwrap();
             let quote_asset = g.choose(&quote_assets).take().unwrap();
             let sides = [TradeSide::Buy, TradeSide::Sell];
@@ -171,7 +170,7 @@ mod tests {
                 price: 0.1 + u16::arbitrary(g) as f64,
                 amount: 0.1 + u16::arbitrary(g) as f64,
                 fee: u16::arbitrary(g).try_into().unwrap(),
-                fee_asset: g.choose(&assets).take().unwrap().to_string(),
+                fee_asset: g.choose(&quote_assets).take().unwrap().to_string(),
                 time: Utc::now(),
                 side: g.choose(&sides).unwrap().clone(),
             }
