@@ -27,77 +27,93 @@ use crate::{
 
 impl From<Trade> for Vec<Operation> {
     fn from(trade: Trade) -> Self {
-        assert!(trade.base_asset != "", "missing base asset on trade {trade:?}");
-        assert!(trade.quote_asset != "", "missing quote asset on trade {trade:?}");
+        assert!(
+            trade.base_asset != "",
+            "missing base asset on trade {trade:?}"
+        );
+        assert!(
+            trade.quote_asset != "",
+            "missing quote asset on trade {trade:?}"
+        );
         let mut ops = match trade.side {
-            TradeSide::Buy => vec![
-                Operation::BalanceIncrease {
-                    id: 1,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.base_asset.clone(),
-                    amount: trade.amount,
-                },
-                Operation::Cost {
-                    id: 2,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    for_asset: trade.base_asset.clone(),
-                    for_amount: trade.amount,
-                    asset: trade.quote_asset.clone(),
-                    amount: trade.amount * trade.price,
-                    time: trade.time,
-                },
-                Operation::BalanceDecrease {
-                    id: 3,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.quote_asset.clone(),
-                    amount: trade.amount * trade.price,
-                },
-                Operation::Revenue {
-                    id: 4,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.quote_asset.clone(),
-                    amount: trade.amount * trade.price,
-                    time: trade.time,
-                },
-            ],
-            TradeSide::Sell => vec![
-                Operation::BalanceDecrease {
-                    id: 1,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.base_asset.clone(),
-                    amount: trade.amount,
-                },
-                Operation::Revenue {
-                    id: 2,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.base_asset.clone(),
-                    amount: trade.amount,
-                    time: trade.time,
-                },
-                Operation::BalanceIncrease {
-                    id: 3,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    asset: trade.quote_asset.clone(),
-                    amount: trade.amount * trade.price,
-                },
-                Operation::Cost {
-                    id: 4,
-                    source_id: trade.source_id.clone(),
-                    source: trade.source.clone(),
-                    for_asset: trade.quote_asset.clone(),
-                    for_amount: trade.amount * trade.price,
-                    asset: trade.base_asset.clone(),
-                    amount: trade.amount,
-                    time: trade.time,
-                },
-            ],
+            TradeSide::Buy => {
+                let mut ops = vec![
+                    Operation::BalanceIncrease {
+                        id: 1,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.base_asset.clone(),
+                        amount: trade.amount,
+                    },
+                    Operation::Cost {
+                        id: 2,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        for_asset: trade.base_asset.clone(),
+                        for_amount: trade.amount,
+                        asset: trade.quote_asset.clone(),
+                        amount: trade.amount * trade.price,
+                        time: trade.time,
+                    },
+                    Operation::BalanceDecrease {
+                        id: 3,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.quote_asset.clone(),
+                        amount: trade.amount * trade.price,
+                    },
+                ];
+                if !market::is_fiat(&trade.quote_asset) {
+                    ops.push(Operation::Revenue {
+                        id: 4,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.quote_asset.clone(),
+                        amount: trade.amount * trade.price,
+                        time: trade.time,
+                    });
+                }
+                ops
+            }
+            TradeSide::Sell => {
+                let mut ops = vec![
+                    Operation::BalanceDecrease {
+                        id: 1,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.base_asset.clone(),
+                        amount: trade.amount,
+                    },
+                    Operation::Revenue {
+                        id: 2,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.base_asset.clone(),
+                        amount: trade.amount,
+                        time: trade.time,
+                    },
+                    Operation::BalanceIncrease {
+                        id: 3,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        asset: trade.quote_asset.clone(),
+                        amount: trade.amount * trade.price,
+                    },
+                ];
+                if !market::is_fiat(&trade.quote_asset) {
+                    ops.push(Operation::Cost {
+                        id: 4,
+                        source_id: trade.source_id.clone(),
+                        source: trade.source.clone(),
+                        for_asset: trade.quote_asset.clone(),
+                        for_amount: trade.amount * trade.price,
+                        asset: trade.base_asset.clone(),
+                        amount: trade.amount,
+                        time: trade.time,
+                    },);
+                }
+                ops
+            }
         };
         if trade.fee_asset != "" && trade.fee > 0.0 {
             ops.push(Operation::BalanceDecrease {
@@ -107,6 +123,7 @@ impl From<Trade> for Vec<Operation> {
                 asset: trade.fee_asset.clone(),
                 amount: trade.fee,
             });
+
             ops.push(Operation::Cost {
                 id: 6,
                 source_id: trade.source_id,

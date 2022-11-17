@@ -147,7 +147,7 @@ pub fn sell_detail(
             "Sale result (USD)".cell(),
             "Source".cell(),
             "Amount".cell().justify(Justify::Right),
-            format!("{} Cost (USD)", amount).cell().justify(Justify::Right),
+            "Cost basis (USD)".cell().justify(Justify::Right),
             "Price USD".cell().justify(Justify::Right),
             "Purchased with".cell().justify(Justify::Right),
             "Datetime".cell(),

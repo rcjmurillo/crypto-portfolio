@@ -176,8 +176,8 @@ pub async fn main() -> Result<()> {
                     ..
                 } = op
                 {
-                    if market::is_fiat(&asset)
-                        || report_asset
+                    assert!(!market::is_fiat(&asset), "there shouldn't be revenue ops for fiat currencies");
+                    if report_asset
                             .as_ref()
                             .map_or(false, |a| !a.eq_ignore_ascii_case(&asset))
                     {
