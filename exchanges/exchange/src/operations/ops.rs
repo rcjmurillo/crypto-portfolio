@@ -1,15 +1,11 @@
-use std::ascii::AsciiExt;
 use std::collections::{HashMap, HashSet};
-use std::convert::{TryFrom, TryInto};
 
-use anyhow::{anyhow, Error, Result};
-use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, span, Level};
+use tracing::{span, Level};
 
-use crate::operations::{db, storage::Storage};
 use market::{self, Asset, Market, MarketData};
 
 use crate::ExchangeDataFetcher;
@@ -32,6 +28,18 @@ pub struct Amount {
     asset: Asset,
 }
 
+impl Amount {
+    pub fn new<T>(value: f64, asset: T) -> Self
+    where
+        T: Into<Asset>,
+    {
+        Self {
+            value,
+            asset: asset.into(),
+        }
+    }
+}
+
 /**
  * TODO: replace this with the following operations
  * Acquire -> acquire an asset, buy, airdrop, interest, etc.
@@ -49,6 +57,7 @@ pub enum Operation {
         source_id: String,
         source: String,
         amount: Amount,
+        price: Amount,
         costs: Option<Vec<Amount>>,
         time: DateTime<Utc>,
     },
@@ -56,6 +65,7 @@ pub enum Operation {
         source_id: String,
         source: String,
         amount: Amount,
+        price: Amount,
         costs: Option<Vec<Amount>>,
         time: DateTime<Utc>,
     },
@@ -132,14 +142,14 @@ impl<T: MarketData> BalanceTracker<T> {
         time: &DateTime<Utc>,
         balance: &mut HashMap<String, AssetBalance>,
     ) -> Result<()> {
+        let coin_balance = balance.entry(amount.asset.clone()).or_default();
         for cost in costs {
             let span = span!(Level::DEBUG, "tracking asset acquisition cost");
             let _enter = span.enter();
             let usd_market = Market::new(cost.asset.clone(), "USD");
-            let usd_price = market::solve_price(&self.market_data, &usd_market, &time)
+            let usd_price = market::price(&self.market_data, &usd_market, &time)
                 .await?
                 .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
-            let coin_balance = balance.entry(amount.asset.clone()).or_default();
             coin_balance.usd_position -= cost.value * usd_price;
         }
         Ok(())
@@ -153,6 +163,7 @@ impl<T: MarketData> BalanceTracker<T> {
         match op {
             Operation::Acquire {
                 amount,
+                price,
                 costs,
                 time,
                 ..
@@ -166,6 +177,9 @@ impl<T: MarketData> BalanceTracker<T> {
                 let coin_balance = balance.entry(amount.asset.clone()).or_default();
                 coin_balance.amount += amount.value;
 
+                let usd_price = market::usd_price(&self.market_data, &price.asset, time).await?;
+                coin_balance.usd_position -= usd_price;
+
                 if let Some(costs) = costs {
                     let span = span!(Level::DEBUG, "tracking asset acquisition cost");
                     self.track_costs(amount, costs, time, balance);
@@ -173,6 +187,7 @@ impl<T: MarketData> BalanceTracker<T> {
             }
             Operation::Dispose {
                 amount,
+                price,
                 costs,
                 time,
                 ..
@@ -186,10 +201,7 @@ impl<T: MarketData> BalanceTracker<T> {
                 let coin_balance = balance.entry(amount.asset.clone()).or_default();
                 coin_balance.amount -= amount.value;
 
-                let usd_market = Market::new(amount.asset.clone(), "USD");
-                let usd_price = market::solve_price(&self.market_data, &usd_market, &time)
-                    .await?
-                    .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
+                let usd_price = market::usd_price(&self.market_data, &price.asset, &time).await?;
                 let coin_balance = balance.entry(amount.asset.clone()).or_default();
                 coin_balance.usd_position += amount.value * usd_price;
 
@@ -256,130 +268,6 @@ impl<T: MarketData> BalanceTracker<T> {
             .clone()
             .into_iter()
             .collect()
-    }
-}
-
-/// Construct to create pipelines that process operations.
-/// Receives and processes operations, then passes them through
-/// to the next processor through the `sender` channel. The last processor
-/// won't be provided with a sender channel.
-#[async_trait]
-pub trait OperationsProcesor {
-    async fn process(
-        &self,
-        mut receiver: mpsc::Receiver<Operation>,
-        sender: Option<mpsc::Sender<Operation>>,
-    ) -> Result<()>;
-}
-
-const OPS_RECEIVE_BATCH_SIZE: usize = 1000;
-
-/// Flushes batched operations into the db
-pub struct OperationsFlusher<S> {
-    ops_storage: S,
-}
-
-impl<S: Storage> OperationsFlusher<S> {
-    pub fn new(ops_storage: S) -> Self {
-        Self { ops_storage }
-    }
-    async fn flush(&self, batch: Vec<Operation>) -> Result<usize> {
-        let mut seen_ops = HashSet::new();
-        let (inserted, skipped) = self
-            .ops_storage
-            .insert_ops(
-                batch
-                    .into_iter()
-                    .inspect(|op| {
-                        if seen_ops.contains(&op.id()) {
-                            log::warn!("duplicate op {} {:?}", op.id(), op);
-                        } else {
-                            seen_ops.insert(op.id());
-                        }
-                    })
-                    .filter_map(|op| op.try_into().map_or(None, |op| Some(op)))
-                    .collect(),
-            )
-            .await?;
-        log::debug!(
-            "flushed {} operations into db, skipped = {}",
-            inserted,
-            skipped
-        );
-        Ok(inserted)
-    }
-}
-
-#[async_trait]
-impl<S: Storage + Send + Sync> OperationsProcesor for OperationsFlusher<S> {
-    async fn process(
-        &self,
-        mut receiver: mpsc::Receiver<Operation>,
-        sender: Option<mpsc::Sender<Operation>>,
-    ) -> Result<()> {
-        log::info!("syncing operations to db...");
-        let mut batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
-        let mut num_ops = 0;
-        let mut num_fetched = 0;
-        while let Some(op) = receiver.recv().await {
-            batch.push(op.clone());
-            if batch.len() == OPS_RECEIVE_BATCH_SIZE {
-                log::info!("batched {}", OPS_RECEIVE_BATCH_SIZE);
-                num_ops += self.flush(batch).await?;
-                num_fetched += OPS_RECEIVE_BATCH_SIZE;
-                batch = Vec::with_capacity(OPS_RECEIVE_BATCH_SIZE);
-            }
-            if let Some(sender) = sender.as_ref() {
-                sender.send(op).await?;
-            }
-        }
-        log::debug!("channel for receiving ops closed in operations flusher");
-        if batch.len() > 0 {
-            log::info!("batched {}", batch.len());
-            num_fetched += batch.len();
-            num_ops += self.flush(batch).await?;
-        };
-        log::info!("fetched={} inserted={}", num_fetched, num_ops);
-        Ok(())
-    }
-}
-
-/// Fetches prices for assets and stores on the db based on the processed
-/// operations.
-pub struct PricesFetcher<T> {
-    market_data: T,
-}
-
-impl<T> PricesFetcher<T> {
-    pub fn new(market_data: T) -> Self {
-        Self { market_data }
-    }
-}
-
-#[async_trait]
-impl<T: MarketData + Send + Sync> OperationsProcesor for PricesFetcher<T> {
-    async fn process(
-        &self,
-        mut receiver: mpsc::Receiver<Operation>,
-        sender: Option<mpsc::Sender<Operation>>,
-    ) -> Result<()> {
-        while let Some(op) = receiver.recv().await {
-            log::debug!("processing op {:?}", op);
-            // match &op {
-            //     Operation::Cost { asset, time, .. } | Operation::Revenue { asset, time, .. } => {
-            //         if asset.to_ascii_lowercase() == "usd" {
-            //             return Ok(1.0);
-            //         }
-            //         self.market_data.price_at(&Market::new(asset, "usd"), time).await?;
-            //     }
-            //     _ => (),
-            // }
-            if let Some(sender) = sender.as_ref() {
-                sender.send(op).await?;
-            }
-        }
-        debug!("channel for receiving ops closed in prices fetcher");
-        Ok(())
     }
 }
 
@@ -467,69 +355,12 @@ pub async fn fetch_ops<'a>(
 mod tests {
     use super::*;
     use crate::{Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw};
-    use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
-    use tokio::sync::Mutex;
     use Operation::*;
 
+    use async_trait::async_trait;
+    use chrono::TimeZone;
+    use tokio::sync::Mutex;
     use proptest::{option::of, prelude::*, sample::select};
-
-    impl Arbitrary for Operation {
-        fn arbitrary(g: &mut Gen) -> Self {
-            let assets: &[&str] = &["BTC", "ETH", "SOL", "AVAX", "USD"];
-            let source_id = u8::arbitrary(g).to_string();
-            let recipient = u8::arbitrary(g).to_string();
-            let sender = u8::arbitrary(g).to_string();
-            let source = g
-                .choose(&["binance", "coinbase", "other-source"])
-                .unwrap()
-                .to_string();
-            // non-zero amounts
-            let amount = Amount {
-                value: 0.1 + u16::arbitrary(g) as f64,
-                asset: g.choose(&assets).unwrap().to_string(),
-            };
-            let cost = Amount {
-                value: 0.1 + u16::arbitrary(g) as f64,
-                asset: g.choose(&assets).unwrap().to_string(),
-            };
-
-            match g.choose(&[0, 1, 2, 3]).unwrap() {
-                &0 => Acquire {
-                    source_id,
-                    source,
-                    amount,
-                    costs: Some(vec![cost]),
-                    time: Utc::now(),
-                },
-                &1 => Dispose {
-                    source_id,
-                    source,
-                    amount,
-                    costs: Some(vec![cost]),
-                    time: Utc::now(),
-                },
-                &2 => Send {
-                    source_id,
-                    source,
-                    amount,
-                    costs: Some(vec![cost]),
-                    sender: Some(sender),
-                    recipient: Some(recipient),
-                    time: Utc::now(),
-                },
-                &3 => Receive {
-                    source_id,
-                    source,
-                    amount,
-                    costs: Some(vec![cost]),
-                    sender: Some(sender),
-                    recipient: Some(recipient),
-                    time: Utc::now(),
-                },
-                _ => panic!("unexpected index"),
-            }
-        }
-    }
 
     prop_compose! {
         fn datetime()(year in 2000..2100i32, month in 1..12u32, day in 1..28u32, hour in 0..59u32, minute in 0..59u32) -> DateTime<Utc> {
@@ -610,6 +441,52 @@ mod tests {
         }
     }
 
+    prop_compose! {
+        fn loan()(
+            source_id in any::<u8>().prop_map(|v| v.to_string()),
+            source in "test",
+            asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            amount in 0.1 .. 1000f64,
+            fee in 0.0 .. 1000f64,
+            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            time in datetime(),
+            status in prop_oneof![Just(Status::Success)]
+        ) -> Loan {
+            Loan {
+                source_id,
+                source,
+                asset,
+                amount,
+                time,
+                status
+            }
+        }
+    }
+
+    prop_compose! {
+        fn repay()(
+            source_id in any::<u8>().prop_map(|v| v.to_string()),
+            source in "test",
+            asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            amount in 0.1 .. 1000f64,
+            interest in 0.01 .. 10f64,
+            fee in 0.0 .. 1000f64,
+            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            time in datetime(),
+            status in prop_oneof![Just(Status::Success), Just(Status::Failure)]
+        ) -> Repay {
+            Repay {
+                source_id,
+                source,
+                asset,
+                amount,
+                interest,
+                time,
+                status
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn trade_buy_into_operations(trade in trade(TradeSide::Buy)) {
@@ -623,21 +500,21 @@ mod tests {
             prop_assert_eq!(ops.len(), expected_num_ops);
 
             match &ops[0] {
-                Acquire { amount, costs, .. } => {
+                Acquire { amount, price, costs, .. } => {
                     prop_assert_eq!(amount.asset, t.base_asset);
-                    prop_assert_eq!(amount.value, t.amount);
-
-                    let costs = costs.unwrap();
-                    let cost = costs[0];
-
-                    prop_assert_eq!(cost.asset, t.quote_asset);
-                    prop_assert_eq!(cost.value, t.amount * t.price);
+                    prop_assert_eq!(amount.value, t.base_amount());
+                    prop_assert_eq!(price.asset, t.quote_asset);
+                    prop_assert_eq!(price.value, t.quote_amount());
 
                     if t.fee > 0.0 {
-                        let cost = costs[1];
+                        let costs = costs.unwrap();
+                        prop_assert_eq!(costs.len(), 1);
+                        let cost = costs[0];
 
                         prop_assert_eq!(cost.asset, t.fee_asset);
                         prop_assert_eq!(cost.value, t.fee);
+                    } else {
+                        prop_assert!(!matches!(costs, None));
                     }
                 }
                 _ => {
@@ -646,13 +523,11 @@ mod tests {
             }
 
             match &ops[1] {
-                Dispose {
-                    amount,
-                    costs,
-                    ..
-                } => {
+                Dispose { amount, price, costs, .. } => {
                     prop_assert_eq!(amount.asset, t.quote_asset);
-                    prop_assert_eq!(amount.value, t.amount * t.price);
+                    prop_assert_eq!(amount.value, t.quote_amount());
+                    prop_assert_eq!(price.asset, t.base_asset);
+                    prop_assert_eq!(price.value, t.base_amount());
                     prop_assert!(matches!(costs, None));
                 }
                 _ => {
@@ -662,13 +537,11 @@ mod tests {
 
             if t.fee > 0.0 {
                 match &ops[2] {
-                    Dispose {
-                        amount,
-                        costs,
-                        ..
-                    } => {
+                    Dispose { amount, price, costs, .. } => {
                         prop_assert_eq!(amount.asset, t.fee_asset);
                         prop_assert_eq!(amount.value, t.fee);
+                        prop_assert_eq!(price.asset, t.fee_asset);
+                        prop_assert_eq!(price.value, t.fee);
                         prop_assert!(matches!(costs, None));
                     }
                     _ => {
@@ -692,13 +565,11 @@ mod tests {
             prop_assert_eq!(ops.len(), expected_num_ops);
 
             match &ops[0] {
-                Dispose {
-                    amount,
-                    costs,
-                    ..
-                } => {
+                Dispose { amount, price, costs, .. } => {
                     prop_assert_eq!(amount.asset, t.base_asset);
-                    prop_assert_eq!(amount.value, t.amount);
+                    prop_assert_eq!(amount.value, t.base_amount());
+                    prop_assert_eq!(price.asset, t.quote_asset);
+                    prop_assert_eq!(price.value, t.quote_amount());
 
                     if t.fee > 0.0 {
                         let costs = costs.unwrap();
@@ -714,20 +585,12 @@ mod tests {
             }
 
             match &ops[1] {
-                Acquire { amount, costs, .. } => {
+                Acquire { amount, price, costs, .. } => {
                     prop_assert_eq!(amount.asset, t.quote_asset);
-                    prop_assert_eq!(amount.value, t.amount * t.price);
-
-                    if market::is_fiat(&amount.asset) {
-                        prop_assert!(matches!(costs, None));
-                    } else {
-                        prop_assert!(matches!(costs, Some(..)));
-                        let costs = costs.unwrap();
-                        prop_assert_eq!(costs.len(), 1);
-                        let cost = costs[0];
-                        prop_assert_eq!(cost.asset, t.base_asset);
-                        prop_assert_eq!(cost.value, t.amount);
-                    }
+                    prop_assert_eq!(amount.value, t.quote_amount());
+                    prop_assert_eq!(price.asset, t.base_asset);
+                    prop_assert_eq!(price.value, t.base_amount());
+                    prop_assert!(matches!(costs, None));
                 }
                 _ => {
                     prop_assert!(false, "op 2 is not Acquire");
@@ -736,13 +599,11 @@ mod tests {
 
             if t.fee > 0.0 {
                 match &ops[2] {
-                    Dispose {
-                        amount,
-                        costs,
-                        ..
-                    } => {
+                    Dispose { amount, price, costs, .. } => {
                         prop_assert_eq!(amount.asset, t.fee_asset);
                         prop_assert_eq!(amount.value, t.fee);
+                        prop_assert_eq!(price.asset, t.fee_asset);
+                        prop_assert_eq!(price.value, t.fee);
                         prop_assert!(matches!(costs, None));
                     }
                     _ => prop_assert!(false, "op 3 is not Dispose")
@@ -847,110 +708,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn loan_into_operations() {
-        fn prop(loan: Loan) -> TestResult {
-            if loan.amount == 0.0 {
-                return TestResult::discard();
-            }
-
-            let d = loan.clone();
+    proptest! {
+        fn loan_into_operations(loan in loan()) {
+            let l = loan.clone();
             let ops: Vec<Operation> = loan.into();
 
-            let num_ops = match d.status {
+            let num_ops = match l.status {
                 Status::Success => 1,
                 Status::Failure => 0,
             };
-            if ops.len() != num_ops {
-                println!(
-                    "incorrect number of ops expected {} got {}",
-                    num_ops,
-                    ops.len()
-                );
-                return TestResult::failed();
-            }
-
+            prop_assert_eq!(ops.len(), num_ops);
             if num_ops > 0 {
-                match &ops[0] {
-                    BalanceIncrease { asset, amount, .. } => {
-                        if asset != &d.asset || amount != &d.amount {
-                            println!("non-matching fields for op 1");
-                            return TestResult::failed();
-                        }
-                    }
-                    _ => {
-                        println!("not matching op 1 type");
-                        return TestResult::failed();
-                    }
+                if let Acquire { amount, price, costs, .. } = &ops[0] {
+                    prop_assert_eq!(amount.asset, l.asset);
+                    prop_assert_eq!(amount.value, l.amount);
+                    prop_assert_eq!(price.asset, l.asset);
+                    prop_assert_eq!(price.value, 0.0);
+                    prop_assert!(matches!(costs, None));
+                } else {
+                    prop_assert!(false, "op 1 is not Acquire");
                 }
             }
-            return TestResult::passed();
         }
-        quickcheck(prop as fn(Loan) -> TestResult);
     }
 
-    #[test]
-    fn repay_into_operations() {
-        fn prop(repay: Repay) -> TestResult {
-            if repay.amount == 0.0 {
-                return TestResult::discard();
-            }
-
-            let d = repay.clone();
+    proptest! {
+        fn repay_into_operations(repay in repay()) {
+            let r = repay.clone();
             let ops: Vec<Operation> = repay.into();
 
-            let num_ops = match d.status {
-                Status::Success => 2,
+            let num_ops = match r.status {
+                Status::Success => 1,
                 Status::Failure => 0,
             };
-            if ops.len() != num_ops {
-                println!(
-                    "incorrect number of ops expected {} got {}",
-                    num_ops,
-                    ops.len()
-                );
-                return TestResult::failed();
-            }
-
+            prop_assert_eq!(ops.len(), num_ops);
             if num_ops > 0 {
-                match &ops[0] {
-                    BalanceDecrease { asset, amount, .. } => {
-                        if asset != &d.asset || amount != &(d.amount + d.interest) {
-                            println!("non-matching fields for op 1");
-                            return TestResult::failed();
-                        }
-                    }
-                    _ => {
-                        println!("not matching op 1 type");
-                        return TestResult::failed();
-                    }
-                }
-                match &ops[1] {
-                    Cost {
-                        for_asset,
-                        for_amount,
-                        asset,
-                        amount,
-                        ..
-                    } => {
-                        if for_asset != &d.asset
-                            || for_amount != &0.0
-                            || asset != &d.asset
-                            || amount != &d.interest
-                        {
-                            println!("non-matching fields for op 2");
-                            return TestResult::failed();
-                        }
-                    }
-                    _ => {
-                        println!("not matching op 2 type");
-                        return TestResult::failed();
-                    }
+                if let Dispose { amount, price, costs, .. } = &ops[0] {
+                    prop_assert_eq!(amount.asset, r.asset);
+                    prop_assert_eq!(amount.value, r.amount + r.interest);
+                    prop_assert_eq!(price.asset, r.asset);
+                    prop_assert_eq!(price.value, 0.0);
+                    prop_assert!(matches!(costs, None));
+                } else {
+                    prop_assert!(false, "op 1 is not Dispose");
                 }
             }
-            return TestResult::passed();
         }
-        quickcheck(prop as fn(Repay) -> TestResult);
     }
 
     #[tokio::test]
@@ -991,134 +794,68 @@ mod tests {
 
         let coin_tracker = BalanceTracker::new(TestMarketData::new());
         let ops = vec![
-            Operation::BalanceIncrease {
-                id: 1,
+            Operation::Acquire {
                 source_id: "1".to_string(),
                 source: "test".to_string(),
-                asset: "BTC".into(),
-                amount: 0.03,
-            },
-            Operation::Cost {
-                id: 2,
-                source_id: "2".to_string(),
-                source: "test".to_string(),
-                for_asset: "BTC".to_string(),
-                for_amount: 0.03,
-                asset: "USD".into(),
-                amount: 255.0,
+                amount: Amount::new(0.03, "BTC"),
+                price: Amount::new(255.0, "USD"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceIncrease {
-                id: 3,
+            Operation::Acquire {
                 source_id: "3".to_string(),
                 source: "test".to_string(),
-                asset: "BTC".into(),
-                amount: 0.1,
-            },
-            Operation::Cost {
-                id: 4,
-                source_id: "4".to_string(),
-                source: "test".to_string(),
-                for_asset: "BTC".into(),
-                for_amount: 0.1,
-                asset: "USD".into(),
-                amount: 890.0,
+                amount: Amount::new(0.1, "BTC"),
+                price: Amount::new(890.0, "USD"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceIncrease {
-                id: 5,
+            Operation::Acquire {
                 source_id: "5".to_string(),
                 source: "test".to_string(),
-                asset: "ETH".into(),
-                amount: 0.5,
-            },
-            Operation::Cost {
-                id: 6,
-                source_id: "6".to_string(),
-                source: "test".to_string(),
-                for_asset: "ETH".into(),
-                for_amount: 0.5,
-                asset: "USD".into(),
-                amount: 1000.0,
+                amount: Amount::new(0.5, "ETH"),
+                price: Amount::new(1000.0, "USD"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceIncrease {
-                id: 7,
+            Operation::Acquire {
                 source_id: "7".to_string(),
                 source: "test".to_string(),
-                asset: "ETH".into(),
-                amount: 0.01,
-            },
-            Operation::Cost {
-                id: 8,
-                source_id: "1".to_string(),
-                source: "test".to_string(),
-                for_asset: "ETH".into(),
-                for_amount: 0.01,
-                asset: "USD".into(),
-                amount: 21.0,
+                amount: Amount::new(0.01, "ETH"),
+                price: Amount::new(21.0, "USD"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceDecrease {
-                id: 9,
+            Operation::Dispose {
                 source_id: "9".to_string(),
                 source: "test".to_string(),
-                asset: "ETH".into(),
-                amount: 0.2,
-            },
-            Operation::Revenue {
-                id: 10,
-                source_id: "10".to_string(),
-                source: "test".to_string(),
-                asset: "ETH".into(),
-                amount: 0.2,
+                amount: Amount::new(0.2, "ETH"),
+                price: Amount::new(0.2, "ETH"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceIncrease {
-                id: 11,
+            Operation::Acquire {
                 source_id: "11".to_string(),
                 source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 0.5,
-            },
-            Operation::Cost {
-                id: 12,
-                source_id: "12".to_string(),
-                source: "test".to_string(),
-                for_asset: "DOT".into(),
-                for_amount: 0.5,
-                asset: "USD".into(),
-                amount: 7.5,
+                amount: Amount::new(0.5, "DOT"),
+                price: Amount::new(7.5, "USD"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceDecrease {
-                id: 13,
+            Operation::Dispose {
                 source_id: "13".to_string(),
                 source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 0.1,
-            },
-            Operation::Revenue {
-                id: 14,
-                source_id: "14".to_string(),
-                source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 0.1,
+                amount: Amount::new(0.1, "DOT"),
+                price: Amount::new(0.1, "DOT"),
+                costs: None,
                 time: Utc::now(),
             },
-            Operation::BalanceDecrease {
-                id: 15,
+            Operation::Dispose {
                 source_id: "15".to_string(),
                 source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 0.2,
-            },
-            Operation::Revenue {
-                id: 16,
-                source_id: "16".to_string(),
-                source: "test".to_string(),
-                asset: "DOT".into(),
-                amount: 0.2,
+                amount: Amount::new(0.2, "DOT"),
+                price: Amount::new(0.2, "DOT"),
+                costs: None,
                 time: Utc::now(),
             },
         ];
