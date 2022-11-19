@@ -203,7 +203,7 @@ where
                     )
                 };
                 let m = Market::new(&asset, "usd");
-                let price = market::solve_price(&self.market_data, &m, time)
+                let price = market::price(&self.market_data, &m, time)
                     .await?
                     .ok_or_else(|| anyhow!("couldn't find price for {:?}", m))?;
                 amount_to_fulfill -= amount_fulfilled;
@@ -216,7 +216,7 @@ where
                 *paid_amount -= paid_amount_used;
 
                 let usd_market = Market::new(&sale.asset, "usd");
-                let price_at_sale = market::solve_price(
+                let price_at_sale = market::price(
                     &self.market_data,
                     &usd_market,
                     &sale.datetime,
@@ -230,7 +230,7 @@ where
                     // the amount fulfilled from the operation
                     amount: amount_fulfilled,
                     cost: paid_amount_used * price,
-                    price: market::solve_price(&self.market_data, &usd_market, time)
+                    price: market::price(&self.market_data, &usd_market, time)
                         .await?
                         .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?,
                     paid_with: asset.to_string(),
@@ -252,7 +252,7 @@ where
         }
 
         let usd_market = Market::new(&sale.asset, "usd");
-        let sale_asset_price = market::solve_price(
+        let sale_asset_price = market::price(
             &self.market_data,
             &usd_market,
             &sale.datetime,

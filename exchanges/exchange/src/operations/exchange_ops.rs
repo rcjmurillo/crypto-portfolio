@@ -1,5 +1,5 @@
 use crate::{
-    operations::Operation,
+    operations::{Amount, Operation},
     {Deposit, Loan, Repay, Status, Trade, TradeSide, Withdraw},
 };
 
@@ -35,143 +35,94 @@ impl From<Trade> for Vec<Operation> {
             trade.quote_asset != "",
             "missing quote asset on trade {trade:?}"
         );
+
+        // the only cost for trades are the fees if any
+        let has_fees = trade.fee_asset != "" && trade.fee > 0.0;
+        let costs = if has_fees {
+            Some(vec![Amount::new(trade.fee, trade.fee_asset)])
+        } else {
+            None
+        };
+
         let mut ops = match trade.side {
             TradeSide::Buy => {
-                let mut ops = vec![
-                    Operation::BalanceIncrease {
-                        id: 1,
+                vec![
+                    Operation::Acquire {
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
-                        asset: trade.base_asset.clone(),
-                        amount: trade.amount,
-                    },
-                    Operation::Cost {
-                        id: 2,
-                        source_id: trade.source_id.clone(),
-                        source: trade.source.clone(),
-                        for_asset: trade.base_asset.clone(),
-                        for_amount: trade.amount,
-                        asset: trade.quote_asset.clone(),
-                        amount: trade.amount * trade.price,
+                        amount: Amount::new(trade.base_amount(), trade.base_asset.clone()),
+                        price: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
+                        costs: costs,
                         time: trade.time,
                     },
-                    Operation::BalanceDecrease {
-                        id: 3,
+                    Operation::Dispose {
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
-                        asset: trade.quote_asset.clone(),
-                        amount: trade.amount * trade.price,
-                    },
-                ];
-                if !market::is_fiat(&trade.quote_asset) {
-                    ops.push(Operation::Revenue {
-                        id: 4,
-                        source_id: trade.source_id.clone(),
-                        source: trade.source.clone(),
-                        asset: trade.quote_asset.clone(),
-                        amount: trade.amount * trade.price,
+                        amount: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
+                        price: Amount::new(trade.base_amount(), trade.base_asset),
+                        costs: None,
                         time: trade.time,
-                    });
-                }
-                ops
+                    },
+                ]
             }
             TradeSide::Sell => {
-                let mut ops = vec![
-                    Operation::BalanceDecrease {
-                        id: 1,
+                vec![
+                    Operation::Dispose {
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
-                        asset: trade.base_asset.clone(),
-                        amount: trade.amount,
-                    },
-                    Operation::Revenue {
-                        id: 2,
-                        source_id: trade.source_id.clone(),
-                        source: trade.source.clone(),
-                        asset: trade.base_asset.clone(),
-                        amount: trade.amount,
+                        amount: Amount::new(trade.base_amount(), trade.base_asset.clone()),
+                        price: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
+                        costs: costs,
                         time: trade.time,
                     },
-                    Operation::BalanceIncrease {
-                        id: 3,
+                    Operation::Acquire {
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
-                        asset: trade.quote_asset.clone(),
-                        amount: trade.amount * trade.price,
-                    },
-                ];
-                if !market::is_fiat(&trade.quote_asset) {
-                    ops.push(Operation::Cost {
-                        id: 4,
-                        source_id: trade.source_id.clone(),
-                        source: trade.source.clone(),
-                        for_asset: trade.quote_asset.clone(),
-                        for_amount: trade.amount * trade.price,
-                        asset: trade.base_asset.clone(),
-                        amount: trade.amount,
+                        amount: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
+                        price: Amount::new(trade.base_amount(), trade.base_asset.clone()),
+                        costs: None,
                         time: trade.time,
-                    },);
-                }
-                ops
+                    },
+                ]
             }
         };
-        if trade.fee_asset != "" && trade.fee > 0.0 {
-            ops.push(Operation::BalanceDecrease {
-                id: 5,
+        if has_fees {
+            ops.push(Operation::Dispose {
                 source_id: trade.source_id.clone(),
                 source: trade.source.clone(),
-                asset: trade.fee_asset.clone(),
-                amount: trade.fee,
-            });
-
-            ops.push(Operation::Cost {
-                id: 6,
-                source_id: trade.source_id,
-                source: trade.source,
-                for_asset: match trade.side {
-                    TradeSide::Buy => trade.base_asset,
-                    TradeSide::Sell => trade.quote_asset,
-                },
-                for_amount: 0.0,
-                asset: trade.fee_asset,
-                amount: trade.fee,
+                amount: Amount::new(trade.fee, trade.fee_asset.clone()),
+                price: Amount::new(trade.fee, trade.fee_asset.clone()),
+                costs: None,
                 time: trade.time,
             });
         }
-
         ops
     }
 }
 
 impl From<Deposit> for Vec<Operation> {
     fn from(deposit: Deposit) -> Self {
-        let mut ops = vec![Operation::BalanceIncrease {
-            id: 1,
+        let mut ops = vec![Operation::Receive {
             source_id: deposit.source_id.clone(),
             source: deposit.source.clone(),
-            asset: deposit.asset.clone(),
-            amount: deposit.amount,
+            amount: Amount::new(deposit.amount, deposit.asset.clone()),
+            sender: None,
+            recipient: None,
+            costs: deposit
+                .fee
+                .filter(|f| *f > 0.0)
+                .map(|f| vec![Amount::new(f, deposit.asset.clone())]),
+            time: deposit.time,
         }];
         if let Some(fee) = deposit.fee.filter(|f| f > &0.0) {
-            ops.extend(vec![
-                Operation::BalanceDecrease {
-                    id: 2,
-                    source_id: deposit.source_id.clone(),
-                    source: deposit.source.clone(),
-                    asset: deposit.asset.clone(),
-                    amount: fee,
-                },
-                Operation::Cost {
-                    id: 3,
-                    source_id: deposit.source_id,
-                    source: deposit.source,
-                    for_asset: deposit.asset.clone(),
-                    for_amount: 0.0,
-                    asset: deposit.asset,
-                    amount: fee,
-                    time: deposit.time,
-                },
-            ]);
+            ops.extend(vec![Operation::Dispose {
+                source_id: deposit.source_id.clone(),
+                source: deposit.source.clone(),
+                amount: Amount::new(fee, deposit.asset.clone()),
+                price: Amount::new(fee, deposit.asset.clone()),
+                costs: None,
+                time: deposit.time,
+            }]);
         }
         ops
     }
@@ -179,33 +130,28 @@ impl From<Deposit> for Vec<Operation> {
 
 impl From<Withdraw> for Vec<Operation> {
     fn from(withdraw: Withdraw) -> Self {
-        let mut ops = vec![Operation::BalanceDecrease {
-            id: 1,
+        let mut ops = vec![Operation::Send {
             source_id: withdraw.source_id.clone(),
             source: withdraw.source.clone(),
-            asset: withdraw.asset.clone(),
-            amount: withdraw.amount,
+            amount: Amount::new(withdraw.amount, withdraw.asset.clone()),
+            sender: None,
+            recipient: None,
+            costs: if withdraw.fee > 0.0 {
+                Some(vec![Amount::new(withdraw.fee, withdraw.asset.clone())])
+            } else {
+                None
+            },
+            time: withdraw.time,
         }];
         if withdraw.fee > 0.0 {
-            ops.extend(vec![
-                Operation::BalanceDecrease {
-                    id: 2,
-                    source_id: format!("{}-fee", &withdraw.source_id),
-                    source: withdraw.source.clone(),
-                    asset: withdraw.asset.clone(),
-                    amount: withdraw.fee,
-                },
-                Operation::Cost {
-                    id: 3,
-                    source_id: withdraw.source_id,
-                    source: withdraw.source,
-                    for_asset: withdraw.asset.clone(),
-                    for_amount: 0.0,
-                    asset: withdraw.asset,
-                    amount: withdraw.fee,
-                    time: withdraw.time,
-                },
-            ]);
+            ops.extend(vec![Operation::Dispose {
+                source_id: withdraw.source_id.clone(),
+                source: withdraw.source.clone(),
+                amount: Amount::new(withdraw.fee, withdraw.asset.clone()),
+                price: Amount::new(withdraw.fee, withdraw.asset.clone()),
+                costs: None,
+                time: withdraw.time,
+            }]);
         }
         ops
     }
@@ -214,12 +160,13 @@ impl From<Withdraw> for Vec<Operation> {
 impl From<Loan> for Vec<Operation> {
     fn from(loan: Loan) -> Self {
         match loan.status {
-            Status::Success => vec![Operation::BalanceIncrease {
-                id: 1,
+            Status::Success => vec![Operation::Acquire {
                 source_id: loan.source_id,
                 source: loan.source,
-                asset: loan.asset,
-                amount: loan.amount,
+                amount: Amount::new(loan.amount, loan.asset),
+                price: Amount::new(0.0, loan.asset),
+                costs: None,
+                time: loan.time,
             }],
             Status::Failure => vec![],
         }
@@ -229,25 +176,18 @@ impl From<Loan> for Vec<Operation> {
 impl From<Repay> for Vec<Operation> {
     fn from(repay: Repay) -> Self {
         match repay.status {
-            Status::Success => vec![
-                Operation::BalanceDecrease {
-                    id: 1,
-                    source_id: repay.source_id.clone(),
-                    source: repay.source.clone(),
-                    asset: repay.asset.clone(),
-                    amount: repay.amount + repay.interest,
+            Status::Success => vec![Operation::Acquire {
+                source_id: repay.source_id,
+                source: repay.source,
+                amount: Amount::new(repay.amount, repay.asset),
+                price: Amount::new(0.0, repay.asset),
+                costs: if repay.interest > 0.0 {
+                    Some(vec![Amount::new(repay.interest, repay.asset)])
+                } else {
+                    None
                 },
-                Operation::Cost {
-                    id: 2,
-                    source_id: repay.source_id,
-                    source: repay.source,
-                    for_asset: repay.asset.clone(),
-                    for_amount: 0.0,
-                    asset: repay.asset,
-                    amount: repay.interest,
-                    time: repay.time,
-                },
-            ],
+                time: repay.time,
+            }],
             Status::Failure => vec![],
         }
     }

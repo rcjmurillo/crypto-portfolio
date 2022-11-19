@@ -68,6 +68,16 @@ pub struct Trade {
     pub side: TradeSide,
 }
 
+impl Trade {
+    pub fn base_amount(&self) -> f64 {
+        self.amount
+    }
+
+    pub fn quote_amount(&self) -> f64 {
+        self.amount * self.price
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct Deposit {
     pub source_id: String,

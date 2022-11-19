@@ -83,7 +83,7 @@ pub fn is_fiat(asset: &str) -> bool {
     FIAT_CURRENCIES.contains(&asset.to_lowercase().as_str())
 }
 
-pub async fn solve_price<T, U>(
+pub async fn price<T, U>(
     market_data: T,
     market: &Market,
     time: &DateTime<Utc>,
@@ -110,6 +110,20 @@ where
             None => Ok(None),
         }
     }
+}
+
+pub async fn usd_price<T: MarketData>(
+    market_data: &T,
+    asset: &Asset,
+    time: &DateTime<Utc>,
+) -> Result<f64> {
+    if asset.eq_ignore_ascii_case("usd") {
+        return Ok(1.0);
+    }
+    let usd_market = Market::new(asset.clone(), "USD");
+    price(market_data, &usd_market, time)
+        .await?
+        .ok_or_else(|| anyhow!("couldn't find USD price for {:?}", usd_market))
 }
 
 #[derive(Clone)]
@@ -152,7 +166,7 @@ where
 
     fn call(&mut self, req: Request) -> Self::Future {
         let md = self.0.clone();
-        Box::pin(async move { solve_price(md, &req.market, &req.time).await })
+        Box::pin(async move { price(md, &req.market, &req.time).await })
     }
 }
 
@@ -214,7 +228,7 @@ mod tests {
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
 
-    use crate::{solve_price, Market, MarketData};
+    use crate::{price, Market, MarketData};
 
     macro_rules! assert_close {
         ($n1:expr,$n2:expr,$t:expr) => {
@@ -281,10 +295,7 @@ mod tests {
         let market_data = TestMarketData;
         assert!(market_data.has_market(&m).await.unwrap());
         assert_eq!(
-            solve_price(&market_data, &m, &Utc::now())
-                .await
-                .unwrap()
-                .unwrap(),
+            price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
             // direct BTC-USD
             19_000.0
         );
@@ -294,17 +305,11 @@ mod tests {
 
         println!(
             "{} {}",
-            solve_price(&market_data, &m, &Utc::now())
-                .await
-                .unwrap()
-                .unwrap(),
+            price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
             19_000.0 * (1.0 / 0.9998)
         );
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now())
-                .await
-                .unwrap()
-                .unwrap(),
+            price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
             // BTC-USD * (1 / USDC-USD)
             19_000.0 * (1.0 / 0.9998),
             5.0
@@ -313,10 +318,7 @@ mod tests {
         let m = Market::new("SOL".to_string(), "BTC".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now())
-                .await
-                .unwrap()
-                .unwrap(),
+            price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
             // SOL-ETH * ETH-BTC
             0.02354 * 0.07113673,
             0.0000001
@@ -325,10 +327,7 @@ mod tests {
         let m = Market::new("ADA".to_string(), "DOT".to_string());
         assert!(!market_data.has_market(&m).await.unwrap());
         assert_close!(
-            solve_price(&market_data, &m, &Utc::now())
-                .await
-                .unwrap()
-                .unwrap(),
+            price(&market_data, &m, &Utc::now()).await.unwrap().unwrap(),
             // ADA-ETH * (1 / DOT-ETH)
             0.0003274 * (1.0 / 0.004655),
             0.0001
