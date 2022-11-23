@@ -1,10 +1,13 @@
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    iter::Peekable,
+};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::operations::Operation;
+use crate::operations::{Amount, Operation};
 use market::{Market, MarketData};
 
 #[derive(Debug)]
@@ -20,10 +23,95 @@ pub struct Purchase {
     pub amount: f64,
     pub cost: f64,
     pub price: f64,
-    pub paid_with: String,
-    pub paid_with_amount: f64,
+    pub paid_with: Vec<Amount>,
     pub datetime: DateTime<Utc>,
     pub sale_result: OperationResult,
+}
+
+#[derive(Debug)]
+struct OperationCostBasis<'a> {
+    operation: &'a Operation,
+    remaining_amount: f64,
+}
+
+impl<'a> OperationCostBasis<'a> {
+    fn from_operation(operation: &'a Operation) -> Self {
+        let remaining_amount = operation.amount().value;
+        Self {
+            operation,
+            remaining_amount,
+        }
+    }
+
+    /// Computes the cost basis vector for the provided amount. It'll consume the most possible amount
+    /// from this operation to determine the cost basis, which will be a vector of costs given those
+    /// can be in different assets.
+    /// The first element of the tuple represents the amount consumed from this operation, it may be
+    /// not possible to consume all the provided amount, so the caller knows the remaining amount to
+    /// compute the cost from another operation.
+    /// It also updates the remaining amount available for consumption for other operations.
+    fn cost_basis_for(&mut self, amount: f64) -> Option<(f64, Vec<Amount>)> {
+        // no amount to consume, just return
+        if self.remaining_amount == 0.0 {
+            return None;
+        }
+        // the amount to consume for the asset acquisition is min(amount, self.remaining_amount).
+        // std::cmp::min can be used for floats.
+        let amount_consumed = if amount <= self.remaining_amount {
+            amount
+        } else {
+            self.remaining_amount
+        };
+        match &self.operation {
+            Operation::Acquire {
+                amount,
+                price,
+                costs,
+                ..
+            } => {
+                // the cost basis for the acquisition of asset amount is the price of that asset per unit multiplied
+                // by the number of units consumed from this acquisition operation.
+                let mut all_costs = vec![Amount::new(
+                    amount_consumed * price.value,
+                    price.asset.clone(),
+                )];
+                // plus any additional costs associated with the operation.
+                if let Some(op_costs) = costs {
+                    for c in op_costs {
+                        // use the cost per unit so costs for partial amounts of the transaction can be computed
+                        // correctly.
+                        let cost_per_unit = c.value / amount.value;
+                        all_costs.push(Amount::new(
+                            amount_consumed * cost_per_unit,
+                            c.asset.clone(),
+                        ));
+                    }
+                }
+                self.remaining_amount -= amount_consumed;
+                Some((amount_consumed, all_costs))
+            }
+            Operation::Receive { amount, costs, .. } | Operation::Send { amount, costs, .. } => {
+                // send and receive operations doesn't have a costs basis as there is no trade, just the
+                // cost of the operation.
+                // Also these operations don't consume the provided amount.
+                let all_costs = if let Some(op_costs) = costs {
+                    op_costs
+                        .iter()
+                        .map(|c| {
+                            let cost_per_unit = c.value / amount.value;
+                            Amount::new(amount_consumed * cost_per_unit, c.asset.clone())
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                Some((0.0, all_costs))
+            }
+            Operation::Dispose { .. } => {
+                unreachable!("found a Dispose operation when none is expected")
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -121,7 +209,7 @@ pub enum ConsumeStrategy {
 ///     operations when there are a multiple operations which can be used to compute the
 ///     profit/loss of a sale.
 pub struct OperationsStream<T> {
-    ops: Vec<Operation>,
+    ops: Peekable<<Vec<Operation> as IntoIterator>::IntoIter>,
     market_data: T,
 }
 
@@ -132,22 +220,15 @@ where
     pub fn from_ops(ops: Vec<Operation>, strategy: ConsumeStrategy, market_data: T) -> Self {
         let mut ops = ops
             .into_iter()
-            .filter(|op| matches!(op, Operation::Cost { .. }))
+            .filter(|op| !matches!(op, Operation::Dispose { .. }))
             .collect::<Vec<Operation>>();
         ops.sort_by_key(|op| match strategy {
-            // the oldest operations will appear first when iterating
-            ConsumeStrategy::Fifo => match op {
-                Operation::Cost { time, .. } => time.timestamp(),
-                _ => 0,
-            },
+            ConsumeStrategy::Fifo => op.time().timestamp(),
             // the newest operations will appear first when iterating
-            ConsumeStrategy::Lifo => match op {
-                Operation::Cost { time, .. } => -time.timestamp(),
-                _ => 0,
-            },
+            ConsumeStrategy::Lifo => -op.time().timestamp(),
         });
         Self {
-            ops: ops.into(),
+            ops: ops.into_iter().peekable(),
             market_data,
         }
     }
@@ -155,111 +236,70 @@ where
     pub async fn consume(&mut self, sale: &Sale) -> Result<MatchResult> {
         log::debug!("consuming sale {:?}", sale);
 
-        // consume purchase operations until we fulfill this amount
+        // consume operations until we fulfill this amount
         let mut amount_to_fulfill = sale.amount;
         let mut consumed_ops = Vec::new();
         // the total cost of purchasing the amount from the sale
-        let mut cost = 0.0;
-        let mut ops_iter = self.ops.iter_mut();
-        // .filter(|op| {
-        //     if let Operation::Cost { for_asset, .. } = op {
-        //         for_asset == &sale.asset
-        //     } else {
-        //         false
-        //     }
-        // });
+        let mut total_cost = 0.0;
+
         while amount_to_fulfill > 0.0 {
-            if let Some(mut purchase) = ops_iter.next() {
-                let (source, purchased_amount, paid_amount, asset, time) = match &mut purchase {
-                    Operation::Cost {
-                        ref source,
-                        ref mut for_amount,
-                        ref mut amount,
-                        ref for_asset,
-                        ref asset,
-                        ref time,
-                        ..
-                    } => {
-                        if for_asset == &sale.asset {
-                            (source, for_amount, amount, asset, time)
-                        } else {
-                            continue;
-                        }
+            if let Some(op) = self.ops.peek() {
+                let mut op_cost_basis = OperationCostBasis::from_operation(op);
+
+                let cost_basis = op_cost_basis.cost_basis_for(amount_to_fulfill);
+                if let Some((amount_fulfilled, costs)) = cost_basis {
+                    amount_to_fulfill -= amount_fulfilled;
+
+                    let mut paid_with = vec![];
+                    let mut op_cost = total_cost;
+                    for c in costs {
+                        // compute the cost in USD
+                        let usd_price = market::usd_price(
+                            &self.market_data,
+                            &c.asset,
+                            op_cost_basis.operation.time(),
+                        )
+                        .await?;
+                        op_cost += c.value * usd_price;
+                        paid_with.push(c);
                     }
-                    _ => continue,
-                };
-                if *purchased_amount == 0.0 && *paid_amount == 0.0 {
-                    continue;
-                }
-                // purchased_amount that will be used to fulfill the sale
-                let (amount_fulfilled, paid_amount_used) = if *purchased_amount < amount_to_fulfill
-                {
-                    (*purchased_amount, *paid_amount)
+                    total_cost += op_cost;
+
+                    let usd_price_at_sale =
+                        market::usd_price(&self.market_data, &sale.asset, &sale.datetime).await?;
+
+                    let sale_revenue = amount_fulfilled * usd_price_at_sale;
+                    consumed_ops.push(Purchase {
+                        source: op_cost_basis.operation.source().to_string(),
+                        // the amount fulfilled from the operation
+                        amount: amount_fulfilled,
+                        cost: op_cost,
+                        price: market::usd_price(
+                            &self.market_data,
+                            &sale.asset,
+                            op_cost_basis.operation.time(),
+                        )
+                        .await?,
+                        paid_with,
+                        datetime: *op_cost_basis.operation.time(),
+                        sale_result: match (sale_revenue, op_cost) {
+                            (r, c) if r >= c => OperationResult::Profit(r - c),
+                            (r, c) => OperationResult::Loss(c - r),
+                        },
+                    });
                 } else {
-                    (
-                        amount_to_fulfill,
-                        // compute the partial amount paid for the amount used from the purchase
-                        *paid_amount * (amount_to_fulfill / *purchased_amount),
-                    )
-                };
-                let m = Market::new(&asset, "usd");
-                let price = market::price(&self.market_data, &m, time)
-                    .await?
-                    .ok_or_else(|| anyhow!("couldn't find price for {:?}", m))?;
-                amount_to_fulfill -= amount_fulfilled;
-                let purchase_cost = paid_amount_used * price;
-                cost += purchase_cost;
-                // update the amount used from this purchase to fulfill the
-                // sale, if there is an amount left, it could be still used to
-                // fulfill more sales.
-                *purchased_amount -= amount_fulfilled;
-                *paid_amount -= paid_amount_used;
-
-                let usd_market = Market::new(&sale.asset, "usd");
-                let price_at_sale = market::price(
-                    &self.market_data,
-                    &usd_market,
-                    &sale.datetime,
-                )
-                .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
-
-                let sale_revenue = amount_fulfilled * price_at_sale;
-                let usd_market = Market::new(&sale.asset, "usd");
-                consumed_ops.push(Purchase {
-                    source: source.clone(),
-                    // the amount fulfilled from the operation
-                    amount: amount_fulfilled,
-                    cost: paid_amount_used * price,
-                    price: market::price(&self.market_data, &usd_market, time)
-                        .await?
-                        .ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?,
-                    paid_with: asset.to_string(),
-                    paid_with_amount: paid_amount_used,
-                    datetime: *time,
-                    sale_result: match (sale_revenue, purchase_cost) {
-                        (r, c) if r >= c => OperationResult::Profit(r - c),
-                        (r, c) => OperationResult::Loss(c - r),
-                    },
-                });
-                // if the whole amount from the purchase was used, remove it
-                // from the queue as we can't use it anymore to fulfill more sales.
-                if *purchased_amount == 0.0 {
-                    // TODO: delete op from vec
+                    // nothing more to consume, move to the next operation
+                    self.ops.next();
                 }
             } else {
-                return Err(anyhow!("inconsistency found!!! there are not enough purchase operations to fulfill this sale operation: {:?}", sale));
+                return Err(anyhow!("inconsistency found!!! there are not enough purchase operations to fulfill this dispose operation: {:?}", sale));
             }
         }
 
-        let usd_market = Market::new(&sale.asset, "usd");
-        let sale_asset_price = market::price(
-            &self.market_data,
-            &usd_market,
-            &sale.datetime,
-        )
-        .await?.ok_or_else(|| anyhow!("couldn't find price for {:?}", usd_market))?;
-        let revenue = sale.amount * sale_asset_price;
-        Ok(match (revenue, cost) {
+        let dispose_usd_price =
+            market::usd_price(&self.market_data, &sale.asset, &sale.datetime).await?;
+        let revenue = sale.amount * dispose_usd_price;
+        Ok(match (revenue, total_cost) {
             (r, c) if r >= c => MatchResult {
                 result: OperationResult::Profit(r - c),
                 purchases: consumed_ops,
@@ -272,8 +312,8 @@ where
     }
 
     #[cfg(test)]
-    fn ops(&self) -> Vec<&Operation> {
-        self.ops.iter().collect()
+    fn ops(&self) -> Vec<Operation> {
+        self.ops.clone().collect()
     }
 }
 
@@ -292,12 +332,86 @@ where
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use chrono::TimeZone;
+    use proptest::{collection::vec, option::of, prelude::*, sample::select};
     use quickcheck::{quickcheck, Gen, TestResult};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
     use crate::operations::{storage::Storage, Operation::*};
     use market::Asset;
+
+    prop_compose! {
+        fn amount()(value in 0.01 .. 1000f64, asset in select(vec!["BTC", "ETH", "AVAX", "ADA", "MATIC", "ALGO"])) -> Amount {
+            Amount { value, asset: asset.to_string() }
+        }
+    }
+
+    prop_compose! {
+        fn datetime()(year in 2000..2020i32, month in 1..12u32, day in 1..28u32, hour in 0..23u32, minute in 0..59u32) -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(year, month, day, hour, minute, 0).unwrap()
+        }
+    }
+
+    prop_compose! {
+        fn operation()(
+            source_id in "[a-zA-Z0-9]{5}",
+            source in "test",
+            amount in amount(),
+            price in amount(),
+            costs in of(vec(amount(), 3)),
+            time in datetime(),
+            optype in select(vec!["acquire", "dispose", "send", "receive"])
+        ) -> Operation {
+            match optype {
+                "acquire" => Operation::Acquire {
+                    source_id,
+                    source,
+                    amount,
+                    price,
+                    costs,
+                    time
+                },
+                "dispose" => Operation::Dispose {
+                    source_id,
+                    source,
+                    amount,
+                    price,
+                    costs,
+                    time
+                },
+                "send" => Operation::Send {
+                    source_id,
+                    source,
+                    amount,
+                    sender: Some("test-sender".to_string()),
+                    recipient: Some("test-recipient".to_string()),
+                    costs,
+                    time
+                },
+                "receive" => Operation::Receive {
+                    source_id,
+                    source,
+                    amount,
+                    sender: Some("test-sender".to_string()),
+                    recipient: Some("test-recipient".to_string()),
+                    costs,
+                    time
+                },
+                _ => unreachable!()
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_operation_cost_basis_consume_all_amount(operation in operation()) {
+            prop_assume!(!matches!(operation, Operation::Dispose{ .. }));
+            let mut op = OperationCostBasis::from_operation(&operation);
+            let r = op.cost_basis_for(operation.amount().value);
+            prop_assert!(r.is_some());
+        }
+    }
 
     struct DummyStorage {
         ops: Vec<Operation>,
@@ -349,202 +463,202 @@ mod tests {
         }
     }
 
-    fn valid_sequence(ops: &Vec<Operation>) -> bool {
-        // check that for every revenue operation there are enough prior purchase operations
-        // to cover the amount.
-        let mut filtered_ops: Vec<&Operation> = ops
-            .iter()
-            .filter(|op| matches!(op, Cost { .. }) || matches!(op, Revenue { .. }))
-            .collect();
-        // sort by time, cost and revenue operations are guaranteed to have a time
-        filtered_ops.sort_by_key(|op| op.time().unwrap());
+    // fn valid_sequence(ops: &Vec<Operation>) -> bool {
+    //     // check that for every revenue operation there are enough prior purchase operations
+    //     // to cover the amount.
+    //     let mut filtered_ops: Vec<&Operation> = ops
+    //         .iter()
+    //         .filter(|op| matches!(op, Cost { .. }) || matches!(op, Revenue { .. }))
+    //         .collect();
+    //     // sort by time, cost and revenue operations are guaranteed to have a time
+    //     filtered_ops.sort_by_key(|op| op.time().unwrap());
 
-        // make sure we have at least one revenue op
-        if !filtered_ops.iter().any(|op| matches!(op, Revenue { .. })) {
-            return false;
-        }
-        for (i, op) in filtered_ops.iter().enumerate() {
-            if let Operation::Revenue {
-                amount,
-                asset: rev_asset,
-                ..
-            } = op
-            {
-                let mut prior_amount = 0.0;
-                // go through all the ops that are before this one and verify if
-                // they can cover amount sold.
-                for j in 0..i {
-                    match filtered_ops[j] {
-                        // cost ops increase the availble amount
-                        Cost {
-                            for_amount,
-                            ref for_asset,
-                            ..
-                        } if for_asset == rev_asset => {
-                            prior_amount += for_amount;
-                        }
-                        // previous revenue ops reduce the total available amount
-                        Revenue {
-                            amount, ref asset, ..
-                        } => {
-                            if asset == rev_asset {
-                                prior_amount -= amount;
-                            }
-                        }
-                        _ => (),
-                    }
-                }
-                if prior_amount < *amount {
-                    return false;
-                }
-            }
-        }
-        true
-    }
+    //     // make sure we have at least one revenue op
+    //     if !filtered_ops.iter().any(|op| matches!(op, Revenue { .. })) {
+    //         return false;
+    //     }
+    //     for (i, op) in filtered_ops.iter().enumerate() {
+    //         if let Operation::Revenue {
+    //             amount,
+    //             asset: rev_asset,
+    //             ..
+    //         } = op
+    //         {
+    //             let mut prior_amount = 0.0;
+    //             // go through all the ops that are before this one and verify if
+    //             // they can cover amount sold.
+    //             for j in 0..i {
+    //                 match filtered_ops[j] {
+    //                     // cost ops increase the availble amount
+    //                     Cost {
+    //                         for_amount,
+    //                         ref for_asset,
+    //                         ..
+    //                     } if for_asset == rev_asset => {
+    //                         prior_amount += for_amount;
+    //                     }
+    //                     // previous revenue ops reduce the total available amount
+    //                     Revenue {
+    //                         amount, ref asset, ..
+    //                     } => {
+    //                         if asset == rev_asset {
+    //                             prior_amount -= amount;
+    //                         }
+    //                     }
+    //                     _ => (),
+    //                 }
+    //             }
+    //             if prior_amount < *amount {
+    //                 return false;
+    //             }
+    //         }
+    //     }
+    //     true
+    // }
 
-    fn into_sales(ops: &Vec<Operation>) -> Vec<Sale> {
-        ops.iter()
-            .filter_map(|op| match op {
-                Operation::Revenue {
-                    asset,
-                    amount,
-                    time,
-                    ..
-                } => Some(Sale {
-                    asset: asset.clone(),
-                    amount: *amount,
-                    datetime: *time,
-                }),
-                _ => None,
-            })
-            .collect()
-    }
+    // fn into_sales(ops: &Vec<Operation>) -> Vec<Sale> {
+    //     ops.iter()
+    //         .filter_map(|op| match op {
+    //             Operation::Revenue {
+    //                 asset,
+    //                 amount,
+    //                 time,
+    //                 ..
+    //             } => Some(Sale {
+    //                 asset: asset.clone(),
+    //                 amount: *amount,
+    //                 datetime: *time,
+    //             }),
+    //             _ => None,
+    //         })
+    //         .collect()
+    // }
 
-    quickcheck! {
-        fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
-            let market_data = DummyMarketData::new();
-            let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
-            stream.ops().iter().all(|op| matches!(op, Operation::Cost{..}))
-        }
-    }
+    // quickcheck! {
+    //     fn ops_stream_cost_only(ops: Vec<Operation>) -> bool {
+    //         let market_data = DummyMarketData::new();
+    //         let stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
+    //         stream.ops().iter().all(|op| matches!(op, Operation::Cost{..}))
+    //     }
+    // }
 
-    #[test]
-    fn can_consume_from_fifo_operations_stream() {
-        fn prop(ops: Vec<Operation>) -> TestResult {
-            if !valid_sequence(&ops) {
-                return TestResult::discard();
-            }
-            let sales = into_sales(&ops);
-            let market_data = DummyMarketData::new();
-            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("could not build tokio runtime");
-            for s in sales {
-                if !rt.block_on(stream.consume(&s)).is_ok() {
-                    return TestResult::failed();
-                }
-            }
-            TestResult::passed()
-        }
-        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
-    }
+    // #[test]
+    // fn can_consume_from_fifo_operations_stream() {
+    //     fn prop(ops: Vec<Operation>) -> TestResult {
+    //         if !valid_sequence(&ops) {
+    //             return TestResult::discard();
+    //         }
+    //         let sales = into_sales(&ops);
+    //         let market_data = DummyMarketData::new();
+    //         let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
+    //         let rt = tokio::runtime::Builder::new_current_thread()
+    //             .enable_all()
+    //             .build()
+    //             .expect("could not build tokio runtime");
+    //         for s in sales {
+    //             if !rt.block_on(stream.consume(&s)).is_ok() {
+    //                 return TestResult::failed();
+    //             }
+    //         }
+    //         TestResult::passed()
+    //     }
+    //     quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
+    // }
 
-    #[test]
-    fn consume_at_least_one_or_more_cost_ops() {
-        fn prop(ops: Vec<Operation>) -> TestResult {
-            if ops.len() > 10 || !valid_sequence(&ops) {
-                return TestResult::discard();
-            }
-            let sales = into_sales(&ops);
-            let market_data = DummyMarketData::new();
-            let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("could not build tokio runtime");
-            for s in sales {
-                match rt.block_on(stream.consume(&s)) {
-                    Ok(MatchResult { purchases, .. }) => {
-                        if purchases.len() == 0 {
-                            return TestResult::failed();
-                        }
-                    }
-                    Err(_) => return TestResult::failed(),
-                }
-            }
-            TestResult::passed()
-        }
-        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
-    }
+    // #[test]
+    // fn consume_at_least_one_or_more_cost_ops() {
+    //     fn prop(ops: Vec<Operation>) -> TestResult {
+    //         if ops.len() > 10 || !valid_sequence(&ops) {
+    //             return TestResult::discard();
+    //         }
+    //         let sales = into_sales(&ops);
+    //         let market_data = DummyMarketData::new();
+    //         let mut stream = OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
+    //         let rt = tokio::runtime::Builder::new_current_thread()
+    //             .enable_all()
+    //             .build()
+    //             .expect("could not build tokio runtime");
+    //         for s in sales {
+    //             match rt.block_on(stream.consume(&s)) {
+    //                 Ok(MatchResult { purchases, .. }) => {
+    //                     if purchases.len() == 0 {
+    //                         return TestResult::failed();
+    //                     }
+    //                 }
+    //                 Err(_) => return TestResult::failed(),
+    //             }
+    //         }
+    //         TestResult::passed()
+    //     }
+    //     quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
+    // }
 
-    #[test]
-    fn consume_ops_stream_fifo() {
-        fn prop(ops: Vec<Operation>) -> TestResult {
-            if ops.len() != 3 || !valid_sequence(&ops) {
-                return TestResult::discard();
-            }
-            // op0 must be Cost
-            // op1 must be Cost
-            // op2 must be Revenue
-            // all three ops must be for the same asset
-            let valid = match (&ops[0], &ops[1], &ops[2]) {
-                (
-                    Cost { for_asset: a1, .. },
-                    Cost { for_asset: a2, .. },
-                    Revenue { asset: a3, .. },
-                ) => a1 == a2 && a2 == a3,
-                _ => false,
-            };
-            if !valid {
-                return TestResult::discard();
-            }
+    // #[test]
+    // fn consume_ops_stream_fifo() {
+    //     fn prop(ops: Vec<Operation>) -> TestResult {
+    //         if ops.len() != 3 || !valid_sequence(&ops) {
+    //             return TestResult::discard();
+    //         }
+    //         // op0 must be Cost
+    //         // op1 must be Cost
+    //         // op2 must be Revenue
+    //         // all three ops must be for the same asset
+    //         let valid = match (&ops[0], &ops[1], &ops[2]) {
+    //             (
+    //                 Cost { for_asset: a1, .. },
+    //                 Cost { for_asset: a2, .. },
+    //                 Revenue { asset: a3, .. },
+    //             ) => a1 == a2 && a2 == a3,
+    //             _ => false,
+    //         };
+    //         if !valid {
+    //             return TestResult::discard();
+    //         }
 
-            // check that the first cost op's amount has been partially or fully consumed
-            if let Revenue {
-                amount,
-                asset,
-                time,
-                ..
-            } = &ops[3]
-            {
-                let orig_amounts = [ops[0].amount(), ops[1].amount()];
-                let sale = Sale {
-                    amount: *amount,
-                    asset: asset.clone(),
-                    datetime: *time,
-                };
-                let market_data = DummyMarketData::new();
-                let mut stream =
-                    OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("could not build tokio runtime");
+    //         // check that the first cost op's amount has been partially or fully consumed
+    //         if let Revenue {
+    //             amount,
+    //             asset,
+    //             time,
+    //             ..
+    //         } = &ops[3]
+    //         {
+    //             let orig_amounts = [ops[0].amount(), ops[1].amount()];
+    //             let sale = Sale {
+    //                 amount: *amount,
+    //                 asset: asset.clone(),
+    //                 datetime: *time,
+    //             };
+    //             let market_data = DummyMarketData::new();
+    //             let mut stream =
+    //                 OperationsStream::from_ops(ops, ConsumeStrategy::Fifo, market_data);
+    //             let rt = tokio::runtime::Builder::new_current_thread()
+    //                 .enable_all()
+    //                 .build()
+    //                 .expect("could not build tokio runtime");
 
-                match rt.block_on(stream.consume(&sale)) {
-                    Ok(_) => {
-                        let ops = stream.ops();
-                        // if the sale consumed the whole amount, only one or none ops must remain
-                        if sale.amount >= orig_amounts[0] && ops.len() == 2 {
-                            return TestResult::failed();
-                        } else {
-                            // both ops must remain in the queue
-                            if ops.len() < 2
-                                || ops[0].amount() >= orig_amounts[0]
-                                || ops[1].amount() >= orig_amounts[1]
-                            {
-                                return TestResult::failed();
-                            }
-                        }
-                    }
-                    Err(_) => return TestResult::failed(),
-                }
-            }
-            TestResult::passed()
-        }
+    //             match rt.block_on(stream.consume(&sale)) {
+    //                 Ok(_) => {
+    //                     let ops = stream.ops();
+    //                     // if the sale consumed the whole amount, only one or none ops must remain
+    //                     if sale.amount >= orig_amounts[0] && ops.len() == 2 {
+    //                         return TestResult::failed();
+    //                     } else {
+    //                         // both ops must remain in the queue
+    //                         if ops.len() < 2
+    //                             || ops[0].amount() >= orig_amounts[0]
+    //                             || ops[1].amount() >= orig_amounts[1]
+    //                         {
+    //                             return TestResult::failed();
+    //                         }
+    //                     }
+    //                 }
+    //                 Err(_) => return TestResult::failed(),
+    //             }
+    //         }
+    //         TestResult::passed()
+    //     }
 
-        quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
-    }
+    //     quickcheck(prop as fn(ops: Vec<Operation>) -> TestResult);
+    // }
 }

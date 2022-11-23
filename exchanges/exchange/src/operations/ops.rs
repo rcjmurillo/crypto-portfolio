@@ -24,8 +24,8 @@ pub struct AssetBalance {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Amount {
-    value: f64,
-    asset: Asset,
+    pub value: f64,
+    pub asset: Asset,
 }
 
 impl Amount {
@@ -39,16 +39,6 @@ impl Amount {
         }
     }
 }
-
-/**
- * TODO: replace this with the following operations
- * Acquire -> acquire an asset, buy, airdrop, interest, etc.
- * Dispose -> diposes an assset either by selling, fees, etc.
- * Send -> send an asset from one wallet or entity to another
- * Receive -> receive an asset from another entity, wallet, etc.
- * Both operations will have an optional Cost,
- * Also amounts will be expresed as a new Amount(value, asset)
- */
 
 /// Types of operations used to express any type of transaction
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +104,24 @@ impl Operation {
             | Self::Dispose { amount, .. }
             | Self::Send { amount, .. }
             | Self::Receive { amount, .. } => amount,
+        }
+    }
+
+    pub fn costs(&self) -> &Option<Vec<Amount>> {
+        match self {
+            Self::Acquire { costs, .. }
+            | Self::Dispose { costs, .. }
+            | Self::Send { costs, .. }
+            | Self::Receive { costs, .. } => costs,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::Acquire { source, .. }
+            | Self::Dispose { source, .. }
+            | Self::Send { source, .. }
+            | Self::Receive { source, .. } => source,
         }
     }
 }
@@ -501,17 +509,17 @@ mod tests {
 
             match &ops[0] {
                 Acquire { amount, price, costs, .. } => {
-                    prop_assert_eq!(amount.asset, t.base_asset);
+                    prop_assert_eq!(&amount.asset, &t.base_asset);
                     prop_assert_eq!(amount.value, t.base_amount());
-                    prop_assert_eq!(price.asset, t.quote_asset);
+                    prop_assert_eq!(&price.asset, &t.quote_asset);
                     prop_assert_eq!(price.value, t.quote_amount());
 
                     if t.fee > 0.0 {
-                        let costs = costs.unwrap();
+                        let costs = costs.as_ref().unwrap();
                         prop_assert_eq!(costs.len(), 1);
-                        let cost = costs[0];
+                        let cost = &costs[0];
 
-                        prop_assert_eq!(cost.asset, t.fee_asset);
+                        prop_assert_eq!(&cost.asset, &t.fee_asset);
                         prop_assert_eq!(cost.value, t.fee);
                     } else {
                         prop_assert!(!matches!(costs, None));
@@ -524,9 +532,9 @@ mod tests {
 
             match &ops[1] {
                 Dispose { amount, price, costs, .. } => {
-                    prop_assert_eq!(amount.asset, t.quote_asset);
+                    prop_assert_eq!(&amount.asset, &t.quote_asset);
                     prop_assert_eq!(amount.value, t.quote_amount());
-                    prop_assert_eq!(price.asset, t.base_asset);
+                    prop_assert_eq!(&price.asset, &t.base_asset);
                     prop_assert_eq!(price.value, t.base_amount());
                     prop_assert!(matches!(costs, None));
                 }
@@ -538,9 +546,9 @@ mod tests {
             if t.fee > 0.0 {
                 match &ops[2] {
                     Dispose { amount, price, costs, .. } => {
-                        prop_assert_eq!(amount.asset, t.fee_asset);
+                        prop_assert_eq!(&amount.asset, &t.fee_asset);
                         prop_assert_eq!(amount.value, t.fee);
-                        prop_assert_eq!(price.asset, t.fee_asset);
+                        prop_assert_eq!(&price.asset, &t.fee_asset);
                         prop_assert_eq!(price.value, t.fee);
                         prop_assert!(matches!(costs, None));
                     }
@@ -566,15 +574,15 @@ mod tests {
 
             match &ops[0] {
                 Dispose { amount, price, costs, .. } => {
-                    prop_assert_eq!(amount.asset, t.base_asset);
+                    prop_assert_eq!(&amount.asset, &t.base_asset);
                     prop_assert_eq!(amount.value, t.base_amount());
-                    prop_assert_eq!(price.asset, t.quote_asset);
+                    prop_assert_eq!(&price.asset, &t.quote_asset);
                     prop_assert_eq!(price.value, t.quote_amount());
 
                     if t.fee > 0.0 {
-                        let costs = costs.unwrap();
-                        let cost = costs[0];
-                        prop_assert_eq!(cost.asset, t.fee_asset);
+                        let costs = costs.as_ref().unwrap();
+                        let cost = &costs[0];
+                        prop_assert_eq!(&cost.asset, &t.fee_asset);
                         prop_assert_eq!(cost.value, t.fee);
                     }
 
@@ -586,9 +594,9 @@ mod tests {
 
             match &ops[1] {
                 Acquire { amount, price, costs, .. } => {
-                    prop_assert_eq!(amount.asset, t.quote_asset);
+                    prop_assert_eq!(&amount.asset, &t.quote_asset);
                     prop_assert_eq!(amount.value, t.quote_amount());
-                    prop_assert_eq!(price.asset, t.base_asset);
+                    prop_assert_eq!(&price.asset, &t.base_asset);
                     prop_assert_eq!(price.value, t.base_amount());
                     prop_assert!(matches!(costs, None));
                 }
@@ -600,9 +608,9 @@ mod tests {
             if t.fee > 0.0 {
                 match &ops[2] {
                     Dispose { amount, price, costs, .. } => {
-                        prop_assert_eq!(amount.asset, t.fee_asset);
+                        prop_assert_eq!(&amount.asset, &t.fee_asset);
                         prop_assert_eq!(amount.value, t.fee);
-                        prop_assert_eq!(price.asset, t.fee_asset);
+                        prop_assert_eq!(&price.asset, &t.fee_asset);
                         prop_assert_eq!(price.value, t.fee);
                         prop_assert!(matches!(costs, None));
                     }
@@ -633,15 +641,15 @@ mod tests {
             );
 
             if let Receive { amount, costs, .. } = &ops[0] {
-                prop_assert_eq!(amount.asset, d.asset);
+                prop_assert_eq!(&amount.asset, &d.asset);
                 prop_assert_eq!(amount.value, d.amount);
 
                 if let Some(fee) = d.fee.filter(|f| *f > 0.0) {
                     prop_assert!(matches!(costs, Some(..)));
-                    let costs = costs.unwrap();
+                    let costs = costs.as_ref().unwrap();
                     prop_assert_eq!(costs.len(), 1);
-                    let cost = costs[0];
-                    prop_assert_eq!(cost.asset, amount.asset);
+                    let cost = &costs[0];
+                    prop_assert_eq!(&cost.asset, &amount.asset);
                     prop_assert_eq!(cost.value, fee);
                 }
             } else {
@@ -650,7 +658,7 @@ mod tests {
 
             if let Some(fee) = d.fee.filter(|f| *f > 0.0) {
                 if let Dispose { amount: fee_amount, costs, .. } = &ops[1] {
-                    prop_assert_eq!(fee_amount.asset, d.asset);
+                    prop_assert_eq!(&fee_amount.asset, &d.asset);
                     prop_assert_eq!(fee_amount.value, fee);
                     prop_assert!(matches!(costs, None));
                 } else {
@@ -681,15 +689,15 @@ mod tests {
             );
 
             if let Send { amount, costs, .. } = &ops[0] {
-                prop_assert_eq!(amount.asset, w.asset);
+                prop_assert_eq!(&amount.asset, &w.asset);
                 prop_assert_eq!(amount.value, w.amount);
 
                 if w.fee > 0.0 {
                     prop_assert!(matches!(costs, Some(..)));
-                    let costs = costs.unwrap();
+                    let costs = costs.as_ref().unwrap();
                     prop_assert_eq!(costs.len(), 1);
-                    let cost = costs[0];
-                    prop_assert_eq!(cost.asset, amount.asset);
+                    let cost = &costs[0];
+                    prop_assert_eq!(&cost.asset, &amount.asset);
                     prop_assert_eq!(cost.value, w.fee);
                 }
             } else {
@@ -698,7 +706,7 @@ mod tests {
 
             if w.fee > 0.0 {
                 if let Dispose { amount: fee_amount, costs, .. } = &ops[1] {
-                    prop_assert_eq!(fee_amount.asset, w.asset);
+                    prop_assert_eq!(&fee_amount.asset, &w.asset);
                     prop_assert_eq!(fee_amount.value, w.fee);
                     prop_assert!(matches!(costs, None));
                 } else {
@@ -720,9 +728,9 @@ mod tests {
             prop_assert_eq!(ops.len(), num_ops);
             if num_ops > 0 {
                 if let Acquire { amount, price, costs, .. } = &ops[0] {
-                    prop_assert_eq!(amount.asset, l.asset);
+                    prop_assert_eq!(&amount.asset, &l.asset);
                     prop_assert_eq!(amount.value, l.amount);
-                    prop_assert_eq!(price.asset, l.asset);
+                    prop_assert_eq!(&price.asset, &l.asset);
                     prop_assert_eq!(price.value, 0.0);
                     prop_assert!(matches!(costs, None));
                 } else {
@@ -744,9 +752,9 @@ mod tests {
             prop_assert_eq!(ops.len(), num_ops);
             if num_ops > 0 {
                 if let Dispose { amount, price, costs, .. } = &ops[0] {
-                    prop_assert_eq!(amount.asset, r.asset);
+                    prop_assert_eq!(&amount.asset, &r.asset);
                     prop_assert_eq!(amount.value, r.amount + r.interest);
-                    prop_assert_eq!(price.asset, r.asset);
+                    prop_assert_eq!(&price.asset, &r.asset);
                     prop_assert_eq!(price.value, 0.0);
                     prop_assert!(matches!(costs, None));
                 } else {

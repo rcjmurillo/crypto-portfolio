@@ -39,7 +39,7 @@ impl From<Trade> for Vec<Operation> {
         // the only cost for trades are the fees if any
         let has_fees = trade.fee_asset != "" && trade.fee > 0.0;
         let costs = if has_fees {
-            Some(vec![Amount::new(trade.fee, trade.fee_asset)])
+            Some(vec![Amount::new(trade.fee, trade.fee_asset.clone())])
         } else {
             None
         };
@@ -163,7 +163,7 @@ impl From<Loan> for Vec<Operation> {
             Status::Success => vec![Operation::Acquire {
                 source_id: loan.source_id,
                 source: loan.source,
-                amount: Amount::new(loan.amount, loan.asset),
+                amount: Amount::new(loan.amount, loan.asset.clone()),
                 price: Amount::new(0.0, loan.asset),
                 costs: None,
                 time: loan.time,
@@ -179,8 +179,8 @@ impl From<Repay> for Vec<Operation> {
             Status::Success => vec![Operation::Acquire {
                 source_id: repay.source_id,
                 source: repay.source,
-                amount: Amount::new(repay.amount, repay.asset),
-                price: Amount::new(0.0, repay.asset),
+                amount: Amount::new(repay.amount, repay.asset.clone()),
+                price: Amount::new(0.0, repay.asset.clone()),
                 costs: if repay.interest > 0.0 {
                     Some(vec![Amount::new(repay.interest, repay.asset)])
                 } else {
