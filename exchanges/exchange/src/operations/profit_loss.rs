@@ -12,8 +12,7 @@ use market::{Market, MarketData};
 
 #[derive(Debug)]
 pub struct Sale {
-    pub asset: String,
-    pub amount: f64,
+    pub amount: Amount,
     pub datetime: DateTime<Utc>,
 }
 
@@ -90,23 +89,10 @@ impl<'a> OperationCostBasis<'a> {
                 self.remaining_amount -= amount_consumed;
                 Some((amount_consumed, all_costs))
             }
-            Operation::Receive { amount, costs, .. } | Operation::Send { amount, costs, .. } => {
-                // send and receive operations doesn't have a costs basis as there is no trade, just the
-                // cost of the operation.
-                // Also these operations don't consume the provided amount.
-                let all_costs = if let Some(op_costs) = costs {
-                    op_costs
-                        .iter()
-                        .map(|c| {
-                            let cost_per_unit = c.value / amount.value;
-                            Amount::new(amount_consumed * cost_per_unit, c.asset.clone())
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                Some((0.0, all_costs))
+            Operation::Receive { .. } => {
+                unreachable!("found a Receive operation when none is expected")
             }
+            Operation::Send { .. } => unreachable!("found a Send operation when none is expected"),
             Operation::Dispose { .. } => {
                 unreachable!("found a Dispose operation when none is expected")
             }
@@ -237,7 +223,7 @@ where
         log::debug!("consuming sale {:?}", sale);
 
         // consume operations until we fulfill this amount
-        let mut amount_to_fulfill = sale.amount;
+        let mut amount_to_fulfill = sale.amount.value;
         let mut consumed_ops = Vec::new();
         // the total cost of purchasing the amount from the sale
         let mut total_cost = 0.0;
@@ -266,7 +252,7 @@ where
                     total_cost += op_cost;
 
                     let usd_price_at_sale =
-                        market::usd_price(&self.market_data, &sale.asset, &sale.datetime).await?;
+                        market::usd_price(&self.market_data, &sale.amount.asset, &sale.datetime).await?;
 
                     let sale_revenue = amount_fulfilled * usd_price_at_sale;
                     consumed_ops.push(Purchase {
@@ -276,7 +262,7 @@ where
                         cost: op_cost,
                         price: market::usd_price(
                             &self.market_data,
-                            &sale.asset,
+                            &sale.amount.asset,
                             op_cost_basis.operation.time(),
                         )
                         .await?,
@@ -297,8 +283,8 @@ where
         }
 
         let dispose_usd_price =
-            market::usd_price(&self.market_data, &sale.asset, &sale.datetime).await?;
-        let revenue = sale.amount * dispose_usd_price;
+            market::usd_price(&self.market_data, &sale.amount.asset, &sale.datetime).await?;
+        let revenue = sale.amount.value * dispose_usd_price;
         Ok(match (revenue, total_cost) {
             (r, c) if r >= c => MatchResult {
                 result: OperationResult::Profit(r - c),
@@ -406,10 +392,35 @@ mod tests {
     proptest! {
         #[test]
         fn test_operation_cost_basis_consume_all_amount(operation in operation()) {
-            prop_assume!(!matches!(operation, Operation::Dispose{ .. }));
+            prop_assume!(matches!(operation, Operation::Acquire{ .. }));
             let mut op = OperationCostBasis::from_operation(&operation);
             let r = op.cost_basis_for(operation.amount().value);
             prop_assert!(r.is_some());
+            let (consumed_amount, _costs) = r.unwrap();
+            if matches!(operation, Operation::Send{..}) || matches!(operation, Operation::Receive{..}) {
+                prop_assert_eq!(consumed_amount, 0.0);
+            } else {
+                prop_assert_eq!(consumed_amount, operation.amount().value);
+            }
+
+            // test it's only possible to consume no more than the available amount
+            let mut op = OperationCostBasis::from_operation(&operation);
+            let r = op.cost_basis_for(operation.amount().value + 0.1);
+            prop_assert!(r.is_some());
+            let (consumed_amount, _costs) = r.unwrap();
+            prop_assert_eq!(consumed_amount, operation.amount().value);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn test_operation_cost_basis_consume_partial_amount(operation in operation()) {
+            prop_assume!(matches!(operation, Operation::Acquire{ .. }));
+            let mut op = OperationCostBasis::from_operation(&operation);
+            let r = op.cost_basis_for(operation.amount().value * 0.77);
+            prop_assert!(r.is_some());
+            let (consumed_amount, _costs) = r.unwrap();
+            prop_assert_eq!(consumed_amount, operation.amount().value * 0.77);
         }
     }
 

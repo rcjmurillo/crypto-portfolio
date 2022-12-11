@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
-use exchange::operations::{profit_loss::MatchResult, BalanceTracker};
+use exchange::operations::{Amount, profit_loss::MatchResult, BalanceTracker};
 use market::MarketData;
 
 pub async fn asset_balances<T: MarketData>(
@@ -120,8 +120,7 @@ pub async fn asset_balances<T: MarketData>(
 }
 
 pub fn sell_detail(
-    asset: &str,
-    amount: f64,
+    amount: Amount,
     datetime: DateTime<Utc>,
     match_result: MatchResult,
 ) -> Result<()> {
@@ -134,7 +133,7 @@ pub fn sell_detail(
             p.amount.cell().justify(Justify::Right),
             p.cost.cell().justify(Justify::Right),
             p.price.cell().justify(Justify::Right),
-            format!("{} {}", p.paid_with_amount, p.paid_with)
+            p.paid_with.iter().map(|a| a.to_string()).collect::<Vec<String>>().join(",")
                 .cell()
                 .justify(Justify::Right),
             p.datetime.cell(),
@@ -154,7 +153,7 @@ pub fn sell_detail(
         ])
         .bold(true);
 
-    println!("\nSale of {} {} at {}:\n", amount, asset, datetime);
+    println!("\nSale of {} at {}:\n", amount, datetime);
 
     print_stdout(table.table()).map_err(|e| anyhow!(e))
 }

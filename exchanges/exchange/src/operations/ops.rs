@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -37,6 +37,12 @@ impl Amount {
             value,
             asset: asset.into(),
         }
+    }
+}
+
+impl Display for Amount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.value, self.asset)
     }
 }
 

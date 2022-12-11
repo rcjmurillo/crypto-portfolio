@@ -19,11 +19,13 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use exchange::operations::{
-    db::{create_tables, get_operations, Db, Operation as DbOperation},
+    // db::{create_tables, get_operations, Db, Operation as DbOperation},
     fetch_ops,
     profit_loss::{ConsumeStrategy, OperationsStream, Sale},
     storage::Storage,
-    BalanceTracker, Operation, OperationsFlusher, OperationsProcesor, PricesFetcher,
+    BalanceTracker,
+    Operation,
+    // OperationsFlusher, OperationsProcesor, PricesFetcher,
 };
 
 use crate::{
@@ -104,7 +106,7 @@ async fn mk_ops_receiver(
 pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    create_tables()?;
+    // create_tables()?;
 
     let args = Args::from_args();
 
@@ -169,33 +171,28 @@ pub async fn main() -> Result<()> {
             let mut stream = OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, cg);
 
             for op in ops {
-                if let Operation::Revenue {
-                    asset,
-                    amount,
-                    time,
-                    ..
-                } = op
-                {
-                    assert!(!market::is_fiat(&asset), "there shouldn't be revenue ops for fiat currencies");
+                if let Operation::Dispose { amount, time, .. } = op {
+                    assert!(
+                        !market::is_fiat(&amount.asset),
+                        "there shouldn't be revenue ops for fiat currencies"
+                    );
                     if report_asset
-                            .as_ref()
-                            .map_or(false, |a| !a.eq_ignore_ascii_case(&asset))
+                        .as_ref()
+                        .map_or(false, |a| !a.eq_ignore_ascii_case(&amount.asset))
                     {
                         continue;
                     }
                     match stream
                         .consume(&Sale {
-                            asset: asset.clone(),
-                            amount,
+                            amount: amount.clone(),
                             datetime: time,
                         })
                         .await
                     {
-                        Ok(mr) => reports::sell_detail(asset.as_ref(), amount, time, mr)?,
-                        Err(err) => println!(
-                            "error when consuming {} {} at {}: {}",
-                            amount, asset, time, err
-                        ),
+                        Ok(mr) => reports::sell_detail(amount, time, mr)?,
+                        Err(err) => {
+                            println!("error when consuming {} at {}: {}", amount, time, err)
+                        }
                     }
                 }
             }
