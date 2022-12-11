@@ -1,6 +1,6 @@
 use std::{
     fmt::{self, Display},
-    iter::Peekable,
+    iter::Peekable, ops::Deref,
 };
 
 use anyhow::{anyhow, Result};
@@ -27,14 +27,14 @@ pub struct Purchase {
     pub sale_result: OperationResult,
 }
 
-#[derive(Debug)]
-struct OperationCostBasis<'a> {
-    operation: &'a Operation,
+#[derive(Debug, Clone)]
+struct OperationCostBasis {
+    operation: Operation,
     remaining_amount: f64,
 }
 
-impl<'a> OperationCostBasis<'a> {
-    fn from_operation(operation: &'a Operation) -> Self {
+impl OperationCostBasis {
+    fn from_operation(operation: Operation) -> Self {
         let remaining_amount = operation.amount().value;
         Self {
             operation,
@@ -97,6 +97,13 @@ impl<'a> OperationCostBasis<'a> {
                 unreachable!("found a Dispose operation when none is expected")
             }
         }
+    }
+}
+
+impl Deref for OperationCostBasis {
+    type Target = Operation;
+    fn deref(&self) -> &Self::Target {
+        &self.operation
     }
 }
 
@@ -195,7 +202,7 @@ pub enum ConsumeStrategy {
 ///     operations when there are a multiple operations which can be used to compute the
 ///     profit/loss of a sale.
 pub struct OperationsStream<T> {
-    ops: Peekable<<Vec<Operation> as IntoIterator>::IntoIter>,
+    ops: Peekable<<Vec<OperationCostBasis> as IntoIterator>::IntoIter>,
     market_data: T,
 }
 
@@ -206,8 +213,9 @@ where
     pub fn from_ops(ops: Vec<Operation>, strategy: ConsumeStrategy, market_data: T) -> Self {
         let mut ops = ops
             .into_iter()
-            .filter(|op| !matches!(op, Operation::Dispose { .. }))
-            .collect::<Vec<Operation>>();
+            .filter(|op| matches!(op, Operation::Acquire { .. }))
+            .map(|op| OperationCostBasis::from_operation(op))
+            .collect::<Vec<OperationCostBasis>>();
         ops.sort_by_key(|op| match strategy {
             ConsumeStrategy::Fifo => op.time().timestamp(),
             // the newest operations will appear first when iterating
@@ -229,10 +237,8 @@ where
         let mut total_cost = 0.0;
 
         while amount_to_fulfill > 0.0 {
-            if let Some(op) = self.ops.peek() {
-                let mut op_cost_basis = OperationCostBasis::from_operation(op);
-
-                let cost_basis = op_cost_basis.cost_basis_for(amount_to_fulfill);
+            if let Some(op) = self.ops.peek_mut() {
+                let cost_basis = op.cost_basis_for(amount_to_fulfill);
                 if let Some((amount_fulfilled, costs)) = cost_basis {
                     amount_to_fulfill -= amount_fulfilled;
 
@@ -243,7 +249,7 @@ where
                         let usd_price = market::usd_price(
                             &self.market_data,
                             &c.asset,
-                            op_cost_basis.operation.time(),
+                            op.time(),
                         )
                         .await?;
                         op_cost += c.value * usd_price;
@@ -256,18 +262,18 @@ where
 
                     let sale_revenue = amount_fulfilled * usd_price_at_sale;
                     consumed_ops.push(Purchase {
-                        source: op_cost_basis.operation.source().to_string(),
+                        source: op.source().to_string(),
                         // the amount fulfilled from the operation
                         amount: amount_fulfilled,
                         cost: op_cost,
                         price: market::usd_price(
                             &self.market_data,
                             &sale.amount.asset,
-                            op_cost_basis.operation.time(),
+                            op.time(),
                         )
                         .await?,
                         paid_with,
-                        datetime: *op_cost_basis.operation.time(),
+                        datetime: *op.time(),
                         sale_result: match (sale_revenue, op_cost) {
                             (r, c) if r >= c => OperationResult::Profit(r - c),
                             (r, c) => OperationResult::Loss(c - r),
@@ -298,7 +304,7 @@ where
     }
 
     #[cfg(test)]
-    fn ops(&self) -> Vec<Operation> {
+    fn ops(&self) -> Vec<OperationCostBasis> {
         self.ops.clone().collect()
     }
 }
@@ -393,22 +399,18 @@ mod tests {
         #[test]
         fn test_operation_cost_basis_consume_all_amount(operation in operation()) {
             prop_assume!(matches!(operation, Operation::Acquire{ .. }));
-            let mut op = OperationCostBasis::from_operation(&operation);
-            let r = op.cost_basis_for(operation.amount().value);
+            let mut op = OperationCostBasis::from_operation(operation.clone());
+            let r = op.cost_basis_for(op.amount().value);
             prop_assert!(r.is_some());
             let (consumed_amount, _costs) = r.unwrap();
-            if matches!(operation, Operation::Send{..}) || matches!(operation, Operation::Receive{..}) {
-                prop_assert_eq!(consumed_amount, 0.0);
-            } else {
-                prop_assert_eq!(consumed_amount, operation.amount().value);
-            }
+            prop_assert_eq!(consumed_amount, op.amount().value);
 
             // test it's only possible to consume no more than the available amount
-            let mut op = OperationCostBasis::from_operation(&operation);
-            let r = op.cost_basis_for(operation.amount().value + 0.1);
+            let mut op = OperationCostBasis::from_operation(operation);
+            let r = op.cost_basis_for(op.amount().value + 0.1);
             prop_assert!(r.is_some());
             let (consumed_amount, _costs) = r.unwrap();
-            prop_assert_eq!(consumed_amount, operation.amount().value);
+            prop_assert_eq!(consumed_amount, op.amount().value);
         }
     }
 
@@ -416,11 +418,11 @@ mod tests {
         #[test]
         fn test_operation_cost_basis_consume_partial_amount(operation in operation()) {
             prop_assume!(matches!(operation, Operation::Acquire{ .. }));
-            let mut op = OperationCostBasis::from_operation(&operation);
-            let r = op.cost_basis_for(operation.amount().value * 0.77);
+            let mut op = OperationCostBasis::from_operation(operation);
+            let r = op.cost_basis_for(op.amount().value * 0.77);
             prop_assert!(r.is_some());
             let (consumed_amount, _costs) = r.unwrap();
-            prop_assert_eq!(consumed_amount, operation.amount().value * 0.77);
+            prop_assert_eq!(consumed_amount, op.amount().value * 0.77);
         }
     }
 
