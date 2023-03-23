@@ -210,14 +210,14 @@ impl CostBasisResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operations::{storage::Storage, Operation::*};
     use async_trait::async_trait;
     use chrono::TimeZone;
     use proptest::{collection::vec, option::of, prelude::*, sample::select};
-    use quickcheck::Gen;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
-    use crate::operations::{storage::Storage, Operation::*};
+    fn assert_approx_eq(a: f64, b: f64, p: f64) {
+        assert!((a - b).abs() < p);
+    }
 
     prop_compose! {
         fn amount(assets: Option<Vec<&'static str>>)(value in 1.0 .. 100.0f64, asset in select(match assets {
@@ -322,7 +322,26 @@ mod tests {
         }
     }
 
-    proptest! {
+    fn check_operation_costs(operation: &Operation, consumed_amount: f64, costs: &Vec<Amount>) {
+        if let Operation::Acquire { amount, price, costs: op_costs, .. } = operation {
+            // test every cost of the operation has been correctly computed
+            // relative to the consumed amount.
+            if let Some(op_costs) = op_costs {
+                let percentage_consumed = consumed_amount / amount.value;
+                let mut costs_iter = costs.iter();
+                let first_cost = costs_iter.next().unwrap();
+                assert_eq!(&first_cost.asset, &price.asset);
+                assert_approx_eq(first_cost.value, price.value * consumed_amount, 0.0001);
+                assert_eq!(costs_iter.len(), op_costs.len());
+                for (consumed_cost, cost) in costs_iter.zip(op_costs) {
+                    assert_eq!(cost.asset, consumed_cost.asset);
+                    assert_approx_eq(consumed_cost.value, cost.value * percentage_consumed, 0.0001);
+                }
+            }           
+        }
+    }
+
+    proptest! {        
         #[test]
         fn test_consumable_operation_consume_all_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
@@ -331,17 +350,19 @@ mod tests {
             let mut op = ConsumableOperation::from_operation(operation.clone());
             let r = op.consume_amount(op.amount().value);
             prop_assert!(r.is_some());
-            let (consumed_amount, _costs) = r.unwrap();
+            let (consumed_amount, costs) = r.unwrap();
             prop_assert_eq!(consumed_amount, op.amount().value);
             prop_assert_eq!(op.remaining_amount, 0.0);
+            check_operation_costs(&operation, consumed_amount, &costs);
 
             // test it's only possible to consume no more than the available amount
-            let mut op = ConsumableOperation::from_operation(operation);
+            let mut op = ConsumableOperation::from_operation(operation.clone());
             let r = op.consume_amount(op.amount().value + 1.0);
             prop_assert!(r.is_some());
             let (consumed_amount, _costs) = r.unwrap();
             prop_assert_eq!(consumed_amount, op.amount().value);
             prop_assert_eq!(op.remaining_amount, 0.0);
+            check_operation_costs(&operation, consumed_amount, &costs);
         }
     }
 
@@ -351,13 +372,14 @@ mod tests {
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
         ) {
             prop_assume!(matches!(operation, Operation::Acquire{ .. }));
-            let mut op = ConsumableOperation::from_operation(operation);
+            let mut op = ConsumableOperation::from_operation(operation.clone());
             let to_consume = op.amount().value * 0.77;
             let r = op.consume_amount(to_consume);
             prop_assert!(r.is_some());
-            let (consumed_amount, _costs) = r.unwrap();
-            prop_assert_eq!(consumed_amount, op.amount().value * 0.77);
+            let (consumed_amount, costs) = r.unwrap();
+            prop_assert_eq!(consumed_amount, to_consume);
             prop_assert_eq!(op.remaining_amount, op.amount().value - to_consume);
+            check_operation_costs(&operation, consumed_amount, &costs);
         }
     }
 
@@ -436,7 +458,6 @@ mod tests {
             // op1 must be Acquire
             // op2 must be Dispose
             // all three ops must be for the same asset
-            println!("{} {} {}", ops[0].amount().asset, ops[1].amount().asset, ops[2].amount().asset);
             let all_same_asset = match (&ops[0], &ops[1], &ops[2]) {
                 (
                     Acquire { amount: a1, .. },
@@ -479,12 +500,15 @@ mod tests {
                     .expect("could not build tokio runtime");
 
                 match rt.block_on(stream.resolve(&sale)) {
-                    Ok(result) => {
+                    Ok(acquisitions) => {
                         let ops = stream.ops();
                         // if the sale consumed the whole amount, only one or none ops must remain
                         if sale.amount.value >= orig_amounts[0].value {
                             prop_assert!(ops.len() == 1, "expected only 1 operation remaining, got {:?}", ops);
-                            prop_assert_eq!(ops[0].remaining_amount, orig_amounts[1].value - (sale.amount.value - orig_amounts[0].value));
+                            prop_assert_eq!(
+                                ops[0].remaining_amount,
+                                orig_amounts[1].value - (sale.amount.value - orig_amounts[0].value)
+                            );
                         } else {
                             // both ops must remain in the queue
                             prop_assert!(ops.len() == 2);
@@ -492,8 +516,12 @@ mod tests {
                             prop_assert!(ops[0].remaining_amount < orig_amounts[0].value);
                             // it shouldn't have consumed the 2nd amount
                             prop_assert_eq!(ops[1].remaining_amount, orig_amounts[1].value);
+                            // the cost basis should include on acquisition
+                            prop_assert_eq!(1, acquisitions.len());
+                            // it should have used the first acquisition
+                            prop_assert_eq!(&acquisitions[0].datetime, ops[0].time());
+                            assert_approx_eq(acquisitions[0].amount, orig_amounts[0].value - ops[0].remaining_amount, 0.0001);   
                         }
-
                     }
                     Err(e) => prop_assert!(false, "{}", e),
                 }
