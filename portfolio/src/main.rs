@@ -21,7 +21,7 @@ use coingecko::Client as CoinGeckoClient;
 use exchange::operations::{
     // db::{create_tables, get_operations, Db, Operation as DbOperation},
     fetch_ops,
-    profit_loss::{ConsumeStrategy, OperationsStream, Sale},
+    cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     storage::Storage,
     BalanceTracker,
     Operation,
@@ -168,7 +168,7 @@ pub async fn main() -> Result<()> {
                 config.coingecko.as_ref().expect("missing coingecko config"),
             );
             cg.init().await?;
-            let mut stream = OperationsStream::from_ops(ops.clone(), ConsumeStrategy::Fifo, cg);
+            let mut cb_solver = CostBasisResolver::from_ops(ops.clone(), ConsumeStrategy::Fifo);
 
             for op in ops {
                 if let Operation::Dispose { amount, time, .. } = op {
@@ -182,14 +182,14 @@ pub async fn main() -> Result<()> {
                     {
                         continue;
                     }
-                    match stream
-                        .consume(&Sale {
+                    match cb_solver
+                        .resolve(&Disposal {
                             amount: amount.clone(),
                             datetime: time,
                         })
                         .await
                     {
-                        Ok(mr) => reports::sell_detail(amount, time, mr)?,
+                        Ok(acquisitions) => reports::sell_detail(amount, time, acquisitions)?,
                         Err(err) => {
                             println!("error when consuming {} at {}: {}", amount, time, err)
                         }

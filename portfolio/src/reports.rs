@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
-use exchange::operations::{Amount, profit_loss::MatchResult, BalanceTracker};
+use exchange::operations::{Amount, BalanceTracker, cost_basis::Acquisition};
 use market::MarketData;
 
 pub async fn asset_balances<T: MarketData>(
@@ -122,17 +122,17 @@ pub async fn asset_balances<T: MarketData>(
 pub fn sell_detail(
     amount: Amount,
     datetime: DateTime<Utc>,
-    match_result: MatchResult,
+    acquisitions: Vec<Acquisition>,
 ) -> Result<()> {
     let mut table = Vec::new();
 
-    for p in match_result.purchases {
+    for p in acquisitions {
         table.push(vec![
-            p.sale_result.cell(),
-            p.source.cell(),
+            p.source.clone().cell(),
             p.amount.cell().justify(Justify::Right),
-            p.cost.cell().justify(Justify::Right),
-            p.price.cell().justify(Justify::Right),
+            // todo: compute prices and costs using market data (MarketData)
+            // p.cost.cell().justify(Justify::Right),
+            // p.price.cell().justify(Justify::Right),
             p.paid_with.iter().map(|a| a.to_string()).collect::<Vec<String>>().join(",")
                 .cell()
                 .justify(Justify::Right),
@@ -143,11 +143,10 @@ pub fn sell_detail(
     let table = table
         .table()
         .title(vec![
-            "Sale result (USD)".cell(),
             "Source".cell(),
             "Amount".cell().justify(Justify::Right),
-            "Cost basis (USD)".cell().justify(Justify::Right),
-            "Price USD".cell().justify(Justify::Right),
+            // "Cost basis (USD)".cell().justify(Justify::Right),
+            // "Price USD".cell().justify(Justify::Right),
             "Purchased with".cell().justify(Justify::Right),
             "Datetime".cell(),
         ])

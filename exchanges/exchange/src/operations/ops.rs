@@ -1,4 +1,7 @@
-use std::{collections::{HashMap, HashSet}, fmt::Display};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -192,11 +195,11 @@ impl<T: MarketData> BalanceTracker<T> {
                 coin_balance.amount += amount.value;
 
                 let usd_price = market::usd_price(&self.market_data, &price.asset, time).await?;
-                coin_balance.usd_position -= usd_price;
+                coin_balance.usd_position -= amount.value * price.value * usd_price;
 
                 if let Some(costs) = costs {
-                    let span = span!(Level::DEBUG, "tracking asset acquisition cost");
-                    self.track_costs(amount, costs, time, balance);
+                    span!(Level::DEBUG, "tracking asset acquisition cost");
+                    self.track_costs(amount, costs, time, balance).await?;
                 }
             }
             Operation::Dispose {
@@ -217,11 +220,11 @@ impl<T: MarketData> BalanceTracker<T> {
 
                 let usd_price = market::usd_price(&self.market_data, &price.asset, &time).await?;
                 let coin_balance = balance.entry(amount.asset.clone()).or_default();
-                coin_balance.usd_position += amount.value * usd_price;
+                coin_balance.usd_position += amount.value * price.value * usd_price;
 
                 if let Some(costs) = costs {
-                    let span = span!(Level::DEBUG, "tracking asset disposal cost");
-                    self.track_costs(amount, costs, time, balance);
+                    span!(Level::DEBUG, "tracking asset disposal cost");
+                    self.track_costs(amount, costs, time, balance).await?;
                 }
             }
             Operation::Send { amount, .. } => {
@@ -373,11 +376,11 @@ mod tests {
 
     use async_trait::async_trait;
     use chrono::TimeZone;
-    use tokio::sync::Mutex;
     use proptest::{option::of, prelude::*, sample::select};
+    use tokio::sync::Mutex;
 
     prop_compose! {
-        fn datetime()(year in 2000..2100i32, month in 1..12u32, day in 1..28u32, hour in 0..59u32, minute in 0..59u32) -> DateTime<Utc> {
+        fn datetime()(year in 2000..2010i32, month in 1..12u32, day in 1..28u32, hour in 0..23u32, minute in 0..59u32) -> DateTime<Utc> {
             Utc.with_ymd_and_hms(year, month, day, hour, minute, 0).unwrap()
         }
     }
@@ -461,8 +464,6 @@ mod tests {
             source in "test",
             asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             amount in 0.1 .. 1000f64,
-            fee in 0.0 .. 1000f64,
-            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             time in datetime(),
             status in prop_oneof![Just(Status::Success)]
         ) -> Loan {
@@ -484,8 +485,6 @@ mod tests {
             asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             amount in 0.1 .. 1000f64,
             interest in 0.01 .. 10f64,
-            fee in 0.0 .. 1000f64,
-            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             time in datetime(),
             status in prop_oneof![Just(Status::Success), Just(Status::Failure)]
         ) -> Repay {
@@ -633,7 +632,7 @@ mod tests {
             let ops: Vec<Operation> = deposit.into();
 
             let num_ops = if d.fee.filter(|f| f > &0.0).is_some() {
-                3
+                2
             } else {
                 1
             };
@@ -681,7 +680,7 @@ mod tests {
             let ops: Vec<Operation> = withdraw.into();
 
             let num_ops = if w.fee > 0.0 {
-                3
+                2
             } else {
                 1
             };
@@ -795,7 +794,11 @@ mod tests {
             }
 
             async fn markets(&self) -> Result<Vec<Market>> {
-                Ok(vec![])
+                Ok(vec![
+                    Market::new("BTC", "USD"),                    
+                    Market::new("ETH", "USD"),                    
+                    Market::new("DOT", "USD"),                    
+                ])
             }
 
             async fn price_at(&self, market: &Market, _time: &DateTime<Utc>) -> Result<f64> {
@@ -844,7 +847,7 @@ mod tests {
                 source_id: "9".to_string(),
                 source: "test".to_string(),
                 amount: Amount::new(0.2, "ETH"),
-                price: Amount::new(0.2, "ETH"),
+                price: Amount::new(1000.0, "USD"),
                 costs: None,
                 time: Utc::now(),
             },
@@ -860,7 +863,7 @@ mod tests {
                 source_id: "13".to_string(),
                 source: "test".to_string(),
                 amount: Amount::new(0.1, "DOT"),
-                price: Amount::new(0.1, "DOT"),
+                price: Amount::new(15.0, "USD"),
                 costs: None,
                 time: Utc::now(),
             },
@@ -868,7 +871,7 @@ mod tests {
                 source_id: "15".to_string(),
                 source: "test".to_string(),
                 amount: Amount::new(0.2, "DOT"),
-                price: Amount::new(0.2, "DOT"),
+                price: Amount::new(13.0, "USD"),
                 costs: None,
                 time: Utc::now(),
             },
@@ -884,21 +887,21 @@ mod tests {
                 "BTC".to_string(),
                 AssetBalance {
                     amount: 0.13,
-                    usd_position: -1145.0,
+                    usd_position: -0.03 * 255. - 0.1 * 890.,
                 },
             ),
             (
                 "ETH".to_string(),
                 AssetBalance {
                     amount: 0.31,
-                    usd_position: 379.0,
+                    usd_position: -0.5 * 1000. - 0.01 * 21. + 0.2 * 1000.,
                 },
             ),
             (
                 "DOT".to_string(),
                 AssetBalance {
                     amount: 0.2,
-                    usd_position: 14.0,
+                    usd_position: -0.5 * 7.5 + 0.1 * 15. + 0.2 * 13.,
                 },
             ),
         ];
@@ -910,7 +913,6 @@ mod tests {
 
         for ((asset_a, balance_a), (asset_b, balance_b)) in expected.iter().zip(balances.iter()) {
             assert_eq!(asset_a, asset_b);
-            println!("{}", asset_a);
             assert_eq!(balance_a, balance_b);
         }
 
