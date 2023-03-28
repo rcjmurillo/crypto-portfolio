@@ -298,14 +298,27 @@ mod tests {
         }
     }
 
+    // fn op_sequence_in_order(
+    //     op_types: Vec<&'static str>,
+    //     datetimes: Vec<DateTime<Utc>>,
+    //     assets: Vec<&'static str>,
+    // ) -> impl Strategy<Value = Vec<Operation>> {
+    //     let mut ops = Vec::new();
+    //     for (t, dt) in op_types.iter().zip(datetimes) {
+    //         ops.push(operation(vec![t], Some(assets.clone()), Some(dt)))
+    //     }
+    //     ops
+    // }
+
     fn op_sequence_in_order(
         op_types: Vec<&'static str>,
-        datetimes: Vec<DateTime<Utc>>,
         assets: Vec<&'static str>,
     ) -> impl Strategy<Value = Vec<Operation>> {
         let mut ops = Vec::new();
-        for (t, dt) in op_types.iter().zip(datetimes) {
-            ops.push(operation(vec![t], Some(assets.clone()), Some(dt)))
+        let mut dt = Utc::now();
+        for t in op_types {
+            ops.push(operation(vec![t], Some(assets.clone()), Some(dt)));
+            dt = dt + chrono::Duration::hours(1);
         }
         ops
     }
@@ -323,7 +336,13 @@ mod tests {
     }
 
     fn check_operation_costs(operation: &Operation, consumed_amount: f64, costs: &Vec<Amount>) {
-        if let Operation::Acquire { amount, price, costs: op_costs, .. } = operation {
+        if let Operation::Acquire {
+            amount,
+            price,
+            costs: op_costs,
+            ..
+        } = operation
+        {
             // test every cost of the operation has been correctly computed
             // relative to the consumed amount.
             if let Some(op_costs) = op_costs {
@@ -335,13 +354,17 @@ mod tests {
                 assert_eq!(costs_iter.len(), op_costs.len());
                 for (consumed_cost, cost) in costs_iter.zip(op_costs) {
                     assert_eq!(cost.asset, consumed_cost.asset);
-                    assert_approx_eq(consumed_cost.value, cost.value * percentage_consumed, 0.0001);
+                    assert_approx_eq(
+                        consumed_cost.value,
+                        cost.value * percentage_consumed,
+                        0.0001,
+                    );
                 }
-            }           
+            }
         }
     }
 
-    proptest! {        
+    proptest! {
         #[test]
         fn test_consumable_operation_consume_all_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
@@ -445,50 +468,21 @@ mod tests {
 
     proptest! {
         #[test]
-        fn test_cost_basis_resolver_fifo(mut ops in op_sequence_in_order(
-            vec!["acquire", "acquire", "dispose"],
-            vec![
-                Utc.with_ymd_and_hms(2000, 2, 11, 1, 4, 31).unwrap(),
-                Utc.with_ymd_and_hms(2000, 2, 11, 3, 45, 7).unwrap(),
-                Utc.with_ymd_and_hms(2000, 2, 11, 8, 0, 9).unwrap(),
-            ],
+        fn test_cost_basis_resolver_fifo(ops in op_sequence_in_order(
+            vec!["acquire", "acquire", "acquire", "dispose"],
             vec!["BTC"],
         )) {
-            // op0 must be Acquire
-            // op1 must be Acquire
-            // op2 must be Dispose
             // all three ops must be for the same asset
-            let all_same_asset = match (&ops[0], &ops[1], &ops[2]) {
-                (
-                    Acquire { amount: a1, .. },
-                    Acquire { amount: a2, .. },
-                    Dispose { amount: a3, .. },
-                ) => a1.asset == a2.asset && a2.asset == a3.asset,
-                _ => false,
-            };
-            prop_assume!(all_same_asset);
-            prop_assume!(ops[0].amount().value + ops[1].amount().value >= ops[2].amount().value);
-
-            ops.sort_by(|a, b| {
-                if a.time() > b.time() {
-                    std::cmp::Ordering::Greater
-                } else if a.time() == b.time() {
-                    std::cmp::Ordering::Equal
-                } else {
-                    std::cmp::Ordering::Less
-                }
-            });
-
-            // prop_assume!(ops[0].time() < ops[1].time());
+            prop_assume!(ops.iter().all(|op| op.amount().asset == "BTC"));
+            // check that the sum of the first n ops is greater or equal than the last op
+            let sum = ops.iter().fold(0.0, |acc, op| acc + op.amount().value);
+            let last_value = ops.last().unwrap().amount().value;
+            prop_assume!(sum - last_value >= last_value);
 
             // check that the first cost op's amount has been partially or fully consumed
-            if let Dispose {
-                amount,
-                time,
-                ..
-            } = &ops[2]
-            {
-                let orig_amounts = [ops[0].amount().clone(), ops[1].amount().clone()];
+            if let Some(Dispose {amount, time, ..}) = &ops.last() {
+                // create a vector with all the original amounts but the last one
+                let orig_amounts = ops.iter().take(ops.len() - 1).map(|op| op.amount().clone()).collect::<Vec<_>>();
                 let sale = Disposal {
                     amount: amount.clone(),
                     datetime: *time,
@@ -502,25 +496,36 @@ mod tests {
                 match rt.block_on(stream.resolve(&sale)) {
                     Ok(acquisitions) => {
                         let ops = stream.ops();
-                        // if the sale consumed the whole amount, only one or none ops must remain
-                        if sale.amount.value >= orig_amounts[0].value {
-                            prop_assert!(ops.len() == 1, "expected only 1 operation remaining, got {:?}", ops);
+                        // calculate the number of operations that should have been fully consumed by the sale.
+                        // Each consumed operation accounts for part of the consumed amount.
+                        let mut remaining_sale_amount = sale.amount.value;
+                        let mut fully_consumed_ops = 0;
+                        let mut partially_consumed_ops = 0;
+                        for amount in orig_amounts.iter() {
+                            if remaining_sale_amount > amount.value {
+                                fully_consumed_ops += 1;
+                                remaining_sale_amount -= amount.value;
+                            } else {
+                                partially_consumed_ops += 1;
+                                break;
+                            }
+                        }
+
+                        // check that the number of ops consumed
+                        prop_assert_eq!(acquisitions.len(), fully_consumed_ops + partially_consumed_ops);
+
+                        // check that the number of ops remaining
+                        prop_assert_eq!(ops.len(), orig_amounts.len() - fully_consumed_ops);
+
+                        if partially_consumed_ops > 0 {
+                            // check the remaining sale amount was consumed from the first op remaining in the cost resolver
                             prop_assert_eq!(
-                                ops[0].remaining_amount,
-                                orig_amounts[1].value - (sale.amount.value - orig_amounts[0].value)
+                                ops[0].remaining_amount, 
+                                orig_amounts[fully_consumed_ops].value - remaining_sale_amount
                             );
                         } else {
-                            // both ops must remain in the queue
-                            prop_assert!(ops.len() == 2);
-                            // it should have partially consumed the first amount
-                            prop_assert!(ops[0].remaining_amount < orig_amounts[0].value);
-                            // it shouldn't have consumed the 2nd amount
-                            prop_assert_eq!(ops[1].remaining_amount, orig_amounts[1].value);
-                            // the cost basis should include on acquisition
-                            prop_assert_eq!(1, acquisitions.len());
-                            // it should have used the first acquisition
-                            prop_assert_eq!(&acquisitions[0].datetime, ops[0].time());
-                            assert_approx_eq(acquisitions[0].amount, orig_amounts[0].value - ops[0].remaining_amount, 0.0001);   
+                            // check that the sale was fully consumed
+                            prop_assert_eq!(ops.len(), 0);
                         }
                     }
                     Err(e) => prop_assert!(false, "{}", e),
