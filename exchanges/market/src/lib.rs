@@ -6,7 +6,7 @@ mod conversion;
 
 use std::{fmt::Display, ops::Deref, pin::Pin, sync::Arc, task::Poll};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{ready, Future};

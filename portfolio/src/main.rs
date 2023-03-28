@@ -11,6 +11,7 @@ use std::{convert::TryInto, fs::File, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use futures::{channel::mpsc::Receiver, future::join_all, stream, StreamExt};
+use market::MarketData;
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
@@ -189,7 +190,9 @@ pub async fn main() -> Result<()> {
                         })
                         .await
                     {
-                        Ok(acquisitions) => reports::sell_detail(amount, time, acquisitions)?,
+                        Ok(acquisitions) => {
+                            reports::sell_detail(amount, time, acquisitions, &cg).await?
+                        },
                         Err(err) => {
                             println!("error when consuming {} at {}: {}", amount, time, err)
                         }

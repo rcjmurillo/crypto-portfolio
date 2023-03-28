@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use market::{MarketData, Asset, Market};
 
 use crate::operations::{Amount, Operation};
 
@@ -21,6 +22,23 @@ pub struct Acquisition {
     pub amount: f64,
     pub paid_with: Vec<Amount>,
     pub datetime: DateTime<Utc>,
+}
+
+impl Acquisition {
+    /// Computes the cost in the provided asset currency for the acquisition of the asset.
+    pub async fn paid_with_cost(&self, asset: &Asset, market_data: &impl MarketData) -> Result<f64> {
+        let mut cost = 0.0;
+        for amount in &self.paid_with {
+            if &amount.asset == asset {
+                cost += amount.value;
+            } else {
+                let market = Market::new(amount.asset.clone(), asset.clone());
+                let price = market_data.price_at(&market, &self.datetime).await?;
+                cost += amount.value * price;
+            }
+        }
+        Ok(cost)
+    }
 }
 
 #[derive(Debug, Clone)]
