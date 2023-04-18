@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::operations::Operation;
 use market::Market;
 
 #[async_trait]
@@ -12,12 +13,13 @@ use market::Market;
 /// This allow to handle any incoming transactions/operations and convert them
 /// into known structs that can be correctly translated into operations.
 pub trait ExchangeDataFetcher {
-    async fn trades(&self) -> Result<Vec<Trade>>;
-    async fn margin_trades(&self) -> Result<Vec<Trade>>;
-    async fn loans(&self) -> Result<Vec<Loan>>;
-    async fn repays(&self) -> Result<Vec<Repay>>;
-    async fn deposits(&self) -> Result<Vec<Deposit>>;
-    async fn withdraws(&self) -> Result<Vec<Withdraw>>;
+    // async fn trades(&self) -> Result<Vec<Trade>>;
+    // async fn margin_trades(&self) -> Result<Vec<Trade>>;
+    // async fn loans(&self) -> Result<Vec<Loan>>;
+    // async fn repays(&self) -> Result<Vec<Repay>>;
+    // async fn deposits(&self) -> Result<Vec<Deposit>>;
+    // async fn withdrawals(&self) -> Result<Vec<Withdraw>>;
+    async fn fetch(&self) -> Result<Vec<Operation>>;
 }
 
 #[derive(Debug, Serialize, Deserialize)]

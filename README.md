@@ -38,7 +38,7 @@ start_date = 2020-01-01
 An JSON object with the following optional fields, each field must contain a list of objects:
 - trades: (see `ops::Trade` for the expected fields on each object).
 - deposits: (see `ops::Deposit` for the expected fields on each object)
-- withdraws: (see `ops::Withdraw` for the expected fields on each object)
+- withdrawals: (see `ops::Withdraw` for the expected fields on each object)
 
 ```json
 {
@@ -48,7 +48,7 @@ An JSON object with the following optional fields, each field must contain a lis
     "deposits": [
         {"asset": "BTC", "amount": 0.04, "time": 1619053678020, "fee": 0.0, "is_fiat": false}
     ],
-    "withdraws": [
+    "withdrawals": [
         {"asset": "ETH", "amount": 3.1, "fee": 0.005, "time": 163532453209}
     ],
 }

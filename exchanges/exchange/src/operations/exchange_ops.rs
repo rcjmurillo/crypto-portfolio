@@ -25,6 +25,13 @@ use crate::{
 //     }
 // }
 
+pub fn into_ops<T>(typed_ops: Vec<T>) -> Vec<Operation>
+where
+    T: Into<Vec<Operation>>,
+{
+    typed_ops.into_iter().flat_map(|s| s.into()).collect()
+}
+
 impl From<Trade> for Vec<Operation> {
     fn from(trade: Trade) -> Self {
         assert!(

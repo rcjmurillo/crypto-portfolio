@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Duration, DurationRound, NaiveDate, NaiveTime, Utc};
 use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
@@ -302,14 +302,14 @@ impl EndpointServices<RegionGlobal> {
 pub struct Config {
     pub api_key: String,
     pub secret_key: String,
-    pub start_date: NaiveDate,
+    pub start_date: DateTime<Utc>,
     pub symbols: Vec<Market>,
 }
 
 impl Config {
     pub fn empty() -> Self {
         Self {
-            start_date: Utc::now().naive_utc().date(),
+            start_date: Utc::now(),
             symbols: Vec::new(),
             api_key: "".to_string(),
             secret_key: "".to_string(),
@@ -370,7 +370,7 @@ pub struct BinanceFetcher<Region> {
 }
 
 impl<'a, Region> BinanceFetcher<Region> {
-    fn data_start_date(&self) -> &NaiveDate {
+    fn data_start_date(&self) -> &DateTime<Utc> {
         &self
             .config
             .as_ref()
@@ -583,7 +583,9 @@ impl<'a, Region> BinanceFetcher<Region> {
             "binance.trade[d={},e={},ep={}]",
             self.domain,
             endpoint,
-            extra_params.as_ref().map_or_else(|| "none".to_string(), |q| q.materialize().cacheable_query)
+            extra_params
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |q| q.materialize().cacheable_query)
         );
 
         let trades: Vec<Trade> = self
@@ -717,11 +719,11 @@ impl BinanceFetcher<RegionGlobal> {
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = orders
             .last()
-            .map(|x| x.create_time.naive_utc())
-            .unwrap_or(self.data_start_date().and_hms(0, 0, 0));
+            .map(|x| x.create_time)
+            .unwrap_or(*self.data_start_date());
 
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
@@ -786,7 +788,7 @@ impl BinanceFetcher<RegionGlobal> {
         self.fetch_fiat_orders("0").await
     }
 
-    pub async fn fetch_fiat_withdraws(&self) -> Result<Vec<FiatOrder>> {
+    pub async fn fetch_fiat_withdrawals(&self) -> Result<Vec<FiatOrder>> {
         self.fetch_fiat_orders("1").await
     }
 
@@ -944,13 +946,16 @@ impl BinanceFetcher<RegionGlobal> {
             .unwrap_or_else(|| Vec::<T>::new());
         let mut new_txns = Vec::new();
 
-        let now = Utc::now().naive_utc();
+        let now = Utc::now();
         let start = txns
             .last()
-            .map(|tx| tx.datetime().naive_utc() + Duration::milliseconds(1))
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|tx| tx.datetime() + Duration::milliseconds(1))
+            .unwrap_or_else(|| *self.data_start_date());
         let archived_cutoff = now - Duration::days(30 * 6);
-        let archived_cutoff = archived_cutoff.date().and_hms_micro(23, 59, 59, 99999);
+        // round archived_cutoff to the last millisecond of the day
+        let archived_cutoff = archived_cutoff.duration_trunc(Duration::days(1)).unwrap()
+            - Duration::milliseconds(1);
+
         // ranges to query for archived/recent trades
         let ranges = if start < archived_cutoff {
             vec![
@@ -1089,10 +1094,10 @@ impl BinanceFetcher<RegionGlobal> {
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = deposits
             .last()
-            .map(|d| (d.insert_time + Duration::milliseconds(1)).naive_utc())
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|d| (d.insert_time + Duration::milliseconds(1)))
+            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows max 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
@@ -1130,27 +1135,27 @@ impl BinanceFetcher<RegionGlobal> {
         Ok(deposits)
     }
 
-    pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
+    pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
         let endpoint = ApiGlobal::Withdraws.to_string();
         let storage_key = format!(
             "binance.crypto_withdrawals[d={},e={}]",
             self.domain, endpoint
         );
-        let mut withdraws: Vec<Withdraw> = self
+        let mut withdrawals: Vec<Withdraw> = self
             .storage
             .get_records(&storage_key)
             .await?
             .unwrap_or_else(|| Vec::<Withdraw>::new());
-        let mut new_withdraws = Vec::new();
+        let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = withdraws
+        let mut curr_start = withdrawals
             .last()
-            .map(|w| (w.apply_time + Duration::milliseconds(1)).naive_utc())
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|w| (w.apply_time + Duration::milliseconds(1)))
+            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
 
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
@@ -1172,7 +1177,7 @@ impl BinanceFetcher<RegionGlobal> {
             let resp = self.endpoint_services.route(req).await?;
 
             let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
-            new_withdraws.extend(withdraw_list);
+            new_withdrawals.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
@@ -1181,11 +1186,11 @@ impl BinanceFetcher<RegionGlobal> {
         }
 
         self.storage
-            .insert_records(&storage_key, &new_withdraws)
+            .insert_records(&storage_key, &new_withdrawals)
             .await?;
-        withdraws.extend(new_withdraws);
+        withdrawals.extend(new_withdrawals);
 
-        Ok(withdraws)
+        Ok(withdrawals)
     }
 }
 
@@ -1230,11 +1235,11 @@ impl BinanceFetcher<RegionUs> {
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = orders
             .last()
-            .map(|o| (o.create_time + Duration::milliseconds(1)).naive_utc())
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|o| (o.create_time + Duration::milliseconds(1)))
+            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
 
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(89), now);
 
@@ -1285,7 +1290,7 @@ impl BinanceFetcher<RegionUs> {
             .await
     }
 
-    pub async fn fetch_fiat_withdraws(&self) -> Result<Vec<FiatOrder>> {
+    pub async fn fetch_fiat_withdrawals(&self) -> Result<Vec<FiatOrder>> {
         self.fetch_fiat_orders(&ApiUs::FiatWithdraws.to_string())
             .await
     }
@@ -1303,10 +1308,10 @@ impl BinanceFetcher<RegionUs> {
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = deposits
             .last()
-            .map(|d| (d.insert_time + Duration::milliseconds(1)).naive_utc())
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|d| (d.insert_time + Duration::milliseconds(1)))
+            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
@@ -1345,26 +1350,26 @@ impl BinanceFetcher<RegionUs> {
         Ok(deposits)
     }
 
-    pub async fn fetch_withdraws(&self) -> Result<Vec<Withdraw>> {
+    pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
         let endpoint = ApiUs::Withdraws.to_string();
         let storage_key = format!(
             "binance.crypto_withdrawals[d={},e={}]",
             self.domain, endpoint
         );
-        let mut withdraws: Vec<Withdraw> = self
+        let mut withdrawals: Vec<Withdraw> = self
             .storage
             .get_records(&storage_key)
             .await?
             .unwrap_or_else(|| Vec::<Withdraw>::new());
-        let mut new_withdraws = Vec::new();
+        let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = withdraws
+        let mut curr_start = withdrawals
             .last()
-            .map(|w| (w.apply_time + Duration::milliseconds(1)).naive_utc())
-            .unwrap_or_else(|| self.data_start_date().and_hms(0, 0, 0));
+            .map(|w| (w.apply_time + Duration::milliseconds(1)))
+            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
         loop {
-            let now = Utc::now().naive_utc();
+            let now = Utc::now();
             // the API only allows 90 days between start and end
             let end = std::cmp::min(curr_start + Duration::days(90), now);
 
@@ -1386,7 +1391,7 @@ impl BinanceFetcher<RegionUs> {
             let resp = self.endpoint_services.route(req).await?;
 
             let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
-            new_withdraws.extend(withdraw_list);
+            new_withdrawals.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
@@ -1395,11 +1400,11 @@ impl BinanceFetcher<RegionUs> {
         }
 
         self.storage
-            .insert_records(&storage_key, &new_withdraws)
+            .insert_records(&storage_key, &new_withdrawals)
             .await?;
-        withdraws.extend(new_withdraws);
+        withdrawals.extend(new_withdrawals);
 
-        Ok(withdraws)
+        Ok(withdrawals)
     }
 }
 

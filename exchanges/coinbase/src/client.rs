@@ -64,7 +64,7 @@ impl Into<&'static str> for &StdEndpoints {
             StdEndpoints::Accounts => "/v2/accounts",
             StdEndpoints::Transactions => "/v2/accounts/{account_id}/transactions",
             StdEndpoints::Deposits => "/v2/accounts/{account_id}/deposits",
-            StdEndpoints::Withdraws => "/v2/accounts/{account_id}/withdraws",
+            StdEndpoints::Withdraws => "/v2/accounts/{account_id}/withdrawals",
             StdEndpoints::Buys => "/v2/accounts/{account_id}/buys",
             StdEndpoints::Sells => "/v2/accounts/{account_id}/sells",
         }
@@ -322,7 +322,7 @@ impl CoinbaseFetcher<Std> {
             .await
     }
 
-    pub async fn fetch_withdraws(&self) -> Result<Vec<Transaction>> {
+    pub async fn fetch_withdrawals(&self) -> Result<Vec<Transaction>> {
         self.fetch_resource_for_accounts(StdEndpoints::Withdraws)
             .await
     }

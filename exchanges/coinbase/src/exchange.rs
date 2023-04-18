@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use anyhow::{Error, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -10,7 +8,9 @@ use crate::{
     client::{CoinbaseFetcher, Config, Pro, Std},
 };
 
-use exchange::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw};
+use exchange::{
+    operations::Operation, Deposit, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
+};
 
 impl Into<Trade> for Fill {
     fn into(self) -> Trade {
@@ -211,8 +211,14 @@ impl Into<Trade> for Transaction {
 //     }
 // }
 
-#[async_trait]
-impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
+fn into_ops<T>(typed_ops: Vec<T>) -> Vec<Operation>
+where
+    T: Into<Vec<Operation>>,
+{
+    typed_ops.into_iter().flat_map(|s| s.into()).collect()
+}
+
+impl CoinbaseFetcher<Std> {
     // async fn operations(&self) -> Result<Vec<Operation>> {
     //     let operations = self
     //         .fetch_transactions()
@@ -237,15 +243,6 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
         all_trades.extend(self.fetch_sells().await?.into_iter().map(|d| d.into()));
         Ok(all_trades)
     }
-    async fn margin_trades(&self) -> Result<Vec<Trade>> {
-        Ok(Vec::new())
-    }
-    async fn loans(&self) -> Result<Vec<Loan>> {
-        Ok(Vec::new())
-    }
-    async fn repays(&self) -> Result<Vec<Repay>> {
-        Ok(Vec::new())
-    }
     async fn deposits(&self) -> Result<Vec<Deposit>> {
         Ok(self
             .fetch_fiat_deposits()
@@ -254,9 +251,9 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
             .map(|d| d.into())
             .collect())
     }
-    async fn withdraws(&self) -> Result<Vec<Withdraw>> {
+    async fn withdrawals(&self) -> Result<Vec<Withdraw>> {
         Ok(self
-            .fetch_withdraws()
+            .fetch_withdrawals()
             .await?
             .into_iter()
             .map(|d| d.into())
@@ -265,7 +262,17 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
+impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
+    async fn fetch(&self) -> Result<Vec<Operation>> {
+        let mut ops = Vec::new();
+        ops.extend(into_ops(self.trades().await?));
+        ops.extend(into_ops(self.deposits().await?));
+        ops.extend(into_ops(self.withdrawals().await?));
+        Ok(ops)
+    }
+}
+
+impl CoinbaseFetcher<Pro> {
     async fn trades(&self) -> Result<Vec<Trade>> {
         let mut handles = Vec::new();
         for product_id in self.config.symbols.iter() {
@@ -293,7 +300,21 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
     async fn deposits(&self) -> Result<Vec<Deposit>> {
         Ok(Vec::new())
     }
-    async fn withdraws(&self) -> Result<Vec<Withdraw>> {
+    async fn withdrawals(&self) -> Result<Vec<Withdraw>> {
         Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
+    async fn fetch(&self) -> Result<Vec<Operation>> {
+        let mut ops = Vec::new();
+        ops.extend(into_ops(self.trades().await?));
+        ops.extend(into_ops(self.margin_trades().await?));
+        ops.extend(into_ops(self.loans().await?));
+        ops.extend(into_ops(self.repays().await?));
+        ops.extend(into_ops(self.deposits().await?));
+        ops.extend(into_ops(self.withdrawals().await?));
+        Ok(ops)
     }
 }

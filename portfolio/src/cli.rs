@@ -1,14 +1,14 @@
 use std::{
     ffi::{OsStr, OsString},
     fs::{read_to_string, File},
-    path::PathBuf,
+    path::PathBuf, str::FromStr,
 };
 
 use anyhow::{anyhow, Error as AnyhowError, Result};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc, DateTime};
 use serde::Deserialize;
 use structopt::{self, StructOpt};
-use toml;
+use toml::{self};
 
 use crate::errors::Error;
 use binance::Config as BinanceConfig;
@@ -39,16 +39,12 @@ pub struct ExchangeConfig {
     pub symbols: Option<Vec<String>>,
     pub assets: Option<Vec<Asset>>,
     // How far back to look for transactions
-    start_date: toml::Value,
+    start_date: toml::value::Datetime,
 }
 
 impl ExchangeConfig {
-    pub fn start_date(&self) -> Result<NaiveDate> {
-        if let Some(start_date) = self.start_date.as_datetime() {
-            Ok(start_date.to_string().parse::<NaiveDate>().unwrap())
-        } else {
-            return Err(anyhow!("could not parse date from config").context(Error::Cli));
-        }
+    pub fn start_datetime(&self) -> Result<DateTime<Utc>> {
+        Ok(self.start_date.to_string().parse::<DateTime<Utc>>().unwrap())
     }
 }
 
@@ -83,7 +79,7 @@ impl TryFrom<ExchangeConfig> for BinanceConfig {
     type Error = AnyhowError;
     fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
-            start_date: c.start_date()?,
+            start_date: c.start_datetime()?,
             symbols: c
                 .symbols
                 .ok_or_else(|| anyhow!("missing symbols in binance config"))?
@@ -100,7 +96,7 @@ impl TryFrom<ExchangeConfig> for CoinbaseConfig {
     type Error = AnyhowError;
     fn try_from(c: ExchangeConfig) -> Result<Self> {
         Ok(Self {
-            start_date: c.start_date()?,
+            start_date: c.start_datetime()?.date_naive(),
             // fixme: decide which one to use by check if c.symbols or c.assets is present
             symbols: c
                 .assets
@@ -111,7 +107,12 @@ impl TryFrom<ExchangeConfig> for CoinbaseConfig {
 }
 
 #[derive(StructOpt)]
-pub enum PortfolioAction {
+pub enum Action {
+    Sync {
+        /// Operations file in JSON format
+        #[structopt(long = "ops-file", parse(try_from_os_str = read_file))]
+        ops_file: Option<File>,
+    },
     Balances,
     RevenueReport {
         #[structopt(long)]
@@ -121,16 +122,11 @@ pub enum PortfolioAction {
 
 #[derive(StructOpt)]
 #[structopt(rename_all = "kebab-case")]
-pub enum Args {
-    Portfolio {
-        /// Action to run
-        #[structopt(subcommand)]
-        action: PortfolioAction,
-        /// Configuration file
-        #[structopt(short, long, parse(try_from_os_str = read_config_file))]
-        config: Config,
-        /// Operations file in JSON format
-        #[structopt(long = "custom-ops", parse(try_from_os_str = read_file))]
-        ops_file: Option<File>,
-    },
+pub struct Args {
+    /// Action to run
+    #[structopt(subcommand)]
+    pub action: Action,
+    /// Configuration file path
+    #[structopt(long = "config", parse(try_from_os_str = read_config_file))]
+    pub config: Config,
 }

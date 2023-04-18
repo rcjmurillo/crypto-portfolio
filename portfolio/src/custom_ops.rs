@@ -6,13 +6,13 @@ use serde::Deserialize;
 use serde_json;
 
 use crate::errors::Error;
-use exchange::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw};
+use exchange::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw, operations::{Operation, into_ops}};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
     trades: Vec<Trade>,
     deposits: Option<Vec<Deposit>>,
-    withdraws: Option<Vec<Withdraw>>,
+    withdrawals: Option<Vec<Withdraw>>,
 }
 
 #[derive(Clone)]
@@ -30,24 +30,25 @@ impl FileDataFetcher {
     }
 }
 
-#[async_trait]
-impl ExchangeDataFetcher for FileDataFetcher {
+impl FileDataFetcher {
     async fn trades(&self) -> Result<Vec<Trade>> {
         Ok(self.data.trades.clone())
-    }
-    async fn margin_trades(&self) -> Result<Vec<Trade>> {
-        Ok(Vec::new())
-    }
-    async fn loans(&self) -> Result<Vec<Loan>> {
-        Ok(Vec::new())
-    }
-    async fn repays(&self) -> Result<Vec<Repay>> {
-        Ok(Vec::new())
     }
     async fn deposits(&self) -> Result<Vec<Deposit>> {
         Ok(self.data.deposits.clone().unwrap_or(Vec::new()))
     }
-    async fn withdraws(&self) -> Result<Vec<Withdraw>> {
-        Ok(self.data.withdraws.clone().unwrap_or(Vec::new()))
+    async fn withdrawals(&self) -> Result<Vec<Withdraw>> {
+        Ok(self.data.withdrawals.clone().unwrap_or(Vec::new()))
+    }
+}
+
+#[async_trait]
+impl ExchangeDataFetcher for FileDataFetcher {
+    async fn fetch(&self) -> Result<Vec<Operation>> {
+        let mut operations = Vec::new();
+        operations.extend(into_ops(self.trades().await?));
+        operations.extend(into_ops(self.deposits().await?));
+        operations.extend(into_ops(self.withdrawals().await?));
+        Ok(operations)
     }
 }

@@ -288,57 +288,6 @@ impl<T: MarketData> BalanceTracker<T> {
     }
 }
 
-async fn ops_from_fetcher<'a>(
-    prefix: &'a str,
-    c: Box<dyn ExchangeDataFetcher + Send + Sync>,
-) -> Result<Vec<Operation>> {
-    let mut all_ops: Vec<Operation> = Vec::new();
-    log::info!("[{}] fetching trades...", prefix);
-    all_ops.extend(
-        c.trades()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching margin trades...", prefix);
-    all_ops.extend(
-        c.margin_trades()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching loans...", prefix);
-    all_ops.extend(
-        c.loans()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching repays...", prefix);
-    all_ops.extend(
-        c.repays()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching deposits...", prefix);
-    all_ops.extend(
-        c.deposits()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] fetching withdraws...", prefix);
-    all_ops.extend(
-        c.withdraws()
-            .await?
-            .into_iter()
-            .flat_map(|t| -> Vec<Operation> { t.into() }),
-    );
-    log::info!("[{}] ALL DONE!!!", prefix);
-    Ok(all_ops)
-}
-
 pub async fn fetch_ops<'a>(
     fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
 ) -> mpsc::Receiver<Operation> {
@@ -347,7 +296,7 @@ pub async fn fetch_ops<'a>(
     for (name, f) in fetchers.into_iter() {
         let txc = tx.clone();
         // tokio::spawn(async move {
-        match ops_from_fetcher(name, f).await {
+        match f.fetch().await {
             Ok(ops) => {
                 for op in ops {
                     match txc.send(op).await {

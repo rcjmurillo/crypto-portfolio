@@ -20,9 +20,9 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use exchange::operations::{
+    cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     // db::{create_tables, get_operations, Db, Operation as DbOperation},
     fetch_ops,
-    cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     storage::Storage,
     BalanceTracker,
     Operation,
@@ -30,7 +30,7 @@ use exchange::operations::{
 };
 
 use crate::{
-    cli::{Args, PortfolioAction},
+    cli::{Action, Args},
     custom_ops::FileDataFetcher,
 };
 use exchange::ExchangeDataFetcher;
@@ -68,11 +68,11 @@ fn mk_fetchers(
     //     ));
     // }
 
-    if let Some(conf) = config.binance.clone() {
-        let config_binance: Config = conf.try_into().unwrap();
-        let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-        fetchers.push(("Binance Global", Box::new(binance_client)));
-    }
+    // if let Some(conf) = config.binance.clone() {
+    //     let config_binance: Config = conf.try_into().unwrap();
+    //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+    //     fetchers.push(("Binance Global", Box::new(binance_client)));
+    // }
 
     if let Some(conf) = config.binance_us.clone() {
         let config_binance_us: Config = conf.try_into().unwrap();
@@ -111,16 +111,10 @@ pub async fn main() -> Result<()> {
 
     let args = Args::from_args();
 
-    let Args::Portfolio {
-        config,
-        action,
-        ops_file,
-    } = args;
-
-    let mut ops_receiver = mk_ops_receiver(&config, ops_file).await?;
+    let Args { action, config } = args;
 
     match action {
-        PortfolioAction::Balances => {
+        Action::Balances => {
             const BATCH_SIZE: usize = 1000;
 
             let mut cg = CoinGeckoClient::with_config(
@@ -128,6 +122,7 @@ pub async fn main() -> Result<()> {
             );
             cg.init().await?;
 
+            let mut ops_receiver = mk_ops_receiver(&config, None).await?;
             let coin_tracker = BalanceTracker::new(cg);
             let mut handles = Vec::new();
             let mut i = 0;
@@ -157,9 +152,15 @@ pub async fn main() -> Result<()> {
             reports::asset_balances(&coin_tracker, binance_client).await?;
             println!();
         }
-        PortfolioAction::RevenueReport {
+        Action::Sync { ops_file } => {
+            let mut ops_receiver = mk_ops_receiver(&config, ops_file).await?;
+            // just consume all ops
+            while let Some(_) = ops_receiver.recv().await {}
+        }
+        Action::RevenueReport {
             asset: report_asset,
         } => {
+            let mut ops_receiver = mk_ops_receiver(&config, None).await?;
             let mut ops = Vec::new();
             while let Some(op) = ops_receiver.recv().await {
                 ops.push(op);
@@ -192,7 +193,7 @@ pub async fn main() -> Result<()> {
                     {
                         Ok(acquisitions) => {
                             reports::sell_detail(amount, time, acquisitions, &cg).await?
-                        },
+                        }
                         Err(err) => {
                             println!("error when consuming {} at {}: {}", amount, time, err)
                         }
