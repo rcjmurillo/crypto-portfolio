@@ -7,11 +7,10 @@ mod custom_ops;
 mod errors;
 mod reports;
 
-use std::{convert::TryInto, fs::File, sync::Arc};
+use std::{convert::TryInto, fs::File};
 
 use anyhow::{anyhow, Result};
-use futures::{channel::mpsc::Receiver, future::join_all, stream, StreamExt};
-use market::MarketData;
+use futures::{stream, StreamExt};
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
@@ -23,7 +22,6 @@ use exchange::operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     // db::{create_tables, get_operations, Db, Operation as DbOperation},
     fetch_ops,
-    storage::Storage,
     BalanceTracker,
     Operation,
     // OperationsFlusher, OperationsProcesor, PricesFetcher,
