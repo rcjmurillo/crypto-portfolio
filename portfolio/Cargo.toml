@@ -11,22 +11,16 @@ coingecko = { path = "../exchanges/coingecko" }
 exchange = { path = "../exchanges/exchange" }
 market = { path = "../exchanges/market" }
 
-tower = { version = "0.4.13", features = ["limit"] }
-anyhow = "1.0.58"
-tokio = { version = "1.17", features = ["full"] }
-chrono = "0.4"
-cli-table = "0.4"
-futures = "0.3.15"
-async-trait = "0.1.50"
-bytes = "1.0.1"
-structopt = "0.3.22"
-serde = { version = "1.0.118", features = ["derive"] }
-serde_json = "1.0"
-toml = "0.7.2"
-log = "0.4.14"
-env_logger = "0.10.0"
-tracing = "0.1.31"
-tracing-subscriber = "0.3.9"
+anyhow.workspace = true
+futures.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+tracing-subscriber.workspace = true
+log.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
-[dev-dependencies]
-quickcheck = "1.0.3"
+cli-table = "0.4"
+structopt = "0.3.22"
+toml = "0.7.2"

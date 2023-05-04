@@ -7,14 +7,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.58"
-async-trait = "0.1.50"
-thiserror = "1.0.31"
-bytes = "1.0.1"
-futures = "0.3.15"
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tower = {workspace = true, features = ["buffer"]}
+log.workspace = true
 reqwest = { version = "0.11", features = ["json"] }
-tokio = { version = "1.17", features = ["full"] }
-tower = { version = "0.4.13", features = ["buffer", "limit", "util"] }
 derive_builder = "0.11.2"
-log = "0.4.14"
+thiserror = "1.0.31"
 redis = {version = "0.21.6", features = ["tokio-comp"] }
