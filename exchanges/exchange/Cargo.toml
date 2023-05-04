@@ -22,9 +22,9 @@ hex = "0.4"
 sha2 = "0.10.2"
 reqwest = { version = "0.11", features = ["json"] }
 hmac = "0.12.1"
-env_logger = "0.9.0"
-rusqlite = "0.27.0"
-redis = {version = "0.21.6", features = ["tokio-comp"] }
+env_logger = "0.10.0"
+rusqlite = { version = "0.29.0", features = ["bundled"] }
+redis = {version = "0.23.0", features = ["tokio-comp"] }
 
 [dev-dependencies]
 quickcheck = "1.0.3"

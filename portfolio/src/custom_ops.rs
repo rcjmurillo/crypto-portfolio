@@ -6,7 +6,10 @@ use serde::Deserialize;
 use serde_json;
 
 use crate::errors::Error;
-use exchange::{Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw, operations::{Operation, into_ops}};
+use exchange::{
+    operations::{into_ops, Operation},
+    Deposit, ExchangeDataFetcher, Loan, Repay, Trade, Withdraw,
+};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {

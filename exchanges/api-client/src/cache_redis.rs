@@ -28,7 +28,7 @@ impl RedisCache {
 #[async_trait]
 impl Storage for RedisCache {
     type Output = Bytes;
-    type Error = anyhow::Error; 
+    type Error = anyhow::Error;
     async fn get(&self, key: &str) -> Result<Option<Self::Output>> {
         let mut conn = self.client.get_async_connection().await?;
         Ok(conn.get(key).await?)

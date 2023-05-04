@@ -81,9 +81,9 @@ impl Redis {
         &self,
         key: &str,
         records: &Vec<T>,
-    ) -> Result<usize> 
+    ) -> Result<usize>
     where
-        for<'de> IdType: Deserialize<'de>
+        for<'de> IdType: Deserialize<'de>,
     {
         // only insert non-existing records
         let existing_ids: Vec<IdType> = self
@@ -114,7 +114,11 @@ impl Redis {
 
         log::debug!("storing into redis {}", payload);
 
-        let cmd = if existing_ids.is_empty() { "JSON.SET" } else { "JSON.ARRAPPEND" };
+        let cmd = if existing_ids.is_empty() {
+            "JSON.SET"
+        } else {
+            "JSON.ARRAPPEND"
+        };
 
         let mut conn = self.client.get_async_connection().await?;
         let r: String = redis::cmd(cmd)

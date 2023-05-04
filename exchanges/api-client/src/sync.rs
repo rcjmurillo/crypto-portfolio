@@ -15,7 +15,7 @@ impl<T> ValueSemaphore<T>
 where
     T: Eq + Hash + Sized,
 {
-    /// Creates a new value semaphore where for each value 1 permit can be acquired 
+    /// Creates a new value semaphore where for each value 1 permit can be acquired
     /// at the same time.
     pub fn new() -> Self {
         Self {

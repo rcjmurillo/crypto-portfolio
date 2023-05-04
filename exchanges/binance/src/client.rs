@@ -953,8 +953,8 @@ impl BinanceFetcher<RegionGlobal> {
             .unwrap_or_else(|| *self.data_start_date());
         let archived_cutoff = now - Duration::days(30 * 6);
         // round archived_cutoff to the last millisecond of the day
-        let archived_cutoff = archived_cutoff.duration_trunc(Duration::days(1)).unwrap()
-            - Duration::milliseconds(1);
+        let archived_cutoff =
+            archived_cutoff.duration_trunc(Duration::days(1)).unwrap() - Duration::milliseconds(1);
 
         // ranges to query for archived/recent trades
         let ranges = if start < archived_cutoff {
@@ -1095,7 +1095,11 @@ impl BinanceFetcher<RegionGlobal> {
         let mut curr_start = deposits
             .last()
             .map(|d| (d.insert_time + Duration::milliseconds(1)))
-            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
+            .unwrap_or_else(|| {
+                self.data_start_date()
+                    .duration_trunc(Duration::days(1))
+                    .unwrap()
+            });
         loop {
             let now = Utc::now();
             // the API only allows max 90 days between start and end
@@ -1152,7 +1156,11 @@ impl BinanceFetcher<RegionGlobal> {
         let mut curr_start = withdrawals
             .last()
             .map(|w| (w.apply_time + Duration::milliseconds(1)))
-            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
+            .unwrap_or_else(|| {
+                self.data_start_date()
+                    .duration_trunc(Duration::days(1))
+                    .unwrap()
+            });
 
         loop {
             let now = Utc::now();
@@ -1236,7 +1244,11 @@ impl BinanceFetcher<RegionUs> {
         let mut curr_start = orders
             .last()
             .map(|o| (o.create_time + Duration::milliseconds(1)))
-            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
+            .unwrap_or_else(|| {
+                self.data_start_date()
+                    .duration_trunc(Duration::days(1))
+                    .unwrap()
+            });
 
         loop {
             let now = Utc::now();
@@ -1309,7 +1321,11 @@ impl BinanceFetcher<RegionUs> {
         let mut curr_start = deposits
             .last()
             .map(|d| (d.insert_time + Duration::milliseconds(1)))
-            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
+            .unwrap_or_else(|| {
+                self.data_start_date()
+                    .duration_trunc(Duration::days(1))
+                    .unwrap()
+            });
         loop {
             let now = Utc::now();
             // the API only allows 90 days between start and end
@@ -1367,7 +1383,11 @@ impl BinanceFetcher<RegionUs> {
         let mut curr_start = withdrawals
             .last()
             .map(|w| (w.apply_time + Duration::milliseconds(1)))
-            .unwrap_or_else(|| self.data_start_date().duration_trunc(Duration::days(1)).unwrap());
+            .unwrap_or_else(|| {
+                self.data_start_date()
+                    .duration_trunc(Duration::days(1))
+                    .unwrap()
+            });
         loop {
             let now = Utc::now();
             // the API only allows 90 days between start and end

@@ -744,9 +744,9 @@ mod tests {
 
             async fn markets(&self) -> Result<Vec<Market>> {
                 Ok(vec![
-                    Market::new("BTC", "USD"),                    
-                    Market::new("ETH", "USD"),                    
-                    Market::new("DOT", "USD"),                    
+                    Market::new("BTC", "USD"),
+                    Market::new("ETH", "USD"),
+                    Market::new("DOT", "USD"),
                 ])
             }
 

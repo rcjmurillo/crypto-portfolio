@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use market::{MarketData, Asset, Market};
+use market::{Asset, Market, MarketData};
 
 use crate::operations::{Amount, Operation};
 
@@ -26,7 +26,11 @@ pub struct Acquisition {
 
 impl Acquisition {
     /// Computes the cost in the provided asset currency for the acquisition of the asset.
-    pub async fn paid_with_cost(&self, asset: &Asset, market_data: &impl MarketData) -> Result<f64> {
+    pub async fn paid_with_cost(
+        &self,
+        asset: &Asset,
+        market_data: &impl MarketData,
+    ) -> Result<f64> {
         let mut cost = 0.0;
         for amount in &self.paid_with {
             if &amount.asset == asset {
@@ -538,7 +542,7 @@ mod tests {
                         if partially_consumed_ops > 0 {
                             // check the remaining sale amount was consumed from the first op remaining in the cost resolver
                             prop_assert_eq!(
-                                ops[0].remaining_amount, 
+                                ops[0].remaining_amount,
                                 orig_amounts[fully_consumed_ops].value - remaining_sale_amount
                             );
                         } else {

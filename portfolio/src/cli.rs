@@ -1,11 +1,12 @@
 use std::{
     ffi::{OsStr, OsString},
     fs::{read_to_string, File},
-    path::PathBuf, str::FromStr,
+    path::PathBuf,
+    str::FromStr,
 };
 
 use anyhow::{anyhow, Error as AnyhowError, Result};
-use chrono::{NaiveDate, Utc, DateTime};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use structopt::{self, StructOpt};
 use toml::{self};
@@ -44,7 +45,11 @@ pub struct ExchangeConfig {
 
 impl ExchangeConfig {
     pub fn start_datetime(&self) -> Result<DateTime<Utc>> {
-        Ok(self.start_date.to_string().parse::<DateTime<Utc>>().unwrap())
+        Ok(self
+            .start_date
+            .to_string()
+            .parse::<DateTime<Utc>>()
+            .unwrap())
     }
 }
 

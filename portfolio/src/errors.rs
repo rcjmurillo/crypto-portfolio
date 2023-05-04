@@ -4,7 +4,7 @@ use std::fmt;
 pub enum Error {
     FetchFailed,
     Cli,
-    Other
+    Other,
 }
 
 impl fmt::Display for Error {

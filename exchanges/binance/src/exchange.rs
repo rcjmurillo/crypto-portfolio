@@ -9,8 +9,12 @@ use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
     client::{ApiGlobal, ApiUs, BinanceFetcher, RegionGlobal, RegionUs},
 };
-use exchange::{self, operations::{Operation, into_ops}, Candle, ExchangeClient, ExchangeDataFetcher};
-use market::{Market};
+use exchange::{
+    self,
+    operations::{into_ops, Operation},
+    Candle, ExchangeClient, ExchangeDataFetcher,
+};
+use market::Market;
 
 impl From<FiatOrder> for exchange::Deposit {
     fn from(d: FiatOrder) -> Self {

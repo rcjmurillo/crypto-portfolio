@@ -1,7 +1,7 @@
+use anyhow::anyhow;
 use std::fmt::Debug;
 use thiserror::Error;
 use tower::BoxError;
-use anyhow::anyhow;
 
 #[derive(Error, Debug)]
 pub enum ClientError {
