@@ -1,4 +1,4 @@
-use std::{fs::File, sync::Arc};
+use std::{fs::File};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -7,7 +7,6 @@ use serde::Deserialize;
 use serde_json;
 
 use exchange::{
-    operations::{into_ops, Operation},
     Deposit, ExchangeDataFetcher, Trade, Withdraw,
 };
 

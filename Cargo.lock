@@ -1259,6 +1259,7 @@ dependencies = [
  "cli-table",
  "coinbase",
  "coingecko",
+ "custom",
  "data-sync",
  "derive_builder",
  "exchange",

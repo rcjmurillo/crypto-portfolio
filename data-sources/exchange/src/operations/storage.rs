@@ -93,7 +93,7 @@ impl Redis {
             .into_iter()
             .map(|r| r.id)
             .collect();
-        let mut to_insert: Vec<&T> = records
+        let to_insert: Vec<&T> = records
             .into_iter()
             .filter(|r| !existing_ids.contains(r.id()))
             .collect();

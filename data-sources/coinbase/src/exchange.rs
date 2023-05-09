@@ -1,11 +1,11 @@
-use anyhow::{Error, Result};
+use anyhow::{Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 
 use crate::{
     api_model::{Amount, Fill, Transaction, TransactionSide},
-    client::{CoinbaseFetcher, Config, Pro, Std},
+    client::{CoinbaseFetcher, Pro, Std},
 };
 
 use exchange::{
@@ -263,7 +263,7 @@ impl CoinbaseFetcher<Std> {
 
 #[async_trait]
 impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
-    async fn sync<S>(&self, storage: S) -> Result<()>
+    async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,
     {
@@ -310,7 +310,7 @@ impl CoinbaseFetcher<Pro> {
 
 #[async_trait]
 impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
-    async fn sync<S>(&self, storage: S) -> Result<()>
+    async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,
     {

@@ -10,6 +10,7 @@ coinbase = { path = "../data-sources/coinbase" }
 coingecko = { path = "../data-sources/coingecko" }
 exchange = { path = "../data-sources/exchange" }
 market = { path = "../data-sources/market" }
+custom = { path = "../data-sources/custom" }
 data-sync = { path = "../data-sync" }
 
 anyhow.workspace = true

@@ -5,11 +5,10 @@ extern crate quickcheck;
 extern crate derive_builder;
 
 mod cli;
-mod custom_ops;
 mod errors;
 mod reports;
 
-use std::{convert::TryInto, fs::File, sync::Arc};
+use std::{convert::TryInto, fs::File};
 
 use anyhow::{anyhow, Result};
 
@@ -21,24 +20,18 @@ use binance::{BinanceFetcher, RegionGlobal};
 use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
+use custom::FileDataFetcher;
 use exchange::operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
-    // db::{create_tables, get_operations, Db, Operation as DbOperation},
-    fetch_ops,
-    BalanceTracker,
-    Operation,
-    // OperationsFlusher, OperationsProcesor, PricesFetcher,
+    fetch_ops, BalanceTracker, Operation,
 };
 
-use crate::{
-    cli::{Action, Args},
-    custom_ops::FileDataFetcher,
-};
+use crate::cli::{Action, Args};
 
 async fn mk_fetchers(
     _config: &cli::Config,
     ops_file: Option<File>,
-    tx: mpsc::Sender<Operation>,
+    _tx: mpsc::Sender<Operation>,
 ) -> Result<()> {
     // coinbase exchange disabled because it doesn't provide the full set of
     // operations and fees when converting coins.

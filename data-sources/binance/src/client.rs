@@ -611,7 +611,7 @@ impl<'a, Region> BinanceFetcher<Region> {
         loop {
             let mut q = query.clone();
             q.cached_param("fromId", last_id);
-            let qstr = q.materialize().full_query;
+            let _qstr = q.materialize().full_query;
 
             let req = RequestBuilder::default()
                 .url(Url::parse(self.domain)?.join(endpoint)?)

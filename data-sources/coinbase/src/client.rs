@@ -4,7 +4,7 @@ use anyhow::{Error, Result};
 use base64;
 use bytes::Bytes;
 use chrono::{Duration, NaiveDate, Utc};
-use futures::future::join_all;
+
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac, NewMac};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -14,7 +14,7 @@ use sha2::Sha256;
 use api_client::{errors::ApiError, ApiClient, Query};
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
-use market::Market;
+
 
 pub trait Identifiable<T> {
     fn id(&self) -> &T;

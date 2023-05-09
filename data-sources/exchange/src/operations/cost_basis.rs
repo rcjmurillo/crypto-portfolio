@@ -1,5 +1,4 @@
 use std::{
-    fmt::{self},
     iter::Peekable,
     ops::Deref,
 };

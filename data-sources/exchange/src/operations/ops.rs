@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock};
 use tracing::{span, Level};
 
 use market::{self, Asset, Market, MarketData};
@@ -358,7 +358,7 @@ mod tests {
             asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             amount in 0.1 .. 1000f64,
             fee in of(0.0 .. 1000f64),
-            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            _fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             time in datetime(),
         ) -> Deposit {
             let is_fiat = &asset == "USD";
@@ -381,7 +381,7 @@ mod tests {
             asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             amount in 0.1 .. 1000f64,
             fee in 0.0 .. 1000f64,
-            fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
+            _fee_asset in select(vec!["BTC", "ETH", "AVAX", "USD"]).prop_map(|a| a.to_string()),
             time in datetime(),
         ) -> Withdraw {
             Withdraw {
@@ -722,7 +722,7 @@ mod tests {
 
         #[async_trait]
         impl MarketData for TestMarketData {
-            async fn has_market(&self, market: &Market) -> Result<bool> {
+            async fn has_market(&self, _market: &Market) -> Result<bool> {
                 Ok(true)
             }
 

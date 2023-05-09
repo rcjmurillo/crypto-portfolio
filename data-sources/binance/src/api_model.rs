@@ -230,7 +230,15 @@ pub(crate) mod datetime_from_str {
 
         Ok(match TimestampOrString::deserialize(deserializer)? {
             // timestamps from the API are in milliseconds
-            TimestampOrString::Timestamp(ts) => Utc.timestamp_millis(ts),
+            TimestampOrString::Timestamp(ts) => match Utc.timestamp_millis_opt(ts) {
+                chrono::LocalResult::Single(dt) => dt,
+                chrono::LocalResult::None => {
+                    return Err(de::Error::custom(format!("invalid timestamp: {}", ts)))
+                }
+                chrono::LocalResult::Ambiguous(_, _) => {
+                    return Err(de::Error::custom(format!("ambiguous timestamp: {}", ts)))
+                }
+            },
             TimestampOrString::String(s) => Utc
                 .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
                 .map_err(de::Error::custom)?,

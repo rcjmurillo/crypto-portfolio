@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 
 #[derive(Debug)]
 pub struct Operation {
@@ -127,5 +127,5 @@ pub fn create_tables() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 }
