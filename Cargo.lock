@@ -384,6 +384,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "custom"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "data-sync",
+ "exchange",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "darling"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
