@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["portfolio", "data-sync", "exchanges/*"]
+members = ["portfolio", "data-sync", "data-sources/*"]
 
 [workspace.dependencies]
 tower = { version = "0.4.13", features = ["full"] }

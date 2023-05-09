@@ -5,11 +5,11 @@ authors = ["Ricardo Murillo <rcjmurillo@gmail.com>"]
 edition = "2021"
 
 [dependencies]
-binance = { path = "../exchanges/binance" }
-coinbase = { path = "../exchanges/coinbase" }
-coingecko = { path = "../exchanges/coingecko" }
-exchange = { path = "../exchanges/exchange" }
-market = { path = "../exchanges/market" }
+binance = { path = "../data-sources/binance" }
+coinbase = { path = "../data-sources/coinbase" }
+coingecko = { path = "../data-sources/coingecko" }
+exchange = { path = "../data-sources/exchange" }
+market = { path = "../data-sources/market" }
 data-sync = { path = "../data-sync" }
 
 anyhow.workspace = true
