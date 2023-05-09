@@ -1,9 +1,3 @@
-#[cfg(test)]
-#[macro_use]
-extern crate quickcheck;
-#[macro_use]
-extern crate derive_builder;
-
 mod cli;
 mod errors;
 mod reports;
