@@ -15,6 +15,6 @@ tokio.workspace = true
 tower = {workspace = true, features = ["buffer"]}
 log.workspace = true
 reqwest = { version = "0.11", features = ["json"] }
-derive_builder = "0.11.2"
+derive_builder = "0.12.0"
 thiserror = "1.0.31"
 redis = {version = "0.21.6", features = ["tokio-comp"] }

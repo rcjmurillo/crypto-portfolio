@@ -274,7 +274,10 @@ impl BinanceFetcher<RegionGlobal> {
 
 #[async_trait]
 impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
-    async fn fetch(&self) -> Result<Vec<Operation>> {
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where
+        S: data_sync::OperationStorage + Send + Sync,
+    {
         let mut operations = Vec::new();
         log::info!("[binance] fetching trades...");
         operations.extend(into_ops(self.trades().await?));
@@ -289,7 +292,7 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
         log::info!("[binance] fetching withdrawals...");
         operations.extend(into_ops(self.withdrawals().await?));
         log::info!("[binance] ALL DONE!!!");
-        Ok(operations)
+        Ok(())
     }
 }
 
@@ -381,8 +384,11 @@ impl BinanceFetcher<RegionUs> {
 
 #[async_trait]
 impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
-    async fn fetch(&self) -> Result<Vec<Operation>> {
-        let mut operations = Vec::new();
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where
+        S: data_sync::OperationStorage + Send + Sync,
+    {
+        let mut operations: Vec<Operation> = Vec::new();
 
         let trades = self
             .trades()
@@ -422,7 +428,7 @@ impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
                 .flat_map(|x| -> Vec<Operation> { x.into() }),
         );
         log::info!("[binance US] ALL DONE!!!");
-        Ok(operations)
+        Ok(())
     }
 }
 

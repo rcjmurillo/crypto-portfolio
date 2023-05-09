@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::operations::Operation;
 use market::Market;
 
 #[async_trait]
@@ -19,7 +18,8 @@ pub trait ExchangeDataFetcher {
     // async fn repays(&self) -> Result<Vec<Repay>>;
     // async fn deposits(&self) -> Result<Vec<Deposit>>;
     // async fn withdrawals(&self) -> Result<Vec<Withdraw>>;
-    async fn fetch(&self) -> Result<Vec<Operation>>;
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where S: data_sync::OperationStorage + Send + Sync;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,14 +47,14 @@ pub enum Status {
     Failure,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum TradeSide {
     Buy,
     Sell,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Trade {
     pub source_id: String,
     pub source: String,
@@ -80,7 +80,7 @@ impl Trade {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Deposit {
     pub source_id: String,
     pub source: String,
@@ -92,7 +92,7 @@ pub struct Deposit {
     pub is_fiat: bool,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Withdraw {
     pub source_id: String,
     pub source: String,
@@ -144,13 +144,21 @@ pub(crate) mod datetime_from_str {
 
         match TimestampOrString::deserialize(deserializer)? {
             // timestamps from the API are in milliseconds
-            TimestampOrString::Timestamp(ts) => {
-                Ok(Utc.timestamp_millis(ts.try_into().map_err(de::Error::custom)?))
-            }
+            TimestampOrString::Timestamp(ts) => Utc
+                .timestamp_millis_opt(ts.try_into().map_err(de::Error::custom)?)
+                .single()
+                .ok_or_else(|| de::Error::custom("invalid timestamp")),
             TimestampOrString::String(s) => Utc
-                .datetime_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                .datetime_from_str(&s, "%Y-%m-%dT%H:%M:%SZ")
                 .map_err(de::Error::custom),
         }
+    }
+
+    pub fn serialize<S>(date: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(date.format("%Y-%m-%dT%H:%M:%SZ").to_string().as_str())
     }
 }
 

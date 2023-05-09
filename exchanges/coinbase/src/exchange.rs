@@ -263,12 +263,15 @@ impl CoinbaseFetcher<Std> {
 
 #[async_trait]
 impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
-    async fn fetch(&self) -> Result<Vec<Operation>> {
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where
+        S: data_sync::OperationStorage + Send + Sync,
+    {
         let mut ops = Vec::new();
         ops.extend(into_ops(self.trades().await?));
         ops.extend(into_ops(self.deposits().await?));
         ops.extend(into_ops(self.withdrawals().await?));
-        Ok(ops)
+        Ok(())
     }
 }
 
@@ -307,7 +310,10 @@ impl CoinbaseFetcher<Pro> {
 
 #[async_trait]
 impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
-    async fn fetch(&self) -> Result<Vec<Operation>> {
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where
+        S: data_sync::OperationStorage + Send + Sync,
+    {
         let mut ops = Vec::new();
         ops.extend(into_ops(self.trades().await?));
         ops.extend(into_ops(self.margin_trades().await?));
@@ -315,6 +321,6 @@ impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
         ops.extend(into_ops(self.repays().await?));
         ops.extend(into_ops(self.deposits().await?));
         ops.extend(into_ops(self.withdrawals().await?));
-        Ok(ops)
+        Ok(())
     }
 }

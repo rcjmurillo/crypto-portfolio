@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{span, Level};
 
 use market::{self, Asset, Market, MarketData};
+use data_sync::OperationStorage;
 
 use crate::ExchangeDataFetcher;
 
@@ -288,33 +289,20 @@ impl<T: MarketData> BalanceTracker<T> {
     }
 }
 
-pub async fn fetch_ops<'a>(
-    fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)>,
-) -> mpsc::Receiver<Operation> {
-    let (tx, rx) = mpsc::channel(100_000);
-
-    for (name, f) in fetchers.into_iter() {
-        let txc = tx.clone();
-        // tokio::spawn(async move {
-        match f.fetch().await {
-            Ok(ops) => {
-                for op in ops {
-                    match txc.send(op).await {
-                        Ok(()) => (),
-                        Err(err) => log::error!("could not send operation: {}", err),
-                    }
-                }
-                log::debug!("finished sending ops for fetcher {}", name);
-            }
-            Err(err) => {
-                log::error!("failed to fetch operations from {}: {}", name, err);
-                break;
-            }
-        };
-        // });
-    }
-
-    rx
+pub async fn fetch_ops<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
+where
+    F: ExchangeDataFetcher + Send + Sync,
+    S: OperationStorage + Send + Sync,
+{
+    // for (name, f) in fetchers.into_iter() {
+    // tokio::spawn(async move {
+    match fetcher.sync(storage).await {
+        Ok(()) => log::debug!("finished syncing operations for {}", name),
+        Err(err) => log::error!("failed to sync operations for {}: {}", name, err)
+    };
+    Ok(())
+    // });
+    // }
 }
 
 #[cfg(test)]

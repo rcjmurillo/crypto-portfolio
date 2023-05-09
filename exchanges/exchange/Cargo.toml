@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 market = { path = "../market" }
+data-sync = { path = "../../data-sync" }
 
 anyhow.workspace = true
 async-trait.workspace = true

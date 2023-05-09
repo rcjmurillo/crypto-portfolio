@@ -2,11 +2,10 @@ use std::{
     ffi::{OsStr, OsString},
     fs::{read_to_string, File},
     path::PathBuf,
-    str::FromStr,
 };
 
 use anyhow::{anyhow, Error as AnyhowError, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use structopt::{self, StructOpt};
 use toml::{self};

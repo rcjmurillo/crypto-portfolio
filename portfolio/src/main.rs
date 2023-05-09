@@ -1,20 +1,23 @@
 #[cfg(test)]
 #[macro_use]
 extern crate quickcheck;
+#[macro_use]
+extern crate derive_builder;
 
 mod cli;
 mod custom_ops;
 mod errors;
 mod reports;
 
-use std::{convert::TryInto, fs::File};
+use std::{convert::TryInto, fs::File, sync::Arc};
 
 use anyhow::{anyhow, Result};
+
 use futures::{stream, StreamExt};
 use structopt::{self, StructOpt};
 use tokio::sync::mpsc;
 
-use binance::{BinanceFetcher, Config, RegionGlobal, RegionUs};
+use binance::{BinanceFetcher, RegionGlobal};
 use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
@@ -31,14 +34,12 @@ use crate::{
     cli::{Action, Args},
     custom_ops::FileDataFetcher,
 };
-use exchange::ExchangeDataFetcher;
 
-fn mk_fetchers(
-    config: &cli::Config,
-    file_fetcher: Option<FileDataFetcher>,
-) -> Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> {
-    let mut fetchers: Vec<(&'static str, Box<dyn ExchangeDataFetcher + Send + Sync>)> = Vec::new();
-
+async fn mk_fetchers(
+    _config: &cli::Config,
+    ops_file: Option<File>,
+    tx: mpsc::Sender<Operation>,
+) -> Result<()> {
     // coinbase exchange disabled because it doesn't provide the full set of
     // operations and fees when converting coins.
 
@@ -72,40 +73,42 @@ fn mk_fetchers(
     //     fetchers.push(("Binance Global", Box::new(binance_client)));
     // }
 
-    if let Some(conf) = config.binance_us.clone() {
-        let config_binance_us: Config = conf.try_into().unwrap();
-        let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-        fetchers.push(("Binance US", Box::new(binance_client_us)));
-    }
+    // if let Some(conf) = config.binance_us.clone() {
+    //     let config_binance_us: Config = conf.try_into().unwrap();
+    //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
+    //     fetch_ops("Binance US", binance_client_us, tx.clone()).await?;
+    // }
 
-    if let Some(file_fetcher) = file_fetcher {
-        fetchers.push(("Custom Operations", Box::new(file_fetcher)));
-    }
-    fetchers
+    match ops_file {
+        Some(ops_file) => {
+            let sqlite_storage = data_sync::SqliteStorage::new("./operations.db")?;
+            match FileDataFetcher::from_file(ops_file) {
+                Ok(fetcher) => fetch_ops("Custom Operations", fetcher, sqlite_storage).await?,
+                Err(err) => {
+                    return Err(anyhow!(err).context("could read config from file"));
+                }
+            }
+        }
+        None => (),
+    };
+
+    Ok(())
 }
 
 async fn mk_ops_receiver(
     config: &cli::Config,
     ops_file: Option<File>,
 ) -> Result<mpsc::Receiver<Operation>> {
-    let file_fetcher = match ops_file {
-        Some(ops_file) => match FileDataFetcher::from_file(ops_file) {
-            Ok(fetcher) => Some(fetcher),
-            Err(err) => {
-                return Err(anyhow!(err).context("could read config from file"));
-            }
-        },
-        None => None,
-    };
-
-    Ok(fetch_ops(mk_fetchers(&config, file_fetcher.clone())).await)
+    let (tx, rx) = mpsc::channel(100_000);
+    mk_fetchers(config, ops_file, tx).await?;
+    Ok(rx)
 }
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    // create_tables()?;
+    data_sync::create_tables()?;
 
     let args = Args::from_args();
 

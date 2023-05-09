@@ -4,7 +4,7 @@ use anyhow::{anyhow, Context, Result};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Duration, DurationRound, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, DurationRound, Utc};
 use futures::prelude::*;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};

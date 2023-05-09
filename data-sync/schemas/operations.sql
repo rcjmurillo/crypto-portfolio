@@ -1,11 +1,11 @@
-CREATE TABLE operations (
+CREATE TABLE IF NOT EXISTS operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    id_source INTEGER,
+    source_id TEXT,
     source TEXT,
-    record_type TEXT,
+    op_type TEXT,
     data JSON,
     created_at TIMESTAMP,
-    imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    imported_at TIMESTAMP DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now', 'utc'))
 );
 
 CREATE INDEX idx_operations_source ON operations (source);
