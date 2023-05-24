@@ -15,7 +15,6 @@ use api_client::{errors::ApiError, ApiClient, Query};
 
 use crate::api_model::{Account, Fill, Product, Response, Transaction};
 
-
 pub trait Identifiable<T> {
     fn id(&self) -> &T;
 }

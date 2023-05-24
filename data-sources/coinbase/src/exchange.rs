@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
@@ -8,9 +8,8 @@ use crate::{
     client::{CoinbaseFetcher, Pro, Std},
 };
 
-use exchange::{
-    operations::Operation, Deposit, ExchangeDataFetcher, Loan, Repay, Trade, TradeSide, Withdraw,
-};
+use data_sync::DataFetcher;
+use exchange::{operations::Operation, Deposit, Loan, Repay, Trade, TradeSide, Withdraw};
 
 impl Into<Trade> for Fill {
     fn into(self) -> Trade {
@@ -262,7 +261,7 @@ impl CoinbaseFetcher<Std> {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for CoinbaseFetcher<Std> {
+impl DataFetcher for CoinbaseFetcher<Std> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,
@@ -309,7 +308,7 @@ impl CoinbaseFetcher<Pro> {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for CoinbaseFetcher<Pro> {
+impl DataFetcher for CoinbaseFetcher<Pro> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,

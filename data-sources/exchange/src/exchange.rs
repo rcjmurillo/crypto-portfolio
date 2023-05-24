@@ -1,26 +1,9 @@
-
-
-use anyhow::{Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use market::Market;
-
-#[async_trait]
-/// Layer of abstraction on how to fetch data from exchanges.
-/// This allow to handle any incoming transactions/operations and convert them
-/// into known structs that can be correctly translated into operations.
-pub trait ExchangeDataFetcher {
-    // async fn trades(&self) -> Result<Vec<Trade>>;
-    // async fn margin_trades(&self) -> Result<Vec<Trade>>;
-    // async fn loans(&self) -> Result<Vec<Loan>>;
-    // async fn repays(&self) -> Result<Vec<Repay>>;
-    // async fn deposits(&self) -> Result<Vec<Deposit>>;
-    // async fn withdrawals(&self) -> Result<Vec<Withdraw>>;
-    async fn sync<S>(&self, storage: S) -> Result<()>
-    where S: data_sync::OperationStorage + Send + Sync;
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Candle {

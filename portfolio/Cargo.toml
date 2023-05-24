@@ -24,9 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 cli-table = "0.4"
-structopt = "0.3.22"
-toml = "0.7.3"
 derive_builder = "0.12.0"
+structopt = "0.3.26"
+toml = "0.7.3"
 
 [dev-dependencies]
 quickcheck = "1.0.3"

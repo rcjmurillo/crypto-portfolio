@@ -1,4 +1,4 @@
-use std::{fs::File};
+use std::fs::File;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -6,9 +6,8 @@ use data_sync::OperationStorage;
 use serde::Deserialize;
 use serde_json;
 
-use exchange::{
-    Deposit, ExchangeDataFetcher, Trade, Withdraw,
-};
+use data_sync::DataFetcher;
+use exchange::{Deposit, Trade, Withdraw};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {
@@ -25,9 +24,8 @@ pub struct FileDataFetcher {
 impl FileDataFetcher {
     pub fn from_file(file: File) -> Result<Self> {
         Ok(Self {
-            data: serde_json::from_reader(file).map_err(|e| {
-                anyhow!("couldn't parse custom operations file: {}", e)
-            })?,
+            data: serde_json::from_reader(file)
+                .map_err(|e| anyhow!("couldn't parse custom operations file: {}", e))?,
         })
     }
 }
@@ -76,7 +74,7 @@ impl FileDataFetcher {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for FileDataFetcher {
+impl DataFetcher for FileDataFetcher {
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: OperationStorage + Send + Sync,
@@ -133,7 +131,10 @@ impl ExchangeDataFetcher for FileDataFetcher {
                 imported_at: None,
             })
             .collect::<Vec<data_sync::Operation>>();
-        log::info!("inserted {} new withdrawls operations into the DB", ops.len());
+        log::info!(
+            "inserted {} new withdrawls operations into the DB",
+            ops.len()
+        );
         storage.insert(ops)?;
 
         Ok(())

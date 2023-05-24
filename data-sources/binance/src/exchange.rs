@@ -9,10 +9,11 @@ use crate::{
     api_model::{Deposit, FiatOrder, MarginLoan, MarginRepay, Trade, Withdraw},
     client::{ApiGlobal, ApiUs, BinanceFetcher, RegionGlobal, RegionUs},
 };
+use data_sync::DataFetcher;
 use exchange::{
     self,
     operations::{into_ops, Operation},
-    Candle, ExchangeClient, ExchangeDataFetcher,
+    Candle, ExchangeClient,
 };
 use market::Market;
 
@@ -273,7 +274,7 @@ impl BinanceFetcher<RegionGlobal> {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for BinanceFetcher<RegionGlobal> {
+impl DataFetcher for BinanceFetcher<RegionGlobal> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,
@@ -383,7 +384,7 @@ impl BinanceFetcher<RegionUs> {
 }
 
 #[async_trait]
-impl ExchangeDataFetcher for BinanceFetcher<RegionUs> {
+impl DataFetcher for BinanceFetcher<RegionUs> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::OperationStorage + Send + Sync,

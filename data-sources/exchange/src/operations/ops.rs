@@ -6,13 +6,10 @@ use std::{
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use tokio::sync::{RwLock};
+use tokio::sync::RwLock;
 use tracing::{span, Level};
 
 use market::{self, Asset, Market, MarketData};
-use data_sync::OperationStorage;
-
-use crate::ExchangeDataFetcher;
 
 #[derive(Clone, Debug, Deserialize)]
 pub enum OperationStatus {
@@ -287,22 +284,6 @@ impl<T: MarketData> BalanceTracker<T> {
             .into_iter()
             .collect()
     }
-}
-
-pub async fn fetch_ops<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
-where
-    F: ExchangeDataFetcher + Send + Sync,
-    S: OperationStorage + Send + Sync,
-{
-    // for (name, f) in fetchers.into_iter() {
-    // tokio::spawn(async move {
-    match fetcher.sync(storage).await {
-        Ok(()) => log::debug!("finished syncing operations for {}", name),
-        Err(err) => log::error!("failed to sync operations for {}: {}", name, err)
-    };
-    Ok(())
-    // });
-    // }
 }
 
 #[cfg(test)]

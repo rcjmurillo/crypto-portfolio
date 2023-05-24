@@ -2,9 +2,9 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum Error {
+    Config,
     #[allow(dead_code)]
     FetchFailed,
-    Cli,
     #[allow(dead_code)]
     Other,
 }

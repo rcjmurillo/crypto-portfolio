@@ -1,13 +1,16 @@
 mod cli;
+mod config;
 mod errors;
 mod reports;
 
-use std::{convert::TryInto, fs::File};
+use cli::{Action, Args};
+use data_sync::SqliteStorage;
+use std::fs::File;
 
 use anyhow::{anyhow, Result};
 
 use futures::{stream, StreamExt};
-use structopt::{self, StructOpt};
+use structopt::StructOpt;
 use tokio::sync::mpsc;
 
 use binance::{BinanceFetcher, RegionGlobal};
@@ -15,81 +18,11 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use custom::FileDataFetcher;
+use data_sync::sync_operations;
 use exchange::operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
-    fetch_ops, BalanceTracker, Operation,
+    BalanceTracker, Operation,
 };
-
-use crate::cli::{Action, Args};
-
-async fn mk_fetchers(
-    _config: &cli::Config,
-    ops_file: Option<File>,
-    _tx: mpsc::Sender<Operation>,
-) -> Result<()> {
-    // coinbase exchange disabled because it doesn't provide the full set of
-    // operations and fees when converting coins.
-
-    // let coinbase_config: Option<CoinbaseConfig> = config
-    //     .coinbase
-    //     .as_ref()
-    //     .and_then(|c| Some(c.try_into().unwrap()));
-    // if let Some(config) = coinbase_config {
-    //     let coinbase_fetcher = CoinbaseFetcher::<Std>::new(config.clone());
-    //     fetchers.push((
-    //         "Coinbase",
-    //         Box::new(coinbase_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-    //     ));
-    // }
-
-    // let coinbase_config: Option<CoinbaseConfig> = config
-    //     .coinbase_pro
-    //     .as_ref()
-    //     .and_then(|c| Some(c.try_into().unwrap()));
-    // if let Some(config) = coinbase_config {
-    //     let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(config);
-    //     fetchers.push((
-    //         "Coinbase Pro",
-    //         Box::new(coinbase_fetcher_pro) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-    //     ));
-    // }
-
-    // if let Some(conf) = config.binance.clone() {
-    //     let config_binance: Config = conf.try_into().unwrap();
-    //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-    //     fetchers.push(("Binance Global", Box::new(binance_client)));
-    // }
-
-    // if let Some(conf) = config.binance_us.clone() {
-    //     let config_binance_us: Config = conf.try_into().unwrap();
-    //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-    //     fetch_ops("Binance US", binance_client_us, tx.clone()).await?;
-    // }
-
-    match ops_file {
-        Some(ops_file) => {
-            let sqlite_storage = data_sync::SqliteStorage::new("./operations.db")?;
-            match FileDataFetcher::from_file(ops_file) {
-                Ok(fetcher) => fetch_ops("Custom Operations", fetcher, sqlite_storage).await?,
-                Err(err) => {
-                    return Err(anyhow!(err).context("could read config from file"));
-                }
-            }
-        }
-        None => (),
-    };
-
-    Ok(())
-}
-
-async fn mk_ops_receiver(
-    config: &cli::Config,
-    ops_file: Option<File>,
-) -> Result<mpsc::Receiver<Operation>> {
-    let (tx, rx) = mpsc::channel(100_000);
-    mk_fetchers(config, ops_file, tx).await?;
-    Ok(rx)
-}
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -110,17 +43,17 @@ pub async fn main() -> Result<()> {
             );
             cg.init().await?;
 
-            let mut ops_receiver = mk_ops_receiver(&config, None).await?;
             let coin_tracker = BalanceTracker::new(cg);
             let mut handles = Vec::new();
             let mut i = 0;
-            while let Some(op) = ops_receiver.recv().await {
-                coin_tracker.batch_operation(op).await;
-                if i % BATCH_SIZE == 0 {
-                    handles.push(coin_tracker.process_batch());
-                }
-                i += 1;
-            }
+            todo!("load ops from storage");
+            // while let Some(op) = ops_receiver.recv().await {
+            //     coin_tracker.batch_operation(op).await;
+            //     if i % BATCH_SIZE == 0 {
+            //         handles.push(coin_tracker.process_batch());
+            //     }
+            //     i += 1;
+            // }
             handles.push(coin_tracker.process_batch());
 
             for batch_result in stream::iter(handles)
@@ -141,18 +74,78 @@ pub async fn main() -> Result<()> {
             println!();
         }
         Action::Sync { ops_file } => {
-            let mut ops_receiver = mk_ops_receiver(&config, ops_file).await?;
-            // just consume all ops
-            while let Some(_) = ops_receiver.recv().await {}
+            // coinbase exchange disabled because it doesn't provide the full set of
+            // operations and fees when converting coins.
+
+            // let coinbase_config: Option<CoinbaseConfig> = config
+            //     .coinbase
+            //     .as_ref()
+            //     .and_then(|c| Some(c.try_into().unwrap()));
+            // if let Some(config) = coinbase_config {
+            //     let coinbase_fetcher = CoinbaseFetcher::<Std>::new(config.clone());
+            //     fetchers.push((
+            //         "Coinbase",
+            //         Box::new(coinbase_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            //     ));
+            // }
+
+            // let coinbase_config: Option<CoinbaseConfig> = config
+            //     .coinbase_pro
+            //     .as_ref()
+            //     .and_then(|c| Some(c.try_into().unwrap()));
+            // if let Some(config) = coinbase_config {
+            //     let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(config);
+            //     fetchers.push((
+            //         "Coinbase Pro",
+            //         Box::new(coinbase_fetcher_pro) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            //     ));
+            // }
+
+            // if let Some(conf) = config.binance.clone() {
+            //     let config_binance: Config = conf.try_into().unwrap();
+            //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+            //     fetchers.push(("Binance Global", Box::new(binance_client)));
+            // }
+
+            // if let Some(conf) = config.binance_us.clone() {
+            //     let config_binance_us: Config = conf.try_into().unwrap();
+            //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
+            //     fetch_ops("Binance US", binance_client_us, tx.clone()).await?;
+            // }
+
+            // match ops_file {
+            //     Some(ops_file) => {
+            //         let sqlite_storage = SqliteStorage::new("./operations.db")?;
+            //         match FileDataFetcher::from_file(ops_file) {
+            //             Ok(fetcher) => fetch_ops("Custom Operations", fetcher, sqlite_storage).await?,
+            //             Err(err) => {
+            //                 return Err(anyhow!(err).context("could read config from file"));
+            //             }
+            //         }
+            //     }
+            //     None => (),
+            // };
+
+            match ops_file {
+                Some(ops_file) => {
+                    let sqlite_storage = SqliteStorage::new("./operations.db")?;
+                    match FileDataFetcher::from_file(ops_file) {
+                        Ok(fetcher) => {
+                            sync_operations("custom operations", fetcher, sqlite_storage).await?;
+                        }
+                        Err(err) => {
+                            return Err(anyhow!(err).context("could read config from file"));
+                        }
+                    }
+                }
+                None => (),
+            };
         }
         Action::RevenueReport {
             asset: report_asset,
         } => {
-            let mut ops_receiver = mk_ops_receiver(&config, None).await?;
             let mut ops = Vec::new();
-            while let Some(op) = ops_receiver.recv().await {
-                ops.push(op);
-            }
+            todo!("load ops from storage");
 
             let mut cg = CoinGeckoClient::with_config(
                 config.coingecko.as_ref().expect("missing coingecko config"),

@@ -1,5 +1,14 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+
+#[async_trait]
+/// Layer of abstraction on how to fetch data from multiple sources
+pub trait DataFetcher {
+    async fn sync<S>(&self, storage: S) -> Result<()>
+    where
+        S: OperationStorage + Send + Sync;
+}
 
 #[derive(Debug)]
 pub struct Operation {
@@ -63,7 +72,7 @@ impl OperationStorage for SqliteStorage {
         let db = rusqlite::Connection::open(&self.db_path)?;
         let fields = "id, source_id, source, op_type, data, created_at, imported_at";
         let mut stmt = db.prepare(&format!(
-            "SELECT {fields} FROM operations WHERE source = ?1 AND op_type = ?2 
+            "SELECT {fields} FROM operations WHERE source = ?1 AND op_type = ?2
              ORDER BY created_at DESC LIMIT 1"
         ))?;
         let mut rows = stmt.query(rusqlite::params![source, record_type])?;
@@ -117,6 +126,18 @@ impl OperationStorage for SqliteStorage {
     }
 }
 
+pub async fn sync_operations<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
+where
+    F: DataFetcher + Send + Sync,
+    S: OperationStorage + Send + Sync,
+{
+    match fetcher.sync(storage).await {
+        Ok(()) => log::info!("finished syncing operations for {}", name),
+        Err(err) => log::error!("failed to sync operations for {}: {}", name, err),
+    };
+    Ok(())
+}
+
 pub fn create_tables() -> Result<()> {
     // read schema from file
     let operations_schema = std::fs::read_to_string("./data-sync/schemas/operations.sql")?;
@@ -126,6 +147,4 @@ pub fn create_tables() -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-}
+mod tests {}
