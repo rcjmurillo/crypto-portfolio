@@ -73,7 +73,7 @@ pub async fn main() -> Result<()> {
             reports::asset_balances(&coin_tracker, binance_client).await?;
             println!();
         }
-        Action::Sync { ops_file } => {
+        Action::Sync => {
             // coinbase exchange disabled because it doesn't provide the full set of
             // operations and fees when converting coins.
 
@@ -126,15 +126,22 @@ pub async fn main() -> Result<()> {
             //     None => (),
             // };
 
-            match ops_file {
-                Some(ops_file) => {
-                    let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                    match FileDataFetcher::from_file(ops_file) {
-                        Ok(fetcher) => {
-                            sync_operations("custom operations", fetcher, sqlite_storage).await?;
-                        }
-                        Err(err) => {
-                            return Err(anyhow!(err).context("could read config from file"));
+            match config.custom_sources {
+                Some(custom_sources) => {
+                    for custom_source in custom_sources {
+                        println!(
+                            "loading custom source {} from {}",
+                            custom_source.name, custom_source.file
+                        );
+                        let sqlite_storage = SqliteStorage::new("./operations.db")?;
+                        match FileDataFetcher::from_file(custom_source.file) {
+                            Ok(fetcher) => {
+                                sync_operations("custom operations", fetcher, sqlite_storage)
+                                    .await?;
+                            }
+                            Err(err) => {
+                                return Err(anyhow!(err).context("could read config from file"));
+                            }
                         }
                     }
                 }

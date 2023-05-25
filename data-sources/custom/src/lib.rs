@@ -22,10 +22,10 @@ pub struct FileDataFetcher {
 }
 
 impl FileDataFetcher {
-    pub fn from_file(file: File) -> Result<Self> {
+    pub fn from_file(path: String) -> Result<Self> {
         Ok(Self {
-            data: serde_json::from_reader(file)
-                .map_err(|e| anyhow!("couldn't parse custom operations file: {}", e))?,
+            data: serde_json::from_reader(File::open(&path)?)
+                .map_err(|e| anyhow!("couldn't parse custom operations file ({path}): {}", e))?,
         })
     }
 }

@@ -53,8 +53,9 @@ impl ExchangeConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct CustomConfig {
-    // TODO: add fields
+pub struct CustomSource {
+    pub name: String,
+    pub file: String,
 }
 
 #[derive(Deserialize)]
@@ -65,7 +66,7 @@ pub struct Config {
     pub coinbase: Option<ExchangeConfig>,
     pub coinbase_pro: Option<ExchangeConfig>,
     pub coingecko: Option<CoingeckoConfig>,
-    pub custom: Option<Vec<CustomConfig>>,
+    pub custom_sources: Option<Vec<CustomSource>>,
 }
 
 impl Config {

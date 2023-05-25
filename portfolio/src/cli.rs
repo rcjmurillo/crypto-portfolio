@@ -1,15 +1,10 @@
-use std::fs::File;
 use structopt::{self, StructOpt};
 
-use crate::config::{read_config_file, read_file, Config};
+use crate::config::{read_config_file, Config};
 
 #[derive(StructOpt)]
 pub enum Action {
-    Sync {
-        /// Operations file in JSON format
-        #[structopt(long = "ops-file", parse(try_from_os_str = read_file))]
-        ops_file: Option<File>,
-    },
+    Sync,
     Balances,
     RevenueReport {
         #[structopt(long)]
