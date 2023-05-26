@@ -27,6 +27,26 @@ pub trait OperationStorage {
     fn insert(&self, records: Vec<Operation>) -> Result<()>;
 }
 
+pub async fn sync_operations<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
+where
+    F: DataFetcher + Send + Sync,
+    S: OperationStorage + Send + Sync,
+{
+    match fetcher.sync(storage).await {
+        Ok(()) => log::info!("finished syncing operations for {}", name),
+        Err(err) => log::error!("failed to sync operations for {}: {}", name, err),
+    };
+    Ok(())
+}
+
+pub fn create_tables() -> Result<()> {
+    // read schema from file
+    let operations_schema = std::fs::read_to_string("./data-sync/schemas/operations.sql")?;
+    let db = rusqlite::Connection::open("./operations.db")?;
+    db.execute(&operations_schema, rusqlite::params![])?;
+    Ok(())
+}
+
 pub struct SqliteStorage {
     db_path: String,
 }
@@ -124,26 +144,6 @@ impl OperationStorage for SqliteStorage {
         }
         Ok(())
     }
-}
-
-pub async fn sync_operations<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
-where
-    F: DataFetcher + Send + Sync,
-    S: OperationStorage + Send + Sync,
-{
-    match fetcher.sync(storage).await {
-        Ok(()) => log::info!("finished syncing operations for {}", name),
-        Err(err) => log::error!("failed to sync operations for {}: {}", name, err),
-    };
-    Ok(())
-}
-
-pub fn create_tables() -> Result<()> {
-    // read schema from file
-    let operations_schema = std::fs::read_to_string("./data-sync/schemas/operations.sql")?;
-    let db = rusqlite::Connection::open("./operations.db")?;
-    db.execute(&operations_schema, rusqlite::params![])?;
-    Ok(())
 }
 
 #[cfg(test)]

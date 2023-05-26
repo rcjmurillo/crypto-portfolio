@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{ready, Future};
+use serde::{Deserialize, Serialize};
 use tower::Service;
 
 use crate::conversion::{conversion_chain, MarketType};
@@ -17,6 +18,14 @@ use crate::conversion::{conversion_chain, MarketType};
 pub type Asset = String;
 
 pub const FIAT_CURRENCIES: &[&str] = &["usd", "eur"];
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Candle {
+    pub open_time: u64,
+    pub close_time: u64,
+    pub open_price: f64,
+    pub close_price: f64,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Market {

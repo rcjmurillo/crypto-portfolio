@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 data-sync = { path = "../../data-sync" }
-exchange = { path = "../exchange" }
+operations = { path = "../../operations" }
 
 anyhow.workspace = true
 async-trait.workspace = true

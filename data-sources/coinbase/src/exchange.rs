@@ -9,7 +9,7 @@ use crate::{
 };
 
 use data_sync::DataFetcher;
-use exchange::{operations::Operation, Deposit, Loan, Repay, Trade, TradeSide, Withdraw};
+use operations::{Deposit, Loan, Operation, Repay, Trade, TradeSide, Withdraw};
 
 impl Into<Trade> for Fill {
     fn into(self) -> Trade {

@@ -8,9 +8,9 @@ edition = "2021"
 
 [dependencies]
 api-client = { path = "../api-client" }
-exchange = { path = "../exchange" }
 market = { path = "../market" }
 data-sync = { path = "../../data-sync" }
+operations = { path = "../../operations" }
 
 anyhow.workspace = true
 async-trait.workspace = true

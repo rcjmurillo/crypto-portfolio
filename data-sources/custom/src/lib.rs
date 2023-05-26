@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json;
 
 use data_sync::DataFetcher;
-use exchange::{Deposit, Trade, Withdraw};
+use operations::{Deposit, Trade, Withdraw};
 
 #[derive(Debug, Deserialize, Clone)]
 struct FileData {

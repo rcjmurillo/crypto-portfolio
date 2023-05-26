@@ -26,10 +26,7 @@ use tower::{
 use api_client::{
     errors::ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder, Response,
 };
-use exchange::{
-    operations::storage::{Record, Redis as RedisStorage},
-    Candle,
-};
+use market::Candle;
 use market::{Market, MarketData};
 
 use crate::{api_model::*, errors::Error as ApiError};
@@ -366,7 +363,6 @@ pub struct BinanceFetcher<Region> {
     pub api_client: ApiClient,
     pub credentials: Credentials<Region>,
     pub domain: &'static str,
-    storage: RedisStorage,
 }
 
 impl<'a, Region> BinanceFetcher<Region> {
@@ -579,21 +575,8 @@ impl<'a, Region> BinanceFetcher<Region> {
         endpoint: &str,
         extra_params: Option<Query>,
     ) -> Result<Vec<Trade>> {
-        let storage_key = format!(
-            "binance.trade[d={},e={},ep={}]",
-            self.domain,
-            endpoint,
-            extra_params
-                .as_ref()
-                .map_or_else(|| "none".to_string(), |q| q.materialize().cacheable_query)
-        );
-
-        let trades: Vec<Trade> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::new());
-        let mut new_trades = Vec::new();
+        todo!("receive request type");
+        let mut trades: Vec<Trade> = Vec::new();
         let mut last_id = trades.last().map(|t| t.id + 1).unwrap_or(0);
 
         let mut query = Query::new();
@@ -643,7 +626,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             for mut t in binance_trades.into_iter() {
                 t.base_asset = Some(symbol.base.clone());
                 t.quote_asset = Some(symbol.quote.clone());
-                new_trades.push(t);
+                trades.push(t);
             }
             if !fetch_more {
                 break;
@@ -664,11 +647,6 @@ impl<'a, Region> BinanceFetcher<Region> {
         }
         // }
 
-        self.storage
-            .insert_records(&storage_key, &new_trades)
-            .await?;
-        let mut trades = trades;
-        trades.extend(new_trades);
         Ok(trades)
     }
 
@@ -686,7 +664,6 @@ impl BinanceFetcher<RegionGlobal> {
             credentials: Credentials::<RegionGlobal>::new(),
             domain: API_DOMAIN_GLOBAL,
             api_client: ApiClient::new(),
-            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -697,7 +674,6 @@ impl BinanceFetcher<RegionGlobal> {
             config: Some(config),
             domain: API_DOMAIN_GLOBAL,
             endpoint_services: EndpointServices::<RegionGlobal>::new(),
-            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -708,13 +684,8 @@ impl BinanceFetcher<RegionGlobal> {
             data: Vec<FiatOrder>,
         }
 
-        let storage_key = format!("binance.fiat_orders[d={},t={}]", self.domain, tx_type);
-
-        let orders: Vec<FiatOrder> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::new());
+        todo!("receive request type");
+        let orders: Vec<FiatOrder> = Vec::new();
         let mut new_orders = Vec::new();
         // fetch in batches of 90 days from `start_date` to `now()`
         let mut curr_start = orders
@@ -773,10 +744,6 @@ impl BinanceFetcher<RegionGlobal> {
                 break;
             }
         }
-
-        self.storage
-            .insert_records(&storage_key, &new_orders)
-            .await?;
 
         let mut orders = orders;
         orders.extend(new_orders);
@@ -927,7 +894,7 @@ impl BinanceFetcher<RegionGlobal> {
         endpoint: &str,
     ) -> Result<Vec<T>>
     where
-        T: Serialize + DeserializeOwned + Record<Id = u64>,
+        T: Serialize + DeserializeOwned,
     {
         #[derive(Deserialize)]
         struct Response<U> {
@@ -935,22 +902,13 @@ impl BinanceFetcher<RegionGlobal> {
             total: u16,
         }
 
-        let storage_key = format!(
-            "binance.margin_transactions[d={},e={endpoint},s={isolated_symbol:?}]",
-            self.domain
-        );
-        let txns: Vec<T> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<T>::new());
+        todo!("receive request type");
+
+        let txns: Vec<T> = Vec::<T>::new();
         let mut new_txns = Vec::new();
 
         let now = Utc::now();
-        let start = txns
-            .last()
-            .map(|tx| tx.datetime() + Duration::milliseconds(1))
-            .unwrap_or_else(|| *self.data_start_date());
+        let start = *self.data_start_date();
         let archived_cutoff = now - Duration::days(30 * 6);
         // round archived_cutoff to the last millisecond of the day
         let archived_cutoff =
@@ -1056,7 +1014,6 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        self.storage.insert_records(&storage_key, &txns).await?;
         let mut txns = txns;
         txns.extend(new_txns);
 
@@ -1082,13 +1039,9 @@ impl BinanceFetcher<RegionGlobal> {
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
+        todo!("receive request type");
         let endpoint = ApiGlobal::Deposits.to_string();
-        let storage_key = format!("binance.crypto_deposits[d={},e={}]", self.domain, endpoint);
-        let mut deposits: Vec<Deposit> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<Deposit>::new());
+        let mut deposits: Vec<Deposit> = Vec::<Deposit>::new();
         let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1131,25 +1084,15 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        self.storage
-            .insert_records(&storage_key, &new_deposits)
-            .await?;
         deposits.extend(new_deposits);
 
         Ok(deposits)
     }
 
     pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
+        todo!("receive request type");
         let endpoint = ApiGlobal::Withdraws.to_string();
-        let storage_key = format!(
-            "binance.crypto_withdrawals[d={},e={}]",
-            self.domain, endpoint
-        );
-        let mut withdrawals: Vec<Withdraw> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<Withdraw>::new());
+        let mut withdrawals: Vec<Withdraw> = Vec::<Withdraw>::new();
         let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1193,9 +1136,6 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        self.storage
-            .insert_records(&storage_key, &new_withdrawals)
-            .await?;
         withdrawals.extend(new_withdrawals);
 
         Ok(withdrawals)
@@ -1210,7 +1150,6 @@ impl BinanceFetcher<RegionUs> {
             credentials: Credentials::<RegionUs>::new(),
             domain: API_DOMAIN_US,
             endpoint_services: EndpointServices::<RegionUs>::new(),
-            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -1221,7 +1160,6 @@ impl BinanceFetcher<RegionUs> {
             config: Some(config),
             domain: API_DOMAIN_US,
             endpoint_services: EndpointServices::<RegionUs>::new(),
-            storage: RedisStorage::new("0.0.0.0".to_string(), 6379).unwrap(),
         }
     }
 
@@ -1231,13 +1169,9 @@ impl BinanceFetcher<RegionUs> {
         struct Response {
             asset_log_record_list: Vec<FiatOrder>,
         }
+        todo!("receive request type");
 
-        let storage_key = format!("binance.fiat_orders[d={},e={}]", self.domain, endpoint);
-        let mut orders: Vec<FiatOrder> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<FiatOrder>::new());
+        let mut orders: Vec<FiatOrder> = Vec::<FiatOrder>::new();
         let mut new_orders = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1289,9 +1223,6 @@ impl BinanceFetcher<RegionUs> {
             }
         }
 
-        self.storage
-            .insert_records(&storage_key, &new_orders)
-            .await?;
         orders.extend(new_orders);
 
         Ok(orders)
@@ -1308,13 +1239,9 @@ impl BinanceFetcher<RegionUs> {
     }
 
     pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
+        todo!("receive request type");
         let endpoint = ApiUs::Deposits.to_string();
-        let storage_key = format!("binance.crypto_deposits[d={},e={}]", self.domain, endpoint);
-        let mut deposits: Vec<Deposit> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<Deposit>::new());
+        let mut deposits: Vec<Deposit> = Vec::<Deposit>::new();
         let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1358,25 +1285,15 @@ impl BinanceFetcher<RegionUs> {
             }
         }
 
-        self.storage
-            .insert_records(&storage_key, &new_deposits)
-            .await?;
         deposits.extend(new_deposits);
 
         Ok(deposits)
     }
 
     pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
+        todo!("receive request type");
         let endpoint = ApiUs::Withdraws.to_string();
-        let storage_key = format!(
-            "binance.crypto_withdrawals[d={},e={}]",
-            self.domain, endpoint
-        );
-        let mut withdrawals: Vec<Withdraw> = self
-            .storage
-            .get_records(&storage_key)
-            .await?
-            .unwrap_or_else(|| Vec::<Withdraw>::new());
+        let mut withdrawals: Vec<Withdraw> = Vec::<Withdraw>::new();
         let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
@@ -1419,9 +1336,6 @@ impl BinanceFetcher<RegionUs> {
             }
         }
 
-        self.storage
-            .insert_records(&storage_key, &new_withdrawals)
-            .await?;
         withdrawals.extend(new_withdrawals);
 
         Ok(withdrawals)

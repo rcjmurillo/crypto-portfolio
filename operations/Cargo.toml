@@ -1,0 +1,16 @@
+[package]
+name = "operations"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+market = { path = "../data-sources/market" }
+
+serde.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+log.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+
+proptest = "1.2.0"

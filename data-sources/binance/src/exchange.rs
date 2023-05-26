@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use std::{collections::HashSet, vec};
 
 use anyhow::Result;
@@ -10,14 +9,16 @@ use crate::{
     client::{ApiGlobal, ApiUs, BinanceFetcher, RegionGlobal, RegionUs},
 };
 use data_sync::DataFetcher;
-use exchange::{
-    self,
-    operations::{into_ops, Operation},
-    Candle, ExchangeClient,
-};
-use market::Market;
+use operations::Operation;
 
-impl From<FiatOrder> for exchange::Deposit {
+pub fn into_ops<T>(typed_ops: Vec<T>) -> Vec<Operation>
+where
+    T: Into<Vec<Operation>>,
+{
+    typed_ops.into_iter().flat_map(|s| s.into()).collect()
+}
+
+impl From<FiatOrder> for operations::Deposit {
     fn from(d: FiatOrder) -> Self {
         Self {
             source_id: d.id,
@@ -31,7 +32,7 @@ impl From<FiatOrder> for exchange::Deposit {
     }
 }
 
-impl From<FiatOrder> for exchange::Withdraw {
+impl From<FiatOrder> for operations::Withdraw {
     fn from(d: FiatOrder) -> Self {
         Self {
             source_id: d.id,
@@ -44,7 +45,7 @@ impl From<FiatOrder> for exchange::Withdraw {
     }
 }
 
-impl From<Deposit> for exchange::Deposit {
+impl From<Deposit> for operations::Deposit {
     fn from(d: Deposit) -> Self {
         Self {
             source_id: d.tx_id,
@@ -58,7 +59,7 @@ impl From<Deposit> for exchange::Deposit {
     }
 }
 
-impl From<Withdraw> for exchange::Withdraw {
+impl From<Withdraw> for operations::Withdraw {
     fn from(w: Withdraw) -> Self {
         Self {
             source_id: w.id,
@@ -71,7 +72,7 @@ impl From<Withdraw> for exchange::Withdraw {
     }
 }
 
-impl From<Trade> for exchange::Trade {
+impl From<Trade> for operations::Trade {
     fn from(t: Trade) -> Self {
         Self {
             source_id: t.id.to_string(),
@@ -85,15 +86,15 @@ impl From<Trade> for exchange::Trade {
             fee_asset: t.commission_asset,
             time: t.time,
             side: if t.is_buyer {
-                exchange::TradeSide::Buy
+                operations::TradeSide::Buy
             } else {
-                exchange::TradeSide::Sell
+                operations::TradeSide::Sell
             },
         }
     }
 }
 
-impl From<MarginLoan> for exchange::Loan {
+impl From<MarginLoan> for operations::Loan {
     fn from(m: MarginLoan) -> Self {
         Self {
             source_id: m.tx_id.to_string(),
@@ -102,14 +103,14 @@ impl From<MarginLoan> for exchange::Loan {
             amount: m.principal,
             time: m.timestamp,
             status: match m.status.as_str() {
-                "CONFIRMED" => exchange::Status::Success,
-                _ => exchange::Status::Failure,
+                "CONFIRMED" => operations::Status::Success,
+                _ => operations::Status::Failure,
             },
         }
     }
 }
 
-impl From<MarginRepay> for exchange::Repay {
+impl From<MarginRepay> for operations::Repay {
     fn from(r: MarginRepay) -> Self {
         Self {
             source_id: r.tx_id.to_string(),
@@ -119,15 +120,15 @@ impl From<MarginRepay> for exchange::Repay {
             interest: r.interest,
             time: r.timestamp,
             status: match r.status.as_str() {
-                "CONFIRMED" => exchange::Status::Success,
-                _ => exchange::Status::Failure,
+                "CONFIRMED" => operations::Status::Success,
+                _ => operations::Status::Failure,
             },
         }
     }
 }
 
 impl BinanceFetcher<RegionGlobal> {
-    async fn trades(&self) -> Result<Vec<exchange::Trade>> {
+    async fn trades(&self) -> Result<Vec<operations::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols(&ApiGlobal::ExchangeInfo.to_string())
@@ -152,7 +153,7 @@ impl BinanceFetcher<RegionGlobal> {
         )
     }
 
-    async fn margin_trades(&self) -> Result<Vec<exchange::Trade>> {
+    async fn margin_trades(&self) -> Result<Vec<operations::Trade>> {
         // Processing binance margin trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols(&ApiGlobal::ExchangeInfo.to_string())
@@ -175,7 +176,7 @@ impl BinanceFetcher<RegionGlobal> {
         )
     }
 
-    async fn loans(&self) -> Result<Vec<exchange::Loan>> {
+    async fn loans(&self) -> Result<Vec<operations::Loan>> {
         let exchange_symbols = self
             .fetch_exchange_symbols(&ApiGlobal::ExchangeInfo.to_string())
             .await?;
@@ -202,7 +203,7 @@ impl BinanceFetcher<RegionGlobal> {
         )
     }
 
-    async fn repays(&self) -> Result<Vec<exchange::Repay>> {
+    async fn repays(&self) -> Result<Vec<operations::Repay>> {
         let mut handles = Vec::new();
         let exchange_symbols = self
             .fetch_exchange_symbols(&ApiGlobal::ExchangeInfo.to_string())
@@ -229,7 +230,7 @@ impl BinanceFetcher<RegionGlobal> {
         )
     }
 
-    async fn deposits(&self) -> Result<Vec<exchange::Deposit>> {
+    async fn deposits(&self) -> Result<Vec<operations::Deposit>> {
         let mut deposits = Vec::new();
 
         deposits.extend(
@@ -237,20 +238,20 @@ impl BinanceFetcher<RegionGlobal> {
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Deposit>>(),
+                .collect::<Vec<operations::Deposit>>(),
         );
         deposits.extend(
             self.fetch_deposits()
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Deposit>>(),
+                .collect::<Vec<operations::Deposit>>(),
         );
 
         Ok(deposits)
     }
 
-    async fn withdrawals(&self) -> Result<Vec<exchange::Withdraw>> {
+    async fn withdrawals(&self) -> Result<Vec<operations::Withdraw>> {
         let mut withdrawals = Vec::new();
 
         withdrawals.extend(
@@ -258,7 +259,7 @@ impl BinanceFetcher<RegionGlobal> {
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Withdraw>>(),
+                .collect::<Vec<operations::Withdraw>>(),
         );
 
         withdrawals.extend(
@@ -266,7 +267,7 @@ impl BinanceFetcher<RegionGlobal> {
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Withdraw>>(),
+                .collect::<Vec<operations::Withdraw>>(),
         );
 
         Ok(withdrawals)
@@ -297,26 +298,8 @@ impl DataFetcher for BinanceFetcher<RegionGlobal> {
     }
 }
 
-#[async_trait]
-impl ExchangeClient for BinanceFetcher<RegionGlobal> {
-    async fn prices(
-        &self,
-        market: &Market,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> Result<Vec<Candle>> {
-        self.fetch_prices_in_range(
-            &ApiGlobal::Klines.to_string(),
-            market,
-            start.timestamp_millis().try_into()?,
-            end.timestamp_millis().try_into()?,
-        )
-        .await
-    }
-}
-
 impl BinanceFetcher<RegionUs> {
-    async fn trades(&self) -> Result<Vec<exchange::Trade>> {
+    async fn trades(&self) -> Result<Vec<operations::Trade>> {
         // Processing binance trades
         let all_symbols: Vec<String> = self
             .fetch_exchange_symbols(&ApiUs::ExchangeInfo.to_string())
@@ -340,7 +323,7 @@ impl BinanceFetcher<RegionUs> {
         )
     }
 
-    async fn deposits(&self) -> Result<Vec<exchange::Deposit>> {
+    async fn deposits(&self) -> Result<Vec<operations::Deposit>> {
         let mut deposits = Vec::new();
 
         deposits.extend(
@@ -348,20 +331,20 @@ impl BinanceFetcher<RegionUs> {
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Deposit>>(),
+                .collect::<Vec<operations::Deposit>>(),
         );
         deposits.extend(
             self.fetch_deposits()
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Deposit>>(),
+                .collect::<Vec<operations::Deposit>>(),
         );
 
         Ok(deposits)
     }
 
-    async fn withdrawals(&self) -> Result<Vec<exchange::Withdraw>> {
+    async fn withdrawals(&self) -> Result<Vec<operations::Withdraw>> {
         let mut withdrawals = Vec::new();
 
         withdrawals.extend(
@@ -369,14 +352,14 @@ impl BinanceFetcher<RegionUs> {
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Withdraw>>(),
+                .collect::<Vec<operations::Withdraw>>(),
         );
         withdrawals.extend(
             self.fetch_withdrawals()
                 .await?
                 .into_iter()
                 .map(|x| x.into())
-                .collect::<Vec<exchange::Withdraw>>(),
+                .collect::<Vec<operations::Withdraw>>(),
         );
 
         Ok(withdrawals)
@@ -396,19 +379,19 @@ impl DataFetcher for BinanceFetcher<RegionUs> {
             .await?
             .into_iter()
             .map(|x| x.into())
-            .collect::<Vec<exchange::Trade>>();
+            .collect::<Vec<operations::Trade>>();
         let deposits = self
             .deposits()
             .await?
             .into_iter()
             .map(|x| x.into())
-            .collect::<Vec<exchange::Deposit>>();
+            .collect::<Vec<operations::Deposit>>();
         let withdrawals = self
             .withdrawals()
             .await?
             .into_iter()
             .map(|x| x.into())
-            .collect::<Vec<exchange::Withdraw>>();
+            .collect::<Vec<operations::Withdraw>>();
 
         log::info!("[binance US] fetching trades...");
         operations.extend(

@@ -11,7 +11,6 @@ use anyhow::{anyhow, Result};
 
 use futures::{stream, StreamExt};
 use structopt::StructOpt;
-use tokio::sync::mpsc;
 
 use binance::{BinanceFetcher, RegionGlobal};
 use coingecko::Client as CoinGeckoClient;
@@ -19,10 +18,11 @@ use coingecko::Client as CoinGeckoClient;
 
 use custom::FileDataFetcher;
 use data_sync::sync_operations;
-use exchange::operations::{
+use operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
-    BalanceTracker, Operation,
+    OpType, Operation,
 };
+use reports::BalanceTracker;
 
 #[tokio::main]
 pub async fn main() -> Result<()> {
@@ -44,16 +44,17 @@ pub async fn main() -> Result<()> {
             cg.init().await?;
 
             let coin_tracker = BalanceTracker::new(cg);
+            let ops = Vec::<Operation>::new();
             let mut handles = Vec::new();
             let mut i = 0;
             todo!("load ops from storage");
-            // while let Some(op) = ops_receiver.recv().await {
-            //     coin_tracker.batch_operation(op).await;
-            //     if i % BATCH_SIZE == 0 {
-            //         handles.push(coin_tracker.process_batch());
-            //     }
-            //     i += 1;
-            // }
+            for op in ops {
+                coin_tracker.batch_operation(op).await;
+                if i % BATCH_SIZE == 0 {
+                    handles.push(coin_tracker.process_batch());
+                }
+                i += 1;
+            }
             handles.push(coin_tracker.process_batch());
 
             for batch_result in stream::iter(handles)
@@ -161,29 +162,29 @@ pub async fn main() -> Result<()> {
             let mut cb_solver = CostBasisResolver::from_ops(ops.clone(), ConsumeStrategy::Fifo);
 
             for op in ops {
-                if let Operation::Dispose { amount, time, .. } = op {
+                if let OpType::Dispose = op.op_type {
                     assert!(
-                        !market::is_fiat(&amount.asset),
+                        !market::is_fiat(&op.amount.asset),
                         "there shouldn't be revenue ops for fiat currencies"
                     );
                     if report_asset
                         .as_ref()
-                        .map_or(false, |a| !a.eq_ignore_ascii_case(&amount.asset))
+                        .map_or(false, |a| !a.eq_ignore_ascii_case(&op.amount.asset))
                     {
                         continue;
                     }
                     match cb_solver
                         .resolve(&Disposal {
-                            amount: amount.clone(),
-                            datetime: time,
+                            amount: op.amount.clone(),
+                            datetime: op.time,
                         })
                         .await
                     {
                         Ok(acquisitions) => {
-                            reports::sell_detail(amount, time, acquisitions, &cg).await?
+                            reports::sell_detail(op.amount, op.time, acquisitions, &cg).await?
                         }
                         Err(err) => {
-                            println!("error when consuming {} at {}: {}", amount, time, err)
+                            println!("error when consuming {} at {}: {}", op.amount, op.time, err)
                         }
                     }
                 }

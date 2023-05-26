@@ -1,13 +1,10 @@
-use std::{
-    iter::Peekable,
-    ops::Deref,
-};
+use std::{iter::Peekable, ops::Deref};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use market::{Asset, Market, MarketData};
 
-use crate::operations::{Amount, Operation};
+use crate::{Amount, OpType, Operation};
 
 #[derive(Debug)]
 pub struct Disposal {
@@ -52,7 +49,7 @@ struct ConsumableOperation {
 
 impl ConsumableOperation {
     fn from_operation(operation: Operation) -> Self {
-        let remaining_amount = operation.amount().value;
+        let remaining_amount = operation.amount.value;
         Self {
             operation,
             remaining_amount,
@@ -78,35 +75,35 @@ impl ConsumableOperation {
         } else {
             self.remaining_amount
         };
-        match &self.operation {
-            Operation::Acquire {
-                amount,
-                price,
-                costs,
-                ..
-            } => {
+        match &self.operation.op_type {
+            OpType::Acquire => {
                 // the cost for the acquisition of asset amount is the price of that asset per unit multiplied
                 // by the number of units consumed from this acquisition operation.
+                let price = self
+                    .operation
+                    .price
+                    .as_ref()
+                    .expect("missing price in acquire operation");
                 let mut all_costs = vec![Amount::new(
                     amount_consumed * price.value,
                     price.asset.clone(),
                 )];
                 // plus any additional costs associated with the operation.
-                if let Some(op_costs) = costs {
+                if let Some(op_costs) = self.operation.costs.as_ref() {
                     for c in op_costs {
                         // compute the cost proportional to the consumed amount
-                        let percentage_consumed = amount_consumed / amount.value;
+                        let percentage_consumed = amount_consumed / self.operation.amount.value;
                         all_costs.push(Amount::new(percentage_consumed * c.value, c.asset.clone()));
                     }
                 }
                 self.remaining_amount -= amount_consumed;
                 Some((amount_consumed, all_costs))
             }
-            Operation::Receive { .. } => {
+            OpType::Receive { .. } => {
                 unreachable!("found a Receive operation when none is expected")
             }
-            Operation::Send { .. } => unreachable!("found a Send operation when none is expected"),
-            Operation::Dispose { .. } => {
+            OpType::Send { .. } => unreachable!("found a Send operation when none is expected"),
+            OpType::Dispose { .. } => {
                 unreachable!("found a Dispose operation when none is expected")
             }
         }
@@ -175,13 +172,13 @@ impl CostBasisResolver {
     pub fn from_ops(ops: Vec<Operation>, strategy: ConsumeStrategy) -> Self {
         let mut ops = ops
             .into_iter()
-            .filter(|op| matches!(op, Operation::Acquire { .. }))
+            .filter(|op| matches!(op.op_type, OpType::Acquire { .. }))
             .map(|op| ConsumableOperation::from_operation(op))
             .collect::<Vec<ConsumableOperation>>();
         ops.sort_by_key(|op| match strategy {
-            ConsumeStrategy::Fifo => op.time().timestamp(),
+            ConsumeStrategy::Fifo => op.time.timestamp(),
             // the newest operations will appear first when iterating
-            ConsumeStrategy::Lifo => -op.time().timestamp(),
+            ConsumeStrategy::Lifo => -op.time.timestamp(),
         });
         Self {
             ops: ops.into_iter().peekable(),
@@ -200,11 +197,11 @@ impl CostBasisResolver {
                 if let Some((amount_fulfilled, costs)) = op.consume_amount(amount_to_fulfill) {
                     amount_to_fulfill -= amount_fulfilled;
                     consumed_ops.push(Acquisition {
-                        source: op.source().to_string(),
+                        source: op.source.to_string(),
                         // the amount fulfilled from the operation
                         amount: amount_fulfilled,
                         paid_with: costs,
-                        datetime: *op.time(),
+                        datetime: op.time,
                     });
                     if op.remaining_amount == 0.0 {
                         // operation consumed, move to the next one
@@ -231,8 +228,6 @@ impl CostBasisResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::{storage::Storage, Operation::*};
-    use async_trait::async_trait;
     use chrono::TimeZone;
     use proptest::{collection::vec, option::of, prelude::*, sample::select};
 
@@ -268,42 +263,23 @@ mod tests {
             }),
             optype in select(optypes)
         ) -> Operation {
-            match optype {
-                "acquire" => Operation::Acquire {
-                    source_id,
-                    source,
-                    amount,
-                    price,
-                    costs,
-                    time
-                },
-                "dispose" => Operation::Dispose {
-                    source_id,
-                    source,
-                    amount,
-                    price,
-                    costs,
-                    time
-                },
-                "send" => Operation::Send {
-                    source_id,
-                    source,
-                    amount,
-                    sender: Some("test-sender".to_string()),
-                    recipient: Some("test-recipient".to_string()),
-                    costs,
-                    time
-                },
-                "receive" => Operation::Receive {
-                    source_id,
-                    source,
-                    amount,
-                    sender: Some("test-sender".to_string()),
-                    recipient: Some("test-recipient".to_string()),
-                    costs,
-                    time
-                },
+            let op_type = match optype {
+                "acquire" => OpType::Acquire,
+                "dispose" => OpType::Dispose,
+                "send" => OpType::Send,
+                "receive" => OpType::Receive,
                 _ => unreachable!()
+            };
+            Operation {
+                source_id,
+                source,
+                amount,
+                price: Some(price),
+                costs,
+                time,
+                op_type,
+                sender: Some("test-sender".to_string()),
+                recipient: Some("test-recipient".to_string())
             }
         }
     }
@@ -357,19 +333,17 @@ mod tests {
     }
 
     fn check_operation_costs(operation: &Operation, consumed_amount: f64, costs: &Vec<Amount>) {
-        if let Operation::Acquire {
-            amount,
-            price,
-            costs: op_costs,
-            ..
-        } = operation
-        {
+        if let OpType::Acquire = operation.op_type {
             // test every cost of the operation has been correctly computed
             // relative to the consumed amount.
-            if let Some(op_costs) = op_costs {
-                let percentage_consumed = consumed_amount / amount.value;
+            if let Some(op_costs) = operation.costs.as_ref() {
+                let percentage_consumed = consumed_amount / operation.amount.value;
                 let mut costs_iter = costs.iter();
                 let first_cost = costs_iter.next().unwrap();
+                let price = operation
+                    .price
+                    .as_ref()
+                    .expect("missing price in acquire operation");
                 assert_eq!(&first_cost.asset, &price.asset);
                 assert_approx_eq(first_cost.value, price.value * consumed_amount, 0.0001);
                 assert_eq!(costs_iter.len(), op_costs.len());
@@ -390,21 +364,21 @@ mod tests {
         fn test_consumable_operation_consume_all_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
         ) {
-            prop_assume!(matches!(operation, Operation::Acquire{ .. }));
+            prop_assume!(matches!(operation.op_type, OpType::Acquire));
             let mut op = ConsumableOperation::from_operation(operation.clone());
-            let r = op.consume_amount(op.amount().value);
+            let r = op.consume_amount(op.amount.value);
             prop_assert!(r.is_some());
             let (consumed_amount, costs) = r.unwrap();
-            prop_assert_eq!(consumed_amount, op.amount().value);
+            prop_assert_eq!(consumed_amount, op.amount.value);
             prop_assert_eq!(op.remaining_amount, 0.0);
             check_operation_costs(&operation, consumed_amount, &costs);
 
             // test it's only possible to consume no more than the available amount
             let mut op = ConsumableOperation::from_operation(operation.clone());
-            let r = op.consume_amount(op.amount().value + 1.0);
+            let r = op.consume_amount(op.amount.value + 1.0);
             prop_assert!(r.is_some());
             let (consumed_amount, _costs) = r.unwrap();
-            prop_assert_eq!(consumed_amount, op.amount().value);
+            prop_assert_eq!(consumed_amount, op.amount.value);
             prop_assert_eq!(op.remaining_amount, 0.0);
             check_operation_costs(&operation, consumed_amount, &costs);
         }
@@ -415,14 +389,14 @@ mod tests {
         fn test_consumable_operation_consume_partial_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
         ) {
-            prop_assume!(matches!(operation, Operation::Acquire{ .. }));
+            prop_assume!(matches!(operation.op_type, OpType::Acquire));
             let mut op = ConsumableOperation::from_operation(operation.clone());
-            let to_consume = op.amount().value * 0.77;
+            let to_consume = op.amount.value * 0.77;
             let r = op.consume_amount(to_consume);
             prop_assert!(r.is_some());
             let (consumed_amount, costs) = r.unwrap();
             prop_assert_eq!(consumed_amount, to_consume);
-            prop_assert_eq!(op.remaining_amount, op.amount().value - to_consume);
+            prop_assert_eq!(op.remaining_amount, op.amount.value - to_consume);
             check_operation_costs(&operation, consumed_amount, &costs);
         }
     }
@@ -433,7 +407,7 @@ mod tests {
             ops in vec(operation(vec!["acquire", "dispose", "send", "receive"], None, None), 1..100)
         ) {
             let stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Fifo);
-            assert!(stream.ops().iter().all(|op| matches!(op.operation, Operation::Acquire{..})));
+            assert!(stream.ops().iter().all(|op| matches!(op.operation.op_type, OpType::Acquire)));
         }
     }
 
@@ -494,87 +468,75 @@ mod tests {
             vec!["BTC"],
         )) {
             // all three ops must be for the same asset
-            prop_assume!(ops.iter().all(|op| op.amount().asset == "BTC"));
+            prop_assume!(ops.iter().all(|op| op.amount.asset == "BTC"));
             // check that the sum of the first n ops is greater or equal than the last op
-            let sum = ops.iter().fold(0.0, |acc, op| acc + op.amount().value);
-            let last_value = ops.last().unwrap().amount().value;
+            let sum = ops.iter().fold(0.0, |acc, op| acc + op.amount.value);
+            let last_value = ops.last().unwrap().amount.value;
             prop_assume!(sum - last_value >= last_value);
 
             // check that the first cost op's amount has been partially or fully consumed
-            if let Some(Dispose {amount, time, ..}) = &ops.last() {
-                // create a vector with all the original amounts but the last one
-                let orig_amounts = ops.iter().take(ops.len() - 1).map(|op| op.amount().clone()).collect::<Vec<_>>();
-                let sale = Disposal {
-                    amount: amount.clone(),
-                    datetime: *time,
-                };
-                let mut stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Fifo);
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("could not build tokio runtime");
+            if let Some(operation) = &ops.last() {
+                if let Some(OpType::Dispose) = &ops.last().map(|op| &op.op_type) {
+                    // create a vector with all the original amounts but the last one
+                    let orig_amounts = ops.iter().take(ops.len() - 1).map(|op| op.amount.clone()).collect::<Vec<_>>();
+                    let sale = Disposal {
+                        amount: operation.amount.clone(),
+                        datetime: operation.time,
+                    };
+                    let mut stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Fifo);
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("could not build tokio runtime");
 
-                match rt.block_on(stream.resolve(&sale)) {
-                    Ok(acquisitions) => {
-                        let ops = stream.ops();
-                        // calculate the number of operations that should have been fully consumed by the sale.
-                        // Each consumed operation accounts for part of the consumed amount.
-                        let mut remaining_sale_amount = sale.amount.value;
-                        let mut fully_consumed_ops = 0;
-                        let mut partially_consumed_ops = 0;
-                        for amount in orig_amounts.iter() {
-                            if remaining_sale_amount > amount.value {
-                                fully_consumed_ops += 1;
-                                remaining_sale_amount -= amount.value;
+                    match rt.block_on(stream.resolve(&sale)) {
+                        Ok(acquisitions) => {
+                            let ops = stream.ops();
+                            // calculate the number of operations that should have been fully consumed by the sale.
+                            // Each consumed operation accounts for part of the consumed amount.
+                            let mut remaining_sale_amount = sale.amount.value;
+                            let mut fully_consumed_ops = 0;
+                            let mut partially_consumed_ops = 0;
+                            for amount in orig_amounts.iter() {
+                                if remaining_sale_amount > amount.value {
+                                    fully_consumed_ops += 1;
+                                    remaining_sale_amount -= amount.value;
+                                } else {
+                                    partially_consumed_ops += 1;
+                                    break;
+                                }
+                            }
+
+                            // check that the number of ops consumed
+                            prop_assert_eq!(acquisitions.len(), fully_consumed_ops + partially_consumed_ops);
+
+                            // check that the number of ops remaining
+                            prop_assert_eq!(ops.len(), orig_amounts.len() - fully_consumed_ops);
+
+                            if partially_consumed_ops > 0 {
+                                // check the remaining sale amount was consumed from the first op remaining in the cost resolver
+                                prop_assert_eq!(
+                                    ops[0].remaining_amount,
+                                    orig_amounts[fully_consumed_ops].value - remaining_sale_amount
+                                );
                             } else {
-                                partially_consumed_ops += 1;
-                                break;
+                                // check that the sale was fully consumed
+                                prop_assert_eq!(ops.len(), 0);
                             }
                         }
-
-                        // check that the number of ops consumed
-                        prop_assert_eq!(acquisitions.len(), fully_consumed_ops + partially_consumed_ops);
-
-                        // check that the number of ops remaining
-                        prop_assert_eq!(ops.len(), orig_amounts.len() - fully_consumed_ops);
-
-                        if partially_consumed_ops > 0 {
-                            // check the remaining sale amount was consumed from the first op remaining in the cost resolver
-                            prop_assert_eq!(
-                                ops[0].remaining_amount,
-                                orig_amounts[fully_consumed_ops].value - remaining_sale_amount
-                            );
-                        } else {
-                            // check that the sale was fully consumed
-                            prop_assert_eq!(ops.len(), 0);
-                        }
+                        Err(e) => prop_assert!(false, "{}", e),
                     }
-                    Err(e) => prop_assert!(false, "{}", e),
                 }
             }
         }
     }
 
-    struct DummyStorage {
-        ops: Vec<Operation>,
-    }
-
-    #[async_trait]
-    impl Storage for DummyStorage {
-        async fn get_ops(&self) -> Result<Vec<Operation>> {
-            Ok(self.ops.clone())
-        }
-        async fn insert_ops(&self, ops: Vec<Operation>) -> Result<(usize, usize)> {
-            Ok((ops.len(), 0))
-        }
-    }
-
     fn into_disposals(ops: &Vec<Operation>) -> Vec<Disposal> {
         ops.iter()
-            .filter_map(|op| match op {
-                Operation::Dispose { amount, time, .. } => Some(Disposal {
-                    amount: amount.clone(),
-                    datetime: *time,
+            .filter_map(|op| match op.op_type {
+                OpType::Dispose { .. } => Some(Disposal {
+                    amount: op.amount.clone(),
+                    datetime: op.time,
                 }),
                 _ => None,
             })

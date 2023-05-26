@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use exchange::operations::storage::Record;
 use serde::{Deserialize, Serialize};
 
 fn default_currency_usd() -> String {
@@ -8,6 +7,13 @@ fn default_currency_usd() -> String {
 
 fn default_zero() -> f64 {
     0.0
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum Status {
+    Success,
+    Failure,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -29,16 +35,6 @@ pub struct FiatOrder {
     pub create_time: DateTime<Utc>,
 }
 
-impl Record for FiatOrder {
-    type Id = String;
-    fn id(&self) -> &Self::Id {
-        &self.id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.create_time
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Deposit {
@@ -51,16 +47,6 @@ pub struct Deposit {
     pub status: u8,
     #[serde(with = "datetime_from_str")]
     pub insert_time: DateTime<Utc>,
-}
-
-impl Record for Deposit {
-    type Id = String;
-    fn id(&self) -> &Self::Id {
-        &self.tx_id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.insert_time
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -76,16 +62,6 @@ pub struct Withdraw {
     pub coin: String,
     #[serde(with = "datetime_from_str", alias = "apply_time")]
     pub apply_time: DateTime<Utc>,
-}
-
-impl Record for Withdraw {
-    type Id = String;
-    fn id(&self) -> &Self::Id {
-        &self.id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.apply_time
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -112,16 +88,6 @@ pub struct Trade {
     pub quote_asset: Option<String>,
 }
 
-impl Record for Trade {
-    type Id = u64;
-    fn id(&self) -> &Self::Id {
-        &self.id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.time
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginLoan {
@@ -132,16 +98,6 @@ pub struct MarginLoan {
     #[serde(with = "datetime_from_str")]
     pub timestamp: DateTime<Utc>,
     pub status: String,
-}
-
-impl Record for MarginLoan {
-    type Id = u64;
-    fn id(&self) -> &Self::Id {
-        &self.tx_id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.timestamp
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -158,16 +114,6 @@ pub struct MarginRepay {
     pub status: String,
     #[serde(with = "datetime_from_str")]
     pub timestamp: DateTime<Utc>,
-}
-
-impl Record for MarginRepay {
-    type Id = u64;
-    fn id(&self) -> &Self::Id {
-        &self.tx_id
-    }
-    fn datetime(&self) -> DateTime<Utc> {
-        self.timestamp
-    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
