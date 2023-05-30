@@ -13,7 +13,7 @@ pub struct RedisCache {
 }
 
 impl RedisCache {
-    pub fn new(host: String, port: u32) -> Result<Self> {
+    pub fn new(host: String, port: u16) -> Result<Self> {
         let client = Client::open(format!("redis://{}:{}", host, port))?;
         Ok(Self { client, conn: None })
     }

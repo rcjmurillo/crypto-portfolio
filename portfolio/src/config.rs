@@ -40,6 +40,8 @@ pub struct ExchangeConfig {
     pub assets: Option<Vec<Asset>>,
     // How far back to look for transactions
     start_date: toml::value::Datetime,
+    cache_host: Option<String>,
+    cache_port: Option<u16>,
 }
 
 impl ExchangeConfig {
@@ -113,6 +115,8 @@ impl TryFrom<ExchangeConfig> for BinanceConfig {
                 .collect::<Result<Vec<Market>>>()?,
             api_key: c.api_key.expect("missing api key env var"),
             secret_key: c.secret_key.expect("missing secret key env var"),
+            cache_host: c.cache_host.unwrap_or("0.0.0.0".to_string()),
+            cache_port: c.cache_port.unwrap_or(6379),
         })
     }
 }

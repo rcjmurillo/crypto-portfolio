@@ -239,7 +239,7 @@ impl<Region> EndpointServices<Region> {
 }
 
 impl EndpointServices<RegionUs> {
-    pub fn new() -> Self {
+    pub fn new(cache_host: String, cache_port: u16) -> Self {
         let client = ApiClient::new();
 
         let mut s = Self {
@@ -250,7 +250,7 @@ impl EndpointServices<RegionUs> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
+            RedisCache::new(cache_host.clone(), cache_port).expect("couldn't create redis client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -265,7 +265,7 @@ impl EndpointServices<RegionUs> {
 }
 
 impl EndpointServices<RegionGlobal> {
-    pub fn new() -> Self {
+    pub fn new(cache_host: String, cache_port: u16) -> Self {
         let client = ApiClient::new();
 
         let mut s = Self {
@@ -276,7 +276,7 @@ impl EndpointServices<RegionGlobal> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
+            RedisCache::new(cache_host.clone(), cache_port).expect("couldn't create redis client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -301,6 +301,8 @@ pub struct Config {
     pub secret_key: String,
     pub start_date: DateTime<Utc>,
     pub symbols: Vec<Market>,
+    pub cache_host: String,
+    pub cache_port: u16,
 }
 
 impl Config {
@@ -310,6 +312,8 @@ impl Config {
             symbols: Vec::new(),
             api_key: "".to_string(),
             secret_key: "".to_string(),
+            cache_host: "".to_string(),
+            cache_port: 0,
         }
     }
 }
@@ -635,23 +639,25 @@ impl<'a, Region> BinanceFetcher<Region> {
 }
 
 impl BinanceFetcher<RegionGlobal> {
-    pub fn new() -> Self {
-        Self {
-            endpoint_services: EndpointServices::<RegionGlobal>::new(),
-            config: None,
-            credentials: Credentials::<RegionGlobal>::new(),
-            domain: API_DOMAIN_GLOBAL,
-            api_client: ApiClient::new(),
-        }
-    }
+    // pub fn new() -> Self {
+    //     Self {
+    //         endpoint_services: EndpointServices::<RegionGlobal>::new(),
+    //         config: None,
+    //         credentials: Credentials::<RegionGlobal>::new(),
+    //         domain: API_DOMAIN_GLOBAL,
+    //         api_client: ApiClient::new(),
+    //     }
+    // }
 
     pub fn with_config(config: Config) -> Self {
+        let cache_host = config.cache_host.clone();
+        let cache_port = config.cache_port;
         Self {
             api_client: ApiClient::new(),
             credentials: Credentials::from_config(&config),
             config: Some(config),
             domain: API_DOMAIN_GLOBAL,
-            endpoint_services: EndpointServices::<RegionGlobal>::new(),
+            endpoint_services: EndpointServices::<RegionGlobal>::new(cache_host, cache_port),
         }
     }
 
@@ -1133,23 +1139,25 @@ impl BinanceFetcher<RegionGlobal> {
 }
 
 impl BinanceFetcher<RegionUs> {
-    pub fn new() -> Self {
-        Self {
-            api_client: ApiClient::new(),
-            config: None,
-            credentials: Credentials::<RegionUs>::new(),
-            domain: API_DOMAIN_US,
-            endpoint_services: EndpointServices::<RegionUs>::new(),
-        }
-    }
+    // pub fn new() -> Self {
+    //     Self {
+    //         api_client: ApiClient::new(),
+    //         config: None,
+    //         credentials: Credentials::<RegionUs>::new(),
+    //         domain: API_DOMAIN_US,
+    //         endpoint_services: EndpointServices::<RegionUs>::new(),
+    //     }
+    // }
 
     pub fn with_config(config: Config) -> Self {
+        let cache_host = config.cache_host.clone();
+        let cache_port = config.cache_port;
         Self {
             api_client: ApiClient::new(),
             credentials: Credentials::from_config(&config),
             config: Some(config),
             domain: API_DOMAIN_US,
-            endpoint_services: EndpointServices::<RegionUs>::new(),
+            endpoint_services: EndpointServices::<RegionUs>::new(cache_host, cache_port),
         }
     }
 
