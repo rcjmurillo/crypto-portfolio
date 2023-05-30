@@ -12,7 +12,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Url,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::Value;
 use sha2::Sha256;
 use tokio::sync::Mutex;
@@ -569,16 +569,14 @@ impl<'a, Region> BinanceFetcher<Region> {
         Ok(all_prices)
     }
 
-    async fn fetch_trades_from_endpoint(
+    pub async fn fetch_trades_from_endpoint(
         &self,
         symbol: &Market,
         endpoint: &str,
         extra_params: Option<Query>,
-    ) -> Result<Vec<Trade>> {
-        todo!("receive request type");
-        let mut trades: Vec<Trade> = Vec::new();
-        let mut last_id = trades.last().map(|t| t.id + 1).unwrap_or(0);
-
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        let mut last_id: u64 = last_record.map(|r| r.source_id.parse()).unwrap_or(Ok(0))? + 1;
         let mut query = Query::new();
         query
             .cached_param("symbol", symbol.join(""))
@@ -591,6 +589,7 @@ impl<'a, Region> BinanceFetcher<Region> {
             query.merge(extra_params);
         }
 
+        let mut trades = Vec::new();
         loop {
             let mut q = query.clone();
             q.cached_param("fromId", last_id);
@@ -604,14 +603,14 @@ impl<'a, Region> BinanceFetcher<Region> {
                 .build()?;
             let resp = self.endpoint_services.route(req).await?;
 
-            // match resp {
-            // Ok(resp) => {
             let mut binance_trades = self
-                .from_json::<Vec<Trade>>(&resp)
+                .from_json::<Vec<Value>>(&resp)
                 .await
-                .map_err(|err| anyhow!("response error").context(err))?;
-            binance_trades.sort_by_key(|k| k.time);
+                .map_err(|err| anyhow!(err).context("response error"))?;
+            binance_trades
+                .sort_by_key(|k| k["time"].as_u64().expect("could not parse time as u64"));
             let fetch_more = binance_trades.len() >= 1000;
+
             log::debug!(
                 "getting more trades for {} got {}",
                 symbol.join(""),
@@ -620,39 +619,18 @@ impl<'a, Region> BinanceFetcher<Region> {
             if fetch_more {
                 // the API will return id >= fromId, thus add one to not include
                 // the last processed id.
-                last_id = binance_trades.iter().last().unwrap().id + 1;
+                last_id = binance_trades.iter().last().unwrap()["id"]
+                    .as_u64()
+                    .ok_or(anyhow!("could not parse trade id to u64"))?
+                    + 1;
                 log::debug!("last_id updated to {}", last_id);
             };
-            for mut t in binance_trades.into_iter() {
-                t.base_asset = Some(symbol.base.clone());
-                t.quote_asset = Some(symbol.quote.clone());
-                trades.push(t);
-            }
+            trades.extend(binance_trades);
             if !fetch_more {
                 break;
             }
-            // }
-            // Err(err) => {
-            //     println!("error when fetching margin trades: {err:?}");
-            // let client_error = err.downcast::<ClientError>()?;
-            // log::error!("error when fetching trades from {endpoint}: {client_error}");
-            // return Err(anyhow!(client_error).context(format!(
-            //     "couldn't fetch trades from {}{:?} for symbol: {}",
-            //     endpoint,
-            //     qstr,
-            //     symbol.join("")
-            // )));
-            //     return Err(err);
-            // }
         }
-        // }
-
         Ok(trades)
-    }
-
-    pub async fn fetch_trades(&self, endpoint: &str, symbol: &Market) -> Result<Vec<Trade>> {
-        self.fetch_trades_from_endpoint(symbol, endpoint, None)
-            .await
     }
 }
 
@@ -677,20 +655,20 @@ impl BinanceFetcher<RegionGlobal> {
         }
     }
 
-    pub async fn fetch_fiat_orders(&self, tx_type: &str) -> Result<Vec<FiatOrder>> {
+    pub async fn fetch_fiat_orders(
+        &self,
+        tx_type: &str,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Response {
-            data: Vec<FiatOrder>,
+            data: Vec<Value>,
         }
-
-        todo!("receive request type");
-        let orders: Vec<FiatOrder> = Vec::new();
         let mut new_orders = Vec::new();
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = orders
-            .last()
-            .map(|x| x.create_time)
+        let mut curr_start = last_record
+            .map(|x| x.created_at)
             .unwrap_or(*self.data_start_date());
 
         loop {
@@ -728,8 +706,10 @@ impl BinanceFetcher<RegionGlobal> {
                     Ok(resp) => {
                         let Response { data } = self.from_json(&resp).await.context("query")?;
                         if data.len() > 0 {
-                            new_orders
-                                .extend(data.into_iter().filter(|x| x.status == "Successful"));
+                            new_orders.extend(
+                                data.into_iter()
+                                    .filter(|x| x["status"].to_string() == "Successful"),
+                            );
                             current_page += 1;
                         } else {
                             break;
@@ -744,19 +724,21 @@ impl BinanceFetcher<RegionGlobal> {
                 break;
             }
         }
-
-        let mut orders = orders;
-        orders.extend(new_orders);
-
-        Ok(orders)
+        Ok(new_orders)
     }
 
-    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders("0").await
+    pub async fn fetch_fiat_deposits(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_fiat_orders("0", last_record).await
     }
 
-    pub async fn fetch_fiat_withdrawals(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders("1").await
+    pub async fn fetch_fiat_withdrawals(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_fiat_orders("1", last_record).await
     }
 
     /// Fetch from endpoint with no params and deserialize to the specified type
@@ -795,7 +777,11 @@ impl BinanceFetcher<RegionGlobal> {
             .collect())
     }
 
-    pub async fn fetch_margin_trades(&self, symbol: &Market) -> Result<Vec<Trade>> {
+    pub async fn fetch_margin_trades(
+        &self,
+        symbol: &Market,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         let crossed_margin_pairs = self
             .fetch_margin_pairs(&ApiGlobal::CrossedMarginPairs.to_string())
             .await?;
@@ -817,7 +803,12 @@ impl BinanceFetcher<RegionGlobal> {
                 break;
             }
             let result = self
-                .fetch_trades_from_endpoint(symbol, &endpoint, Some(extra_params))
+                .fetch_trades_from_endpoint(
+                    symbol,
+                    &endpoint,
+                    Some(extra_params),
+                    last_record.clone(),
+                )
                 .await;
 
             match result {
@@ -887,25 +878,18 @@ impl BinanceFetcher<RegionGlobal> {
         Ok(trades)
     }
 
-    pub async fn fetch_margin_transactions<T>(
+    pub async fn fetch_margin_transactions(
         &self,
         asset: &String,
         isolated_symbol: Option<&Market>,
         endpoint: &str,
-    ) -> Result<Vec<T>>
-    where
-        T: Serialize + DeserializeOwned,
-    {
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         #[derive(Deserialize)]
-        struct Response<U> {
-            rows: Vec<U>,
+        struct Response {
+            rows: Vec<Value>,
             total: u16,
         }
-
-        todo!("receive request type");
-
-        let txns: Vec<T> = Vec::<T>::new();
-        let mut new_txns = Vec::new();
 
         let now = Utc::now();
         let start = *self.data_start_date();
@@ -924,6 +908,7 @@ impl BinanceFetcher<RegionGlobal> {
             vec![(start, now, false)]
         };
 
+        let mut new_txns = Vec::new();
         for (rstart, rend, archived) in ranges {
             let mut curr_start = rstart;
 
@@ -957,7 +942,7 @@ impl BinanceFetcher<RegionGlobal> {
 
                     let resp = self.endpoint_services.route(req).await?;
 
-                    let txns_resp = self.from_json::<Response<T>>(&resp).await;
+                    let txns_resp = self.from_json::<Response>(&resp).await;
                     match txns_resp {
                         Ok(result_txns) => {
                             new_txns.extend(result_txns.rows);
@@ -1014,40 +999,49 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        let mut txns = txns;
-        txns.extend(new_txns);
-
-        Ok(txns)
+        Ok(new_txns)
     }
 
     pub async fn fetch_margin_loans(
         &self,
         asset: &String,
         isolated_symbol: Option<&Market>,
-    ) -> Result<Vec<MarginLoan>> {
-        self.fetch_margin_transactions(asset, isolated_symbol, &ApiGlobal::MarginLoans.to_string())
-            .await
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_margin_transactions(
+            asset,
+            isolated_symbol,
+            &ApiGlobal::MarginLoans.to_string(),
+            last_record,
+        )
+        .await
     }
 
     pub async fn fetch_margin_repays(
         &self,
         asset: &String,
         isolated_symbol: Option<&Market>,
-    ) -> Result<Vec<MarginRepay>> {
-        self.fetch_margin_transactions(asset, isolated_symbol, &ApiGlobal::MarginRepays.to_string())
-            .await
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_margin_transactions(
+            asset,
+            isolated_symbol,
+            &ApiGlobal::MarginRepays.to_string(),
+            last_record,
+        )
+        .await
     }
 
-    pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
-        todo!("receive request type");
+    pub async fn fetch_deposits(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         let endpoint = ApiGlobal::Deposits.to_string();
-        let mut deposits: Vec<Deposit> = Vec::<Deposit>::new();
         let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = deposits
-            .last()
-            .map(|d| (d.insert_time + Duration::milliseconds(1)))
+        let mut curr_start = last_record
+            .map(|d| d.created_at + Duration::milliseconds(1))
             .unwrap_or_else(|| {
                 self.data_start_date()
                     .duration_trunc(Duration::days(1))
@@ -1075,8 +1069,8 @@ impl BinanceFetcher<RegionGlobal> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
-            new_deposits.extend(deposit_list);
+            let rows: Vec<Value> = self.from_json(&resp).await?;
+            new_deposits.extend(rows);
 
             curr_start = end + Duration::milliseconds(1);
             if end == now {
@@ -1084,21 +1078,19 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        deposits.extend(new_deposits);
-
-        Ok(deposits)
+        Ok(new_deposits)
     }
 
-    pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
-        todo!("receive request type");
+    pub async fn fetch_withdrawals(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         let endpoint = ApiGlobal::Withdraws.to_string();
-        let mut withdrawals: Vec<Withdraw> = Vec::<Withdraw>::new();
         let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = withdrawals
-            .last()
-            .map(|w| (w.apply_time + Duration::milliseconds(1)))
+        let mut curr_start = last_record
+            .map(|w| (w.created_at + Duration::milliseconds(1)))
             .unwrap_or_else(|| {
                 self.data_start_date()
                     .duration_trunc(Duration::days(1))
@@ -1127,7 +1119,7 @@ impl BinanceFetcher<RegionGlobal> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
+            let withdraw_list: Vec<Value> = self.from_json(&resp).await?;
             new_withdrawals.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1136,9 +1128,7 @@ impl BinanceFetcher<RegionGlobal> {
             }
         }
 
-        withdrawals.extend(new_withdrawals);
-
-        Ok(withdrawals)
+        Ok(new_withdrawals)
     }
 }
 
@@ -1163,21 +1153,22 @@ impl BinanceFetcher<RegionUs> {
         }
     }
 
-    pub async fn fetch_fiat_orders(&self, endpoint: &str) -> Result<Vec<FiatOrder>> {
+    pub async fn fetch_fiat_orders(
+        &self,
+        endpoint: &str,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Response {
-            asset_log_record_list: Vec<FiatOrder>,
+            asset_log_record_list: Vec<Value>,
         }
-        todo!("receive request type");
 
-        let mut orders: Vec<FiatOrder> = Vec::<FiatOrder>::new();
         let mut new_orders = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = orders
-            .last()
-            .map(|o| (o.create_time + Duration::milliseconds(1)))
+        let mut curr_start = last_record
+            .map(|r| r.created_at + Duration::milliseconds(1))
             .unwrap_or_else(|| {
                 self.data_start_date()
                     .duration_trunc(Duration::days(1))
@@ -1215,7 +1206,7 @@ impl BinanceFetcher<RegionUs> {
             new_orders.extend(
                 asset_log_record_list
                     .into_iter()
-                    .filter(|x| x.status == "Successful"),
+                    .filter(|x| x["status"].to_string() == "Successful"),
             );
             curr_start = end + Duration::milliseconds(1);
             if end == now {
@@ -1223,31 +1214,35 @@ impl BinanceFetcher<RegionUs> {
             }
         }
 
-        orders.extend(new_orders);
-
-        Ok(orders)
+        Ok(new_orders)
     }
 
-    pub async fn fetch_fiat_deposits(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders(&ApiUs::FiatDeposits.to_string())
+    pub async fn fetch_fiat_deposits(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_fiat_orders(&ApiUs::FiatDeposits.to_string(), last_record)
             .await
     }
 
-    pub async fn fetch_fiat_withdrawals(&self) -> Result<Vec<FiatOrder>> {
-        self.fetch_fiat_orders(&ApiUs::FiatWithdraws.to_string())
+    pub async fn fetch_fiat_withdrawals(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
+        self.fetch_fiat_orders(&ApiUs::FiatWithdraws.to_string(), last_record)
             .await
     }
 
-    pub async fn fetch_deposits(&self) -> Result<Vec<Deposit>> {
-        todo!("receive request type");
+    pub async fn fetch_deposits(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         let endpoint = ApiUs::Deposits.to_string();
-        let mut deposits: Vec<Deposit> = Vec::<Deposit>::new();
         let mut new_deposits = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = deposits
-            .last()
-            .map(|d| (d.insert_time + Duration::milliseconds(1)))
+        let mut curr_start = last_record
+            .map(|d| (d.created_at + Duration::milliseconds(1)))
             .unwrap_or_else(|| {
                 self.data_start_date()
                     .duration_trunc(Duration::days(1))
@@ -1276,7 +1271,7 @@ impl BinanceFetcher<RegionUs> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let deposit_list: Vec<Deposit> = self.from_json(&resp).await?;
+            let deposit_list: Vec<Value> = self.from_json(&resp).await?;
             new_deposits.extend(deposit_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1284,22 +1279,19 @@ impl BinanceFetcher<RegionUs> {
                 break;
             }
         }
-
-        deposits.extend(new_deposits);
-
-        Ok(deposits)
+        Ok(new_deposits)
     }
 
-    pub async fn fetch_withdrawals(&self) -> Result<Vec<Withdraw>> {
-        todo!("receive request type");
+    pub async fn fetch_withdrawals(
+        &self,
+        last_record: Option<&data_sync::Record>,
+    ) -> Result<Vec<Value>> {
         let endpoint = ApiUs::Withdraws.to_string();
-        let mut withdrawals: Vec<Withdraw> = Vec::<Withdraw>::new();
         let mut new_withdrawals = Vec::new();
 
         // fetch in batches of 90 days from `start_date` to `now()`
-        let mut curr_start = withdrawals
-            .last()
-            .map(|w| (w.apply_time + Duration::milliseconds(1)))
+        let mut curr_start = last_record
+            .map(|w| (w.created_at + Duration::milliseconds(1)))
             .unwrap_or_else(|| {
                 self.data_start_date()
                     .duration_trunc(Duration::days(1))
@@ -1327,7 +1319,7 @@ impl BinanceFetcher<RegionUs> {
 
             let resp = self.endpoint_services.route(req).await?;
 
-            let withdraw_list: Vec<Withdraw> = self.from_json(&resp).await?;
+            let withdraw_list: Vec<Value> = self.from_json(&resp).await?;
             new_withdrawals.extend(withdraw_list);
 
             curr_start = end + Duration::milliseconds(1);
@@ -1336,9 +1328,7 @@ impl BinanceFetcher<RegionUs> {
             }
         }
 
-        withdrawals.extend(new_withdrawals);
-
-        Ok(withdrawals)
+        Ok(new_withdrawals)
     }
 }
 

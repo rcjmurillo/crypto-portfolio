@@ -5,7 +5,6 @@ mod reports;
 
 use cli::{Action, Args};
 use data_sync::SqliteStorage;
-use std::fs::File;
 
 use anyhow::{anyhow, Result};
 
@@ -17,7 +16,7 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use custom::FileDataFetcher;
-use data_sync::sync_operations;
+use data_sync::sync_records;
 use operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     OpType, Operation,
@@ -35,6 +34,65 @@ pub async fn main() -> Result<()> {
     let Args { action, config } = args;
 
     match action {
+        Action::Sync => {
+            // coinbase exchange disabled because it doesn't provide the full set of
+            // operations and fees when converting coins.
+
+            // let coinbase_config: Option<CoinbaseConfig> = config
+            //     .coinbase
+            //     .as_ref()
+            //     .and_then(|c| Some(c.try_into().unwrap()));
+            // if let Some(config) = coinbase_config {
+            //     let coinbase_fetcher = CoinbaseFetcher::<Std>::new(config.clone());
+            //     fetchers.push((
+            //         "Coinbase",
+            //         Box::new(coinbase_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            //     ));
+            // }
+
+            // let coinbase_config: Option<CoinbaseConfig> = config
+            //     .coinbase_pro
+            //     .as_ref()
+            //     .and_then(|c| Some(c.try_into().unwrap()));
+            // if let Some(config) = coinbase_config {
+            //     let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(config);
+            //     fetchers.push((
+            //         "Coinbase Pro",
+            //         Box::new(coinbase_fetcher_pro) as Box<dyn ExchangeDataFetcher + Send + Sync>,
+            //     ));
+            // }
+
+            // if let Some(conf) = config.binance.clone() {
+            //     let config_binance: Config = conf.try_into().unwrap();
+            //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
+            //     fetchers.push(("Binance Global", Box::new(binance_client)));
+            // }
+
+            if let Some(conf) = config.binance_us.clone() {
+                let config_binance_us: binance::Config = conf.try_into().unwrap();
+                let binance_client_us =
+                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
+                let sqlite_storage = SqliteStorage::new("./operations.db")?;
+                data_sync::sync_records("Binance US", binance_client_us, sqlite_storage).await?;
+            }
+
+            match config.custom_sources {
+                Some(custom_sources) => {
+                    for custom_source in custom_sources {
+                        match FileDataFetcher::from_file(&custom_source.name, &custom_source.file) {
+                            Ok(fetcher) => {
+                                let sqlite_storage = SqliteStorage::new("./operations.db")?;
+                                sync_records("custom operations", fetcher, sqlite_storage).await?;
+                            }
+                            Err(err) => {
+                                return Err(anyhow!(err).context("could read config from file"));
+                            }
+                        }
+                    }
+                }
+                None => (),
+            };
+        }
         Action::Balances => {
             const BATCH_SIZE: usize = 1000;
 
@@ -73,81 +131,6 @@ pub async fn main() -> Result<()> {
             );
             reports::asset_balances(&coin_tracker, binance_client).await?;
             println!();
-        }
-        Action::Sync => {
-            // coinbase exchange disabled because it doesn't provide the full set of
-            // operations and fees when converting coins.
-
-            // let coinbase_config: Option<CoinbaseConfig> = config
-            //     .coinbase
-            //     .as_ref()
-            //     .and_then(|c| Some(c.try_into().unwrap()));
-            // if let Some(config) = coinbase_config {
-            //     let coinbase_fetcher = CoinbaseFetcher::<Std>::new(config.clone());
-            //     fetchers.push((
-            //         "Coinbase",
-            //         Box::new(coinbase_fetcher) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-            //     ));
-            // }
-
-            // let coinbase_config: Option<CoinbaseConfig> = config
-            //     .coinbase_pro
-            //     .as_ref()
-            //     .and_then(|c| Some(c.try_into().unwrap()));
-            // if let Some(config) = coinbase_config {
-            //     let coinbase_fetcher_pro = CoinbaseFetcher::<Pro>::new(config);
-            //     fetchers.push((
-            //         "Coinbase Pro",
-            //         Box::new(coinbase_fetcher_pro) as Box<dyn ExchangeDataFetcher + Send + Sync>,
-            //     ));
-            // }
-
-            // if let Some(conf) = config.binance.clone() {
-            //     let config_binance: Config = conf.try_into().unwrap();
-            //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-            //     fetchers.push(("Binance Global", Box::new(binance_client)));
-            // }
-
-            // if let Some(conf) = config.binance_us.clone() {
-            //     let config_binance_us: Config = conf.try_into().unwrap();
-            //     let binance_client_us = BinanceFetcher::<RegionUs>::with_config(config_binance_us);
-            //     fetch_ops("Binance US", binance_client_us, tx.clone()).await?;
-            // }
-
-            // match ops_file {
-            //     Some(ops_file) => {
-            //         let sqlite_storage = SqliteStorage::new("./operations.db")?;
-            //         match FileDataFetcher::from_file(ops_file) {
-            //             Ok(fetcher) => fetch_ops("Custom Operations", fetcher, sqlite_storage).await?,
-            //             Err(err) => {
-            //                 return Err(anyhow!(err).context("could read config from file"));
-            //             }
-            //         }
-            //     }
-            //     None => (),
-            // };
-
-            match config.custom_sources {
-                Some(custom_sources) => {
-                    for custom_source in custom_sources {
-                        println!(
-                            "loading custom source {} from {}",
-                            custom_source.name, custom_source.file
-                        );
-                        let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                        match FileDataFetcher::from_file(custom_source.file) {
-                            Ok(fetcher) => {
-                                sync_operations("custom operations", fetcher, sqlite_storage)
-                                    .await?;
-                            }
-                            Err(err) => {
-                                return Err(anyhow!(err).context("could read config from file"));
-                            }
-                        }
-                    }
-                }
-                None => (),
-            };
         }
         Action::RevenueReport {
             asset: report_asset,

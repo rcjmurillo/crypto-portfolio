@@ -264,7 +264,7 @@ impl CoinbaseFetcher<Std> {
 impl DataFetcher for CoinbaseFetcher<Std> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
-        S: data_sync::OperationStorage + Send + Sync,
+        S: data_sync::RecordStorage + Send + Sync,
     {
         let mut ops = Vec::new();
         ops.extend(into_ops(self.trades().await?));
@@ -311,7 +311,7 @@ impl CoinbaseFetcher<Pro> {
 impl DataFetcher for CoinbaseFetcher<Pro> {
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
-        S: data_sync::OperationStorage + Send + Sync,
+        S: data_sync::RecordStorage + Send + Sync,
     {
         let mut ops = Vec::new();
         ops.extend(into_ops(self.trades().await?));

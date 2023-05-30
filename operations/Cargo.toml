@@ -7,10 +7,12 @@ edition = "2021"
 market = { path = "../data-sources/market" }
 
 serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 log.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+
 
 proptest = "1.2.0"

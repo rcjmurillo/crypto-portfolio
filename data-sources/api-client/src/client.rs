@@ -176,7 +176,11 @@ async fn validate_response(resp: reqwest::Response) -> Result<reqwest::Response>
         status => Err(anyhow::Error::from(ApiError::Other {
             status: status.into(),
         })
-        .context(format!("{}", resp.text().await?))),
+        .context(format!(
+            "unhandled status code: {} error: {}",
+            status,
+            resp.text().await?
+        ))),
     }
 }
 
@@ -195,6 +199,8 @@ async fn make_request(req: Request) -> Result<Response, ClientError> {
     if let Some(h) = req.headers {
         r = r.headers(h);
     }
+
+    log::debug!("requesting {:?}", full_url);
     let resp = r.send().await.map_err(|e| anyhow!(e))?;
 
     match validate_response(resp).await {
