@@ -1,5 +1,5 @@
 [workspace]
-
+resolver = "2"
 members = ["portfolio", "data-sync", "data-sources/*", "operations"]
 
 [workspace.dependencies]

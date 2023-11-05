@@ -16,7 +16,6 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use custom::FileDataFetcher;
-use data_sync::sync_records;
 use operations::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
     OpType, Operation,
@@ -71,7 +70,7 @@ pub async fn main() -> Result<()> {
             if let Some(conf) = config.binance_us.clone() {
                 let config_binance_us: binance::Config = conf.try_into().unwrap();
                 let binance_client_us =
-                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
+                BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
                 let sqlite_storage = SqliteStorage::new("./operations.db")?;
                 data_sync::sync_records("Binance US", binance_client_us, sqlite_storage).await?;
             }
@@ -82,7 +81,7 @@ pub async fn main() -> Result<()> {
                         match FileDataFetcher::from_file(&custom_source.name, &custom_source.file) {
                             Ok(fetcher) => {
                                 let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                                sync_records("custom operations", fetcher, sqlite_storage).await?;
+                                data_sync::sync_records("custom operations", fetcher, sqlite_storage).await?;
                             }
                             Err(err) => {
                                 return Err(anyhow!(err).context("could read config from file"));
