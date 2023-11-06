@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc, NaiveDateTime};
 
 #[async_trait]
 /// Layer of abstraction on how to fetch data from multiple sources
@@ -10,7 +10,6 @@ pub trait DataFetcher {
         S: RecordStorage + Send + Sync;
 }
 
-// TODO: rename to Record
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: usize,
@@ -29,9 +28,7 @@ impl TryFrom<RecordValue<'_>> for DateTime<Utc> {
 
     fn try_from(value: RecordValue) -> std::result::Result<Self, Self::Error> {
         match value.0 {
-            serde_json::Value::String(ref s) => Utc
-                .datetime_from_str(s, "%Y-%m-%d %H:%M:%S")
-                .map_err(|e| anyhow!("could not parse {s} as UTC datetime: {e}")),
+            serde_json::Value::String(ref s) => Ok(Utc.from_utc_datetime(&NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")?)),                
             serde_json::Value::Number(ref n) => Utc
                 .timestamp_millis_opt(n.as_i64().ok_or(anyhow!("could not parse {n} as i64"))?)
                 .single()

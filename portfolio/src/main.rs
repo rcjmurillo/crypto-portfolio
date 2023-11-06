@@ -63,16 +63,16 @@ pub async fn main() -> Result<()> {
             // }
 
             // if let Some(conf) = config.binance.clone() {
-            //     let config_binance: Config = conf.try_into().unwrap();
+            //     let config_bi nance: Config = conf.try_into().unwrap();
             //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-            //     fetchers.push(("Binance Global", Box::new(binance_client)));
+            //     fetchers.push(("Binance Global", Box::new(binance_client)));``
             // }
 
             if let Some(conf) = config.binance_us.clone() {
                 let config_binance_us: binance::Config = conf.try_into().unwrap();
-                let binance_client_us =
-                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
                 let sqlite_storage = SqliteStorage::new("./operations.db")?;
+                let binance_client_us =
+                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);                
                 data_sync::sync_records("Binance US", binance_client_us, sqlite_storage).await?;
             }
 
@@ -85,7 +85,7 @@ pub async fn main() -> Result<()> {
                                 sync_records("custom operations", fetcher, sqlite_storage).await?;
                             }
                             Err(err) => {
-                                return Err(anyhow!(err).context("could read config from file"));
+                                return Err(anyhow!(err).context("could not read config from file"));
                             }
                         }
                     }
