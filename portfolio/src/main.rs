@@ -84,7 +84,7 @@ pub async fn main() -> Result<()> {
                                 data_sync::sync_records(fetcher, sqlite_storage).await?;
                             }
                             Err(err) => {
-                                return Err(anyhow!(err).context("could read config from file"));
+                                return Err(anyhow!(err).context("could not read config from file"));
                             }
                         }
                     }
