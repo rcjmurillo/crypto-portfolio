@@ -70,9 +70,9 @@ pub async fn main() -> Result<()> {
             if let Some(conf) = config.binance_us.clone() {
                 let config_binance_us: binance::Config = conf.try_into().unwrap();
                 let binance_client_us =
-                BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
+                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
                 let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                data_sync::sync_records("Binance US", binance_client_us, sqlite_storage).await?;
+                data_sync::sync_records(binance_client_us, sqlite_storage).await?;
             }
 
             match config.custom_sources {
@@ -81,7 +81,7 @@ pub async fn main() -> Result<()> {
                         match FileDataFetcher::from_file(&custom_source.name, &custom_source.file) {
                             Ok(fetcher) => {
                                 let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                                data_sync::sync_records("custom operations", fetcher, sqlite_storage).await?;
+                                data_sync::sync_records(fetcher, sqlite_storage).await?;
                             }
                             Err(err) => {
                                 return Err(anyhow!(err).context("could read config from file"));

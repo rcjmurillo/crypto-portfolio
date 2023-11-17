@@ -262,6 +262,9 @@ impl CoinbaseFetcher<Std> {
 
 #[async_trait]
 impl DataFetcher for CoinbaseFetcher<Std> {
+    fn name(&self) -> &str {
+        "Coinbase"
+    }
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,
@@ -309,6 +312,9 @@ impl CoinbaseFetcher<Pro> {
 
 #[async_trait]
 impl DataFetcher for CoinbaseFetcher<Pro> {
+    fn name(&self) -> &str {
+        "Coinbase Pro"
+    }
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,

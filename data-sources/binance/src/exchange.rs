@@ -250,6 +250,9 @@ impl BinanceFetcher<RegionGlobal> {
 
 #[async_trait]
 impl DataFetcher for BinanceFetcher<RegionGlobal> {
+    fn name(&self) -> &str {
+        "Binance"
+    }
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,
@@ -347,6 +350,10 @@ impl BinanceFetcher<RegionUs> {
 
 #[async_trait]
 impl DataFetcher for BinanceFetcher<RegionUs> {
+    fn name(&self) -> &str {
+        "Binance US"
+    }
+
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,

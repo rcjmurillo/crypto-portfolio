@@ -63,6 +63,9 @@ impl FileDataFetcher {
 
 #[async_trait]
 impl DataFetcher for FileDataFetcher {
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: RecordStorage + Send + Sync,

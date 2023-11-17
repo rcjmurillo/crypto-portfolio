@@ -5,12 +5,12 @@ use chrono::{DateTime, TimeZone, Utc};
 #[async_trait]
 /// Layer of abstraction on how to fetch data from multiple sources
 pub trait DataFetcher {
+    fn name(&self) -> &str;
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: RecordStorage + Send + Sync;
 }
 
-// TODO: rename to Record
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: usize,
@@ -84,14 +84,14 @@ pub trait RecordStorage {
     fn insert(&self, records: Vec<Record>) -> Result<()>;
 }
 
-pub async fn sync_records<F, S>(name: &str, fetcher: F, storage: S) -> Result<()>
+pub async fn sync_records<F, S>(fetcher: F, storage: S) -> Result<()>
 where
     F: DataFetcher + Send + Sync,
     S: RecordStorage + Send + Sync,
 {
     match fetcher.sync(storage).await {
-        Ok(()) => log::info!("finished syncing operations for {}", name),
-        Err(err) => log::error!("failed to sync operations for {}: {}", name, err),
+        Ok(()) => log::info!("finished syncing operations for {}", fetcher.name()),
+        Err(err) => log::error!("failed to sync operations for {}: {}", fetcher.name(), err),
     };
     Ok(())
 }
