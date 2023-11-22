@@ -11,7 +11,7 @@ coingecko = { path = "../data-sources/coingecko" }
 market = { path = "../data-sources/market" }
 custom = { path = "../data-sources/custom" }
 data-sync = { path = "../data-sync" }
-operations = { path = "../operations" }
+transactions = { path = "../transactions" }
 
 anyhow.workspace = true
 futures.workspace = true

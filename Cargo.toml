@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["portfolio", "data-sync", "data-sources/*", "operations"]
+members = ["portfolio", "data-sync", "data-sources/*", "transactions"]
 
 [workspace.dependencies]
 tower = { version = "0.4.13", features = ["full"] }

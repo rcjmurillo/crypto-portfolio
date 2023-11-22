@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use market::{Asset, Market, MarketData};
 
-use crate::{Amount, OpType, Operation};
+use crate::{Amount, OperationType, Operation};
 
 #[derive(Debug)]
 pub struct Disposal {
@@ -62,7 +62,7 @@ impl ConsumableOperation {
     /// The first element of the tuple represents the amount consumed from this operation, it may be
     /// not possible to consume all the provided amount, so the caller knows the remaining amount to
     /// compute the cost from another operation.
-    /// It also updates the remaining amount available for consumption for other operations.
+    /// It also updates the remaining amount available for consumption for other transactions.
     fn consume_amount(&mut self, amount: f64) -> Option<(f64, Vec<Amount>)> {
         // no amount to consume, just return
         if self.remaining_amount == 0.0 {
@@ -76,7 +76,7 @@ impl ConsumableOperation {
             self.remaining_amount
         };
         match &self.operation.op_type {
-            OpType::Acquire => {
+            OperationType::Acquire => {
                 // the cost for the acquisition of asset amount is the price of that asset per unit multiplied
                 // by the number of units consumed from this acquisition operation.
                 let price = self
@@ -99,11 +99,11 @@ impl ConsumableOperation {
                 self.remaining_amount -= amount_consumed;
                 Some((amount_consumed, all_costs))
             }
-            OpType::Receive { .. } => {
+            OperationType::Receive { .. } => {
                 unreachable!("found a Receive operation when none is expected")
             }
-            OpType::Send { .. } => unreachable!("found a Send operation when none is expected"),
-            OpType::Dispose { .. } => {
+            OperationType::Send { .. } => unreachable!("found a Send operation when none is expected"),
+            OperationType::Dispose { .. } => {
                 unreachable!("found a Dispose operation when none is expected")
             }
         }
@@ -117,22 +117,22 @@ impl Deref for ConsumableOperation {
     }
 }
 
-/// A stream of operations that can be consumed using a ConsumeStrategy for computing
-/// profit/loss of sale operations:
+/// A stream of transactions that can be consumed using a ConsumeStrategy for computing
+/// profit/loss of sale transactions:
 /// - FIFO strategy:
 ///     This strategy (first-in, first-out) works by using the oldest-to-newer purchase
-///     operations when there are a multiple operations which can be used to compute the
+///     transactions when there are a multiple transactions which can be used to compute the
 ///     profit/loss of a sale.
 /// - LIFO strategy:
 ///     This strategy (Last-in, first-out) works by using the newer-to-oldest purchase
-///     operations when there are a multiple operations which can be used to compute the
+///     transactions when there are a multiple transactions which can be used to compute the
 ///     profit/loss of a sale.
 pub enum ConsumeStrategy {
     Fifo,
     Lifo,
 }
 
-/// Computes the cost basis for a given disposal operation by search the related operations
+/// Computes the cost basis for a given disposal operation by search the related transactions
 /// and that compose the whole disposed amount and its cost.
 ///
 /// A resolution strategy will be provided, consider the following
@@ -147,7 +147,7 @@ pub enum ConsumeStrategy {
 ///     operation=purchase asset=A time=1 amount=10 price=$2
 ///     operation=purchase asset=A time=3 amount=5  price=$3
 ///     operation=sale     asset=A time=4 amount=15 price=$5
-///     ^ this sale has an amount that spans both purchase operations,
+///     ^ this sale has an amount that spans both purchase transactions,
 ///       thus the profit is the revenue of the sale operation minus the
 ///       sum of the cost of each purchase: 15*5 - 5*3 - 10*2 = $40
 ///
@@ -155,7 +155,7 @@ pub enum ConsumeStrategy {
 ///     operation=purchase asset=A time=1 amount=10 price=$2
 ///     operation=purchase asset=A time=3 amount=5  price=$3
 ///     operation=sale     asset=A time=4 amount=4  price=$5
-///     ^ either of the purchase operations can be used to calculate the profit/loss
+///     ^ either of the purchase transactions can be used to calculate the profit/loss
 ///       of this sale, but which one?
 ///
 /// Scenario 4:
@@ -172,12 +172,12 @@ impl CostBasisResolver {
     pub fn from_ops(ops: Vec<Operation>, strategy: ConsumeStrategy) -> Self {
         let mut ops = ops
             .into_iter()
-            .filter(|op| matches!(op.op_type, OpType::Acquire { .. }))
+            .filter(|op| matches!(op.op_type, OperationType::Acquire { .. }))
             .map(|op| ConsumableOperation::from_operation(op))
             .collect::<Vec<ConsumableOperation>>();
         ops.sort_by_key(|op| match strategy {
             ConsumeStrategy::Fifo => op.time.timestamp(),
-            // the newest operations will appear first when iterating
+            // the newest transactions will appear first when iterating
             ConsumeStrategy::Lifo => -op.time.timestamp(),
         });
         Self {
@@ -188,7 +188,7 @@ impl CostBasisResolver {
     pub async fn resolve(&mut self, disposal: &Disposal) -> Result<Vec<Acquisition>> {
         log::debug!("resolving for disposal {:?}", disposal);
 
-        // consume operations until we fulfill this amount if possible
+        // consume transactions until we fulfill this amount if possible
         let mut amount_to_fulfill = disposal.amount.value;
         let mut consumed_ops = Vec::new();
 
@@ -212,7 +212,7 @@ impl CostBasisResolver {
                     self.ops.next();
                 }
             } else {
-                return Err(anyhow!("missing cost basis! there are not enough acquisition operations to fulfill disposal operation: {:?}", disposal));
+                return Err(anyhow!("missing cost basis! there are not enough acquisition transactions to fulfill disposal operation: {:?}", disposal));
             }
         }
 
@@ -264,10 +264,10 @@ mod tests {
             optype in select(optypes)
         ) -> Operation {
             let op_type = match optype {
-                "acquire" => OpType::Acquire,
-                "dispose" => OpType::Dispose,
-                "send" => OpType::Send,
-                "receive" => OpType::Receive,
+                "acquire" => OperationType::Acquire,
+                "dispose" => OperationType::Dispose,
+                "send" => OperationType::Send,
+                "receive" => OperationType::Receive,
                 _ => unreachable!()
             };
             Operation {
@@ -333,7 +333,7 @@ mod tests {
     }
 
     fn check_operation_costs(operation: &Operation, consumed_amount: f64, costs: &Vec<Amount>) {
-        if let OpType::Acquire = operation.op_type {
+        if let OperationType::Acquire = operation.op_type {
             // test every cost of the operation has been correctly computed
             // relative to the consumed amount.
             if let Some(op_costs) = operation.costs.as_ref() {
@@ -364,7 +364,7 @@ mod tests {
         fn test_consumable_operation_consume_all_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
         ) {
-            prop_assume!(matches!(operation.op_type, OpType::Acquire));
+            prop_assume!(matches!(operation.op_type, OperationType::Acquire));
             let mut op = ConsumableOperation::from_operation(operation.clone());
             let r = op.consume_amount(op.amount.value);
             prop_assert!(r.is_some());
@@ -389,7 +389,7 @@ mod tests {
         fn test_consumable_operation_consume_partial_amount(
             operation in operation(vec!["acquire", "dispose", "send", "receive"], None, None)
         ) {
-            prop_assume!(matches!(operation.op_type, OpType::Acquire));
+            prop_assume!(matches!(operation.op_type, OperationType::Acquire));
             let mut op = ConsumableOperation::from_operation(operation.clone());
             let to_consume = op.amount.value * 0.77;
             let r = op.consume_amount(to_consume);
@@ -407,13 +407,13 @@ mod tests {
             ops in vec(operation(vec!["acquire", "dispose", "send", "receive"], None, None), 1..100)
         ) {
             let stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Fifo);
-            assert!(stream.ops().iter().all(|op| matches!(op.operation.op_type, OpType::Acquire)));
+            assert!(stream.ops().iter().all(|op| matches!(op.operation.op_type, OperationType::Acquire)));
         }
     }
 
     proptest! {
         #[test]
-        fn test_can_consume_from_fifo_operations_stream(ops in op_sequence(50)) {
+        fn test_can_consume_from_fifo_transactions_stream(ops in op_sequence(50)) {
             let sales = into_disposals(&ops);
             let mut stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Fifo);
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -428,7 +428,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn test_can_consume_from_lifo_operations_stream(ops in op_sequence(50)) {
+        fn test_can_consume_from_lifo_transactions_stream(ops in op_sequence(50)) {
             let sales = into_disposals(&ops);
             let mut stream = CostBasisResolver::from_ops(ops, ConsumeStrategy::Lifo);
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -476,7 +476,7 @@ mod tests {
 
             // check that the first cost op's amount has been partially or fully consumed
             if let Some(operation) = &ops.last() {
-                if let Some(OpType::Dispose) = &ops.last().map(|op| &op.op_type) {
+                if let Some(OperationType::Dispose) = &ops.last().map(|op| &op.op_type) {
                     // create a vector with all the original amounts but the last one
                     let orig_amounts = ops.iter().take(ops.len() - 1).map(|op| op.amount.clone()).collect::<Vec<_>>();
                     let sale = Disposal {
@@ -492,7 +492,7 @@ mod tests {
                     match rt.block_on(stream.resolve(&sale)) {
                         Ok(acquisitions) => {
                             let ops = stream.ops();
-                            // calculate the number of operations that should have been fully consumed by the sale.
+                            // calculate the number of transactions that should have been fully consumed by the sale.
                             // Each consumed operation accounts for part of the consumed amount.
                             let mut remaining_sale_amount = sale.amount.value;
                             let mut fully_consumed_ops = 0;
@@ -534,7 +534,7 @@ mod tests {
     fn into_disposals(ops: &Vec<Operation>) -> Vec<Disposal> {
         ops.iter()
             .filter_map(|op| match op.op_type {
-                OpType::Dispose { .. } => Some(Disposal {
+                OperationType::Dispose { .. } => Some(Disposal {
                     amount: op.amount.clone(),
                     datetime: op.time,
                 }),

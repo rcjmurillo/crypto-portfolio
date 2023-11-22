@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{Amount, OpType, Operation};
+use crate::{Amount, OperationType, Operation};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -125,7 +125,7 @@ pub(crate) mod datetime_from_str {
     }
 }
 
-/// Convert models into operations
+/// Convert models into transactions
 
 impl From<Trade> for Vec<Operation> {
     fn from(trade: Trade) -> Self {
@@ -150,7 +150,7 @@ impl From<Trade> for Vec<Operation> {
             TradeSide::Buy => {
                 vec![
                     Operation {
-                        op_type: OpType::Acquire,
+                        op_type: OperationType::Acquire,
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
                         amount: Amount::new(trade.base_amount(), trade.base_asset.clone()),
@@ -161,7 +161,7 @@ impl From<Trade> for Vec<Operation> {
                         sender: None,
                     },
                     Operation {
-                        op_type: OpType::Dispose,
+                        op_type: OperationType::Dispose,
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
                         amount: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
@@ -176,7 +176,7 @@ impl From<Trade> for Vec<Operation> {
             TradeSide::Sell => {
                 vec![
                     Operation {
-                        op_type: OpType::Dispose,
+                        op_type: OperationType::Dispose,
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
                         amount: Amount::new(trade.base_amount(), trade.base_asset.clone()),
@@ -187,7 +187,7 @@ impl From<Trade> for Vec<Operation> {
                         sender: None,
                     },
                     Operation {
-                        op_type: OpType::Acquire,
+                        op_type: OperationType::Acquire,
                         source_id: trade.source_id.clone(),
                         source: trade.source.clone(),
                         amount: Amount::new(trade.quote_amount(), trade.quote_asset.clone()),
@@ -202,7 +202,7 @@ impl From<Trade> for Vec<Operation> {
         };
         if has_fees {
             ops.push(Operation {
-                op_type: OpType::Dispose,
+                op_type: OperationType::Dispose,
                 source_id: trade.source_id.clone(),
                 source: trade.source.clone(),
                 amount: Amount::new(trade.fee, trade.fee_asset.clone()),
@@ -220,7 +220,7 @@ impl From<Trade> for Vec<Operation> {
 impl From<Deposit> for Vec<Operation> {
     fn from(deposit: Deposit) -> Self {
         let mut ops = vec![Operation {
-            op_type: OpType::Receive,
+            op_type: OperationType::Receive,
             source_id: deposit.source_id.clone(),
             source: deposit.source.clone(),
             amount: Amount::new(deposit.amount, deposit.asset.clone()),
@@ -235,7 +235,7 @@ impl From<Deposit> for Vec<Operation> {
         }];
         if let Some(fee) = deposit.fee.filter(|f| f > &0.0) {
             ops.extend(vec![Operation {
-                op_type: OpType::Dispose,
+                op_type: OperationType::Dispose,
                 source_id: deposit.source_id.clone(),
                 source: deposit.source.clone(),
                 amount: Amount::new(fee, deposit.asset.clone()),
@@ -253,7 +253,7 @@ impl From<Deposit> for Vec<Operation> {
 impl From<Withdraw> for Vec<Operation> {
     fn from(withdraw: Withdraw) -> Self {
         let mut ops = vec![Operation {
-            op_type: OpType::Send,
+            op_type: OperationType::Send,
             source_id: withdraw.source_id.clone(),
             source: withdraw.source.clone(),
             amount: Amount::new(withdraw.amount, withdraw.asset.clone()),
@@ -269,7 +269,7 @@ impl From<Withdraw> for Vec<Operation> {
         }];
         if withdraw.fee > 0.0 {
             ops.extend(vec![Operation {
-                op_type: OpType::Dispose,
+                op_type: OperationType::Dispose,
                 source_id: withdraw.source_id.clone(),
                 source: withdraw.source.clone(),
                 amount: Amount::new(withdraw.fee, withdraw.asset.clone()),
@@ -288,7 +288,7 @@ impl From<Loan> for Vec<Operation> {
     fn from(loan: Loan) -> Self {
         match loan.status {
             Status::Success => vec![Operation {
-                op_type: OpType::Acquire,
+                op_type: OperationType::Acquire,
                 source_id: loan.source_id,
                 source: loan.source,
                 amount: Amount::new(loan.amount, loan.asset.clone()),
@@ -307,7 +307,7 @@ impl From<Repay> for Vec<Operation> {
     fn from(repay: Repay) -> Self {
         match repay.status {
             Status::Success => vec![Operation {
-                op_type: OpType::Acquire,
+                op_type: OperationType::Acquire,
                 source_id: repay.source_id,
                 source: repay.source,
                 amount: Amount::new(repay.amount, repay.asset.clone()),
