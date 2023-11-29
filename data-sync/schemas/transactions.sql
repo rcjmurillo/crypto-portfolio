@@ -10,4 +10,4 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 
 CREATE INDEX idx_transactions_source ON transactions (source);
-CREATE INDEX idx_transactions_source_ID ON transactions (source_id);
+CREATE INDEX idx_transactions_source_id ON transactions (source_id);
