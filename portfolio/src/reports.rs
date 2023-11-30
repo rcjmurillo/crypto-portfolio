@@ -1,25 +1,101 @@
-use std::{cmp::Ordering, collections::HashMap};
-
 use std::collections::HashSet;
+use std::{cmp::Ordering, collections::HashMap};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-
-use transactions::OperationType;
+use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
+use futures::{stream, StreamExt};
 use tokio::sync::RwLock;
 use tracing::{span, Level};
 
-use market::{self, Market, MarketData};
-
-use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
-
 use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
-use transactions::{cost_basis::Acquisition, Amount, Operation};
+use coingecko::Client as CoinGeckoClient;
+use market::{self, Market, MarketData};
+use transactions::OperationType;
+use transactions::{
+    cost_basis::{Acquisition, ConsumeStrategy, CostBasisResolver, Disposal},
+    Amount, Operation,
+};
 
-pub async fn asset_balances<T: MarketData>(
-    balance_tracker: &BalanceTracker<T>,
-    binance_client: BinanceFetcher<RegionGlobal>,
-) -> Result<()> {
+pub async fn revenue_report(
+    config: crate::config::Config,
+    asset: Option<String>,
+) -> anyhow::Result<()> {
+    let mut ops = Vec::new();
+    todo!("load ops from storage");
+
+    let mut cg =
+        CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config"));
+    cg.init().await?;
+    let mut cb_solver = CostBasisResolver::from_ops(ops.clone(), ConsumeStrategy::Fifo);
+
+    for op in ops {
+        if let OperationType::Dispose = op.op_type {
+            assert!(
+                !market::is_fiat(&op.amount.asset),
+                "there shouldn't be revenue ops for fiat currencies"
+            );
+            if asset
+                .as_ref()
+                .map_or(false, |a| !a.eq_ignore_ascii_case(&op.amount.asset))
+            {
+                continue;
+            }
+            match cb_solver
+                .resolve(&Disposal {
+                    amount: op.amount.clone(),
+                    datetime: op.time,
+                })
+                .await
+            {
+                Ok(acquisitions) => sell_detail(op.amount, op.time, acquisitions, &cg).await?,
+                Err(err) => {
+                    println!("error when consuming {} at {}: {}", op.amount, op.time, err)
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn asset_balances(config: crate::config::Config) -> anyhow::Result<()> {
+    const BATCH_SIZE: usize = 1000;
+
+    let mut cg =
+        CoinGeckoClient::with_config(config.coingecko.as_ref().expect("missing coingecko config"));
+    cg.init().await?;
+
+    let balance_tracker = BalanceTracker::new(cg);
+    let ops = Vec::<Operation>::new();
+    let mut handles = Vec::new();
+    let mut i = 0;
+    todo!("load ops from storage");
+
+    for op in ops {
+        balance_tracker.batch_operation(op).await;
+        if i % BATCH_SIZE == 0 {
+            handles.push(balance_tracker.process_batch());
+        }
+        i += 1;
+    }
+    handles.push(balance_tracker.process_batch());
+
+    for batch_result in stream::iter(handles)
+        .buffer_unordered(1000)
+        .collect::<Vec<_>>()
+        .await
+    {
+        log::debug!(
+            "batch processed {:?}",
+            batch_result.map_err(|err| anyhow!(err).context("couldn't process batch"))
+        );
+    }
+
+    let binance_client = BinanceFetcher::<RegionGlobal>::with_config(
+        config.binance.expect("missing binance config").try_into()?,
+    );
+
     let mut coin_balances = HashMap::<String, f64>::new();
 
     let mut all_assets_usd_unrealized_position = 0.0;
@@ -127,7 +203,7 @@ pub async fn asset_balances<T: MarketData>(
     Ok(())
 }
 
-pub async fn sell_detail<T: MarketData>(
+async fn sell_detail<T: MarketData>(
     amount: Amount,
     datetime: DateTime<Utc>,
     acquisitions: Vec<Acquisition>,
@@ -336,7 +412,9 @@ impl<T: MarketData> BalanceTracker<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use transactions::{Deposit, Loan, OperationType::*, Repay, Status, Trade, TradeSide, Withdraw};
+    use transactions::{
+        Deposit, Loan, OperationType::*, Repay, Status, Trade, TradeSide, Withdraw,
+    };
 
     use async_trait::async_trait;
     use chrono::TimeZone;

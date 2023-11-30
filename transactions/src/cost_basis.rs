@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use market::{Asset, Market, MarketData};
 
-use crate::{Amount, OperationType, Operation};
+use crate::{Amount, Operation, OperationType};
 
 #[derive(Debug)]
 pub struct Disposal {
@@ -102,7 +102,9 @@ impl ConsumableOperation {
             OperationType::Receive { .. } => {
                 unreachable!("found a Receive operation when none is expected")
             }
-            OperationType::Send { .. } => unreachable!("found a Send operation when none is expected"),
+            OperationType::Send { .. } => {
+                unreachable!("found a Send operation when none is expected")
+            }
             OperationType::Dispose { .. } => {
                 unreachable!("found a Dispose operation when none is expected")
             }
