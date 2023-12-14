@@ -15,7 +15,7 @@ use tower::{
     Service, ServiceExt,
 };
 
-use api_client::{ApiClient, Cache, Query, RedisCache, RequestBuilder};
+use api_client::{ApiClient, Cache, SqliteCache, Query, RequestBuilder};
 use market::{Market, MarketData};
 
 const REQUESTS_PER_PERIOD: u64 = 1;
@@ -74,7 +74,7 @@ pub struct Config {
 }
 
 pub struct Client<'a> {
-    api_service: Mutex<Cache<RateLimit<ApiClient>, RedisCache>>,
+    api_service: Mutex<Cache<RateLimit<ApiClient>, SqliteCache>>,
     config: &'a Config,
     markets: Option<Vec<Market>>,
 }
@@ -87,7 +87,7 @@ impl<'a> Client<'a> {
                     ApiClient::new(),
                     Rate::new(REQUESTS_PER_PERIOD, Duration::from_secs(3)),
                 ),
-                RedisCache::new("0.0.0.0".to_string(), 6379).expect("couldn't create redis client"),
+                SqliteCache::new("coingecko").expect("couldn't create kv client"),
             )),
             config,
             markets: None,

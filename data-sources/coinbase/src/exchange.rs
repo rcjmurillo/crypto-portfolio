@@ -9,7 +9,7 @@ use crate::{
 };
 
 use data_sync::DataFetcher;
-use operations::{Deposit, Loan, Operation, Repay, Trade, TradeSide, Withdraw};
+use transactions::{Deposit, Loan, Operation, Repay, Trade, TradeSide, Withdraw};
 
 impl Into<Trade> for Fill {
     fn into(self) -> Trade {
@@ -218,8 +218,8 @@ where
 }
 
 impl CoinbaseFetcher<Std> {
-    // async fn operations(&self) -> Result<Vec<Operation>> {
-    //     let operations = self
+    // async fn transactions(&self) -> Result<Vec<Operation>> {
+    //     let transactions = self
     //         .fetch_transactions()
     //         .await?
     //         .into_iter()
@@ -234,7 +234,7 @@ impl CoinbaseFetcher<Std> {
     //         .map(|ops| ops.0)
     //         .flatten()
     //         .collect();
-    //     Ok(operations)
+    //     Ok(transactions)
     // }
     async fn trades(&self) -> Result<Vec<Trade>> {
         let mut all_trades = Vec::new();
@@ -262,6 +262,9 @@ impl CoinbaseFetcher<Std> {
 
 #[async_trait]
 impl DataFetcher for CoinbaseFetcher<Std> {
+    fn name(&self) -> &str {
+        "Coinbase"
+    }
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,
@@ -309,6 +312,9 @@ impl CoinbaseFetcher<Pro> {
 
 #[async_trait]
 impl DataFetcher for CoinbaseFetcher<Pro> {
+    fn name(&self) -> &str {
+        "Coinbase Pro"
+    }
     async fn sync<S>(&self, _storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,

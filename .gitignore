@@ -3,6 +3,7 @@ target/
 .envrc
 
 *.db
+.cache/
 
 .vscode
 proptest-regressions/

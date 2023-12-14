@@ -4,7 +4,7 @@ mod errors;
 mod reports;
 
 use cli::{Action, Args};
-use data_sync::SqliteStorage;
+use data_sync::sqlite::SqliteStorage;
 
 use anyhow::{anyhow, Result};
 
@@ -16,9 +16,9 @@ use coingecko::Client as CoinGeckoClient;
 // use coinbase::{CoinbaseFetcher, Config as CoinbaseConfig, Pro, Std};
 
 use custom::FileDataFetcher;
-use operations::{
+use transactions::{
     cost_basis::{ConsumeStrategy, CostBasisResolver, Disposal},
-    OpType, Operation,
+    OperationType, Operation,
 };
 use reports::BalanceTracker;
 
@@ -26,7 +26,7 @@ use reports::BalanceTracker;
 pub async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    data_sync::create_tables()?;
+    data_sync::sqlite::create_tables()?;
 
     let args = Args::from_args();
 
@@ -35,7 +35,7 @@ pub async fn main() -> Result<()> {
     match action {
         Action::Sync => {
             // coinbase exchange disabled because it doesn't provide the full set of
-            // operations and fees when converting coins.
+            // transactions and fees when converting coins.
 
             // let coinbase_config: Option<CoinbaseConfig> = config
             //     .coinbase
@@ -62,17 +62,17 @@ pub async fn main() -> Result<()> {
             // }
 
             // if let Some(conf) = config.binance.clone() {
-            //     let config_bi nance: Config = conf.try_into().unwrap();
+            //     let config_binance: Config = conf.try_into().unwrap();
             //     let binance_client = BinanceFetcher::<RegionGlobal>::with_config(config_binance);
-            //     fetchers.push(("Binance Global", Box::new(binance_client)));``
+            //     fetchers.push(("Binance Global", Box::new(binance_client)));
             // }
 
             if let Some(conf) = config.binance_us.clone() {
                 let config_binance_us: binance::Config = conf.try_into().unwrap();
-                let sqlite_storage = SqliteStorage::new("./operations.db")?;
                 let binance_client_us =
-                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);                
-                data_sync::sync_records("Binance US", binance_client_us, sqlite_storage).await?;
+                    BinanceFetcher::<binance::RegionUs>::with_config(config_binance_us);
+                let sqlite_storage = SqliteStorage::new("./transactions.db")?;
+                data_sync::sync_records(binance_client_us, sqlite_storage).await?;
             }
 
             match config.custom_sources {
@@ -80,8 +80,8 @@ pub async fn main() -> Result<()> {
                     for custom_source in custom_sources {
                         match FileDataFetcher::from_file(&custom_source.name, &custom_source.file) {
                             Ok(fetcher) => {
-                                let sqlite_storage = SqliteStorage::new("./operations.db")?;
-                                data_sync::sync_records("custom operations", fetcher, sqlite_storage).await?;
+                                let sqlite_storage = SqliteStorage::new("./transactions.db")?;
+                                data_sync::sync_records(fetcher, sqlite_storage).await?;
                             }
                             Err(err) => {
                                 return Err(anyhow!(err).context("could not read config from file"));
@@ -144,7 +144,7 @@ pub async fn main() -> Result<()> {
             let mut cb_solver = CostBasisResolver::from_ops(ops.clone(), ConsumeStrategy::Fifo);
 
             for op in ops {
-                if let OpType::Dispose = op.op_type {
+                if let OperationType::Dispose = op.op_type {
                     assert!(
                         !market::is_fiat(&op.amount.asset),
                         "there shouldn't be revenue ops for fiat currencies"

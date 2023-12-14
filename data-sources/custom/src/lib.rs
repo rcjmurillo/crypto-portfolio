@@ -26,7 +26,7 @@ impl FileDataFetcher {
         Ok(Self {
             name: name.to_string(),
             data: serde_json::from_reader(File::open(&path)?)
-                .map_err(|e| anyhow!("couldn't parse custom operations file ({path}): {}", e))?,
+                .map_err(|e| anyhow!("couldn't parse custom transactions file ({path}): {}", e))?,
         })
     }
 }
@@ -63,6 +63,9 @@ impl FileDataFetcher {
 
 #[async_trait]
 impl DataFetcher for FileDataFetcher {
+    fn name(&self) -> &str {
+        &self.name
+    }
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: RecordStorage + Send + Sync,

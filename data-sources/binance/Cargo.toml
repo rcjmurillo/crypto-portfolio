@@ -10,7 +10,7 @@ edition = "2021"
 api-client = { path = "../api-client" }
 market = { path = "../market" }
 data-sync = { path = "../../data-sync" }
-operations = { path = "../../operations" }
+transactions = { path = "../../transactions" }
 
 anyhow.workspace = true
 async-trait.workspace = true

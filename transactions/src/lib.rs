@@ -34,29 +34,29 @@ impl Display for Amount {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OpType {
+pub enum OperationType {
     Acquire,
     Dispose,
     Send,
     Receive,
 }
 
-impl fmt::Display for OpType {
+impl fmt::Display for OperationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            OpType::Acquire => "acquire",
-            OpType::Dispose => "dispose",
-            OpType::Send => "send",
-            OpType::Receive => "receive",
+            OperationType::Acquire => "acquire",
+            OperationType::Dispose => "dispose",
+            OperationType::Send => "send",
+            OperationType::Receive => "receive",
         };
         write!(f, "{s}")
     }
 }
 
-/// Types of operations used to express any type of transaction
+/// Types of transactions used to express any type of transaction
 #[derive(Debug, Clone, PartialEq)]
 pub struct Operation {
-    pub op_type: OpType,
+    pub op_type: OperationType,
     pub source_id: String,
     pub source: String,
     pub sender: Option<String>,

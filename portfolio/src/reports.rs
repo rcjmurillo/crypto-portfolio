@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 
-use operations::OpType;
+use transactions::OperationType;
 use tokio::sync::RwLock;
 use tracing::{span, Level};
 
@@ -14,7 +14,7 @@ use market::{self, Market, MarketData};
 use cli_table::{format::Justify, print_stdout, Cell, Style, Table};
 
 use binance::{ApiGlobal, BinanceFetcher, RegionGlobal};
-use operations::{cost_basis::Acquisition, Amount, Operation};
+use transactions::{cost_basis::Acquisition, Amount, Operation};
 
 pub async fn asset_balances<T: MarketData>(
     balance_tracker: &BalanceTracker<T>,
@@ -182,7 +182,7 @@ pub struct AssetBalance {
 
 pub struct BalanceTracker<T> {
     coin_balances: RwLock<HashMap<String, AssetBalance>>,
-    operations_seen: RwLock<HashSet<String>>,
+    transactions_seen: RwLock<HashSet<String>>,
     batch: RwLock<Vec<Operation>>,
     market_data: T,
 }
@@ -191,7 +191,7 @@ impl<T: MarketData> BalanceTracker<T> {
     pub fn new(asset_info: T) -> Self {
         BalanceTracker {
             coin_balances: RwLock::new(HashMap::new()),
-            operations_seen: RwLock::new(HashSet::new()),
+            transactions_seen: RwLock::new(HashSet::new()),
             batch: RwLock::new(Vec::new()),
             market_data: asset_info,
         }
@@ -223,7 +223,7 @@ impl<T: MarketData> BalanceTracker<T> {
         balance: &mut HashMap<String, AssetBalance>,
     ) -> Result<()> {
         match op.op_type {
-            OpType::Acquire => {
+            OperationType::Acquire => {
                 let span = span!(Level::DEBUG, "tracking asset acquisition");
                 let _enter = span.enter();
                 assert!(
@@ -247,7 +247,7 @@ impl<T: MarketData> BalanceTracker<T> {
                         .await?;
                 }
             }
-            OpType::Dispose => {
+            OperationType::Dispose => {
                 let span = span!(Level::DEBUG, "tracking asset disposal");
                 let _enter = span.enter();
                 assert!(
@@ -272,7 +272,7 @@ impl<T: MarketData> BalanceTracker<T> {
                         .await?;
                 }
             }
-            OpType::Send => {
+            OperationType::Send => {
                 let span = span!(Level::DEBUG, "tracking asset send");
                 let _enter = span.enter();
                 assert!(
@@ -282,7 +282,7 @@ impl<T: MarketData> BalanceTracker<T> {
                 let coin_balance = balance.entry(op.amount.asset.clone()).or_default();
                 coin_balance.amount += op.amount.value;
             }
-            OpType::Receive => {
+            OperationType::Receive => {
                 let span = span!(Level::DEBUG, "tracking asset receive");
                 let _enter = span.enter();
                 assert!(
@@ -306,11 +306,11 @@ impl<T: MarketData> BalanceTracker<T> {
     }
 
     pub async fn batch_operation(&self, op: Operation) {
-        if self.operations_seen.read().await.contains(&op.id()) {
+        if self.transactions_seen.read().await.contains(&op.id()) {
             log::warn!("ignoring duplicate operation {:?}", op);
             return;
         }
-        self.operations_seen.write().await.insert(op.id());
+        self.transactions_seen.write().await.insert(op.id());
         self.batch.write().await.push(op);
     }
 
@@ -336,7 +336,7 @@ impl<T: MarketData> BalanceTracker<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use operations::{Deposit, Loan, OpType::*, Repay, Status, Trade, TradeSide, Withdraw};
+    use transactions::{Deposit, Loan, OperationType::*, Repay, Status, Trade, TradeSide, Withdraw};
 
     use async_trait::async_trait;
     use chrono::TimeZone;
@@ -466,7 +466,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn trade_buy_into_operations(trade in trade(TradeSide::Buy)) {
+        fn trade_buy_into_transactions(trade in trade(TradeSide::Buy)) {
             let t = trade.clone();
             let ops: Vec<Operation> = trade.into();
 
@@ -477,7 +477,7 @@ mod tests {
             prop_assert_eq!(ops.len(), expected_num_ops);
 
             match &ops[0].op_type {
-                OpType::Acquire => {
+                OperationType::Acquire => {
                     let op = &ops[0];
                     prop_assert_eq!(&op.amount.asset, &t.base_asset);
                     prop_assert_eq!(op.amount.value, t.base_amount());
@@ -501,7 +501,7 @@ mod tests {
             }
 
             match &ops[1].op_type {
-                OpType::Dispose => {
+                OperationType::Dispose => {
                     let op = &ops[1];
                     prop_assert_eq!(&op.amount.asset, &t.quote_asset);
                     prop_assert_eq!(op.amount.value, t.quote_amount());
@@ -516,7 +516,7 @@ mod tests {
 
             if t.fee > 0.0 {
                 match &ops[2].op_type {
-                    OpType::Dispose => {
+                    OperationType::Dispose => {
                         let op = &ops[2];
                         prop_assert_eq!(&op.amount.asset, &t.fee_asset);
                         prop_assert_eq!(op.amount.value, t.fee);
@@ -534,7 +534,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn trade_sell_into_operations(trade in trade(TradeSide::Sell)) {
+        fn trade_sell_into_transactions(trade in trade(TradeSide::Sell)) {
             let t = trade.clone();
             let ops: Vec<Operation> = trade.into();
 
@@ -545,7 +545,7 @@ mod tests {
             prop_assert_eq!(ops.len(), expected_num_ops);
 
             match &ops[0].op_type {
-                OpType::Dispose => {
+                OperationType::Dispose => {
                     let op = &ops[0];
                     prop_assert_eq!(&op.amount.asset, &t.base_asset);
                     prop_assert_eq!(op.amount.value, t.base_amount());
@@ -581,7 +581,7 @@ mod tests {
 
             if t.fee > 0.0 {
                 match &ops[2].op_type {
-                    OpType::Dispose => {
+                    OperationType::Dispose => {
                         let op = &ops[2];
                         prop_assert_eq!(&op.amount.asset, &t.fee_asset);
                         prop_assert_eq!(op.amount.value, t.fee);
@@ -597,7 +597,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn deposit_into_operations(deposit in deposit()) {
+        fn deposit_into_transactions(deposit in deposit()) {
             let d = deposit.clone();
             let ops: Vec<Operation> = deposit.into();
 
@@ -647,7 +647,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn withdraw_into_operations(withdraw in withdraw()) {
+        fn withdraw_into_transactions(withdraw in withdraw()) {
             let w = withdraw.clone();
             let ops: Vec<Operation> = withdraw.into();
 
@@ -696,7 +696,7 @@ mod tests {
     }
 
     proptest! {
-        fn loan_into_operations(loan in loan()) {
+        fn loan_into_transactions(loan in loan()) {
             let l = loan.clone();
             let ops: Vec<Operation> = loan.into();
 
@@ -721,7 +721,7 @@ mod tests {
     }
 
     proptest! {
-        fn repay_into_operations(repay in repay()) {
+        fn repay_into_transactions(repay in repay()) {
             let r = repay.clone();
             let ops: Vec<Operation> = repay.into();
 
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn track_operations() -> Result<()> {
+    async fn track_transactions() -> Result<()> {
         struct TestMarketData {
             prices: Mutex<Vec<f64>>,
         }

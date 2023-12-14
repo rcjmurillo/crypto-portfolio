@@ -10,7 +10,7 @@ use crate::{
     client::{ApiGlobal, ApiUs, BinanceFetcher, RegionGlobal, RegionUs},
 };
 use data_sync::DataFetcher;
-use operations::Operation;
+use transactions::Operation;
 
 pub fn into_ops<T>(typed_ops: Vec<T>) -> Vec<Operation>
 where
@@ -19,7 +19,7 @@ where
     typed_ops.into_iter().flat_map(|s| s.into()).collect()
 }
 
-impl From<FiatOrder> for operations::Deposit {
+impl From<FiatOrder> for transactions::Deposit {
     fn from(d: FiatOrder) -> Self {
         Self {
             source_id: d.id,
@@ -33,7 +33,7 @@ impl From<FiatOrder> for operations::Deposit {
     }
 }
 
-impl From<FiatOrder> for operations::Withdraw {
+impl From<FiatOrder> for transactions::Withdraw {
     fn from(d: FiatOrder) -> Self {
         Self {
             source_id: d.id,
@@ -46,7 +46,7 @@ impl From<FiatOrder> for operations::Withdraw {
     }
 }
 
-impl From<Deposit> for operations::Deposit {
+impl From<Deposit> for transactions::Deposit {
     fn from(d: Deposit) -> Self {
         Self {
             source_id: d.tx_id,
@@ -60,7 +60,7 @@ impl From<Deposit> for operations::Deposit {
     }
 }
 
-impl From<Withdraw> for operations::Withdraw {
+impl From<Withdraw> for transactions::Withdraw {
     fn from(w: Withdraw) -> Self {
         Self {
             source_id: w.id,
@@ -73,7 +73,7 @@ impl From<Withdraw> for operations::Withdraw {
     }
 }
 
-impl From<Trade> for operations::Trade {
+impl From<Trade> for transactions::Trade {
     fn from(t: Trade) -> Self {
         Self {
             source_id: t.id.to_string(),
@@ -87,15 +87,15 @@ impl From<Trade> for operations::Trade {
             fee_asset: t.commission_asset,
             time: t.time,
             side: if t.is_buyer {
-                operations::TradeSide::Buy
+                transactions::TradeSide::Buy
             } else {
-                operations::TradeSide::Sell
+                transactions::TradeSide::Sell
             },
         }
     }
 }
 
-impl From<MarginLoan> for operations::Loan {
+impl From<MarginLoan> for transactions::Loan {
     fn from(m: MarginLoan) -> Self {
         Self {
             source_id: m.tx_id.to_string(),
@@ -104,14 +104,14 @@ impl From<MarginLoan> for operations::Loan {
             amount: m.principal,
             time: m.timestamp,
             status: match m.status.as_str() {
-                "CONFIRMED" => operations::Status::Success,
-                _ => operations::Status::Failure,
+                "CONFIRMED" => transactions::Status::Success,
+                _ => transactions::Status::Failure,
             },
         }
     }
 }
 
-impl From<MarginRepay> for operations::Repay {
+impl From<MarginRepay> for transactions::Repay {
     fn from(r: MarginRepay) -> Self {
         Self {
             source_id: r.tx_id.to_string(),
@@ -121,8 +121,8 @@ impl From<MarginRepay> for operations::Repay {
             interest: r.interest,
             time: r.timestamp,
             status: match r.status.as_str() {
-                "CONFIRMED" => operations::Status::Success,
-                _ => operations::Status::Failure,
+                "CONFIRMED" => transactions::Status::Success,
+                _ => transactions::Status::Failure,
             },
         }
     }
@@ -250,6 +250,9 @@ impl BinanceFetcher<RegionGlobal> {
 
 #[async_trait]
 impl DataFetcher for BinanceFetcher<RegionGlobal> {
+    fn name(&self) -> &str {
+        "Binance"
+    }
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,
@@ -347,6 +350,10 @@ impl BinanceFetcher<RegionUs> {
 
 #[async_trait]
 impl DataFetcher for BinanceFetcher<RegionUs> {
+    fn name(&self) -> &str {
+        "Binance US"
+    }
+
     async fn sync<S>(&self, storage: S) -> Result<()>
     where
         S: data_sync::RecordStorage + Send + Sync,

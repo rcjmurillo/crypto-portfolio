@@ -24,7 +24,7 @@ use tower::{
 };
 
 use api_client::{
-    errors::ClientError, ApiClient, Cache, Query, RedisCache, Request, RequestBuilder, Response,
+    errors::ClientError, ApiClient, Cache, SqliteCache, Query, Request, RequestBuilder, Response,
 };
 use market::Candle;
 use market::{Market, MarketData};
@@ -208,7 +208,7 @@ macro_rules! endpoint_services {
 struct EndpointServices<Region> {
     client: ApiClient,
     services:
-        HashMap<String, Mutex<Cache<RateLimit<Retry<RetryErrorResponse, ApiClient>>, RedisCache>>>,
+        HashMap<String, Mutex<Cache<RateLimit<Retry<RetryErrorResponse, ApiClient>>, SqliteCache>>>,
     region: PhantomData<Region>,
 }
 
@@ -239,7 +239,7 @@ impl<Region> EndpointServices<Region> {
 }
 
 impl EndpointServices<RegionUs> {
-    pub fn new(cache_host: String, cache_port: u16) -> Self {
+    pub fn new() -> Self {
         let client = ApiClient::new();
 
         let mut s = Self {
@@ -250,7 +250,7 @@ impl EndpointServices<RegionUs> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            RedisCache::new(cache_host.clone(), cache_port).expect("couldn't create redis client"),
+            SqliteCache::new("binance-us").expect("couldn't create kv client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -265,7 +265,7 @@ impl EndpointServices<RegionUs> {
 }
 
 impl EndpointServices<RegionGlobal> {
-    pub fn new(cache_host: String, cache_port: u16) -> Self {
+    pub fn new() -> Self {
         let client = ApiClient::new();
 
         let mut s = Self {
@@ -276,7 +276,7 @@ impl EndpointServices<RegionGlobal> {
 
         s.services = endpoint_services![
             s.client.clone(),
-            RedisCache::new(cache_host.clone(), cache_port).expect("couldn't create redis client"),
+            SqliteCache::new("binance").expect("couldn't create kv client"),
             ApiUs::Trades,
             ApiUs::Klines,
             ApiUs::Prices,
@@ -639,25 +639,13 @@ impl<'a, Region> BinanceFetcher<Region> {
 }
 
 impl BinanceFetcher<RegionGlobal> {
-    // pub fn new() -> Self {
-    //     Self {
-    //         endpoint_services: EndpointServices::<RegionGlobal>::new(),
-    //         config: None,
-    //         credentials: Credentials::<RegionGlobal>::new(),
-    //         domain: API_DOMAIN_GLOBAL,
-    //         api_client: ApiClient::new(),
-    //     }
-    // }
-
     pub fn with_config(config: Config) -> Self {
-        let cache_host = config.cache_host.clone();
-        let cache_port = config.cache_port;
         Self {
             api_client: ApiClient::new(),
             credentials: Credentials::from_config(&config),
             config: Some(config),
             domain: API_DOMAIN_GLOBAL,
-            endpoint_services: EndpointServices::<RegionGlobal>::new(cache_host, cache_port),
+            endpoint_services: EndpointServices::<RegionGlobal>::new(),
         }
     }
 
@@ -1150,14 +1138,12 @@ impl BinanceFetcher<RegionUs> {
     // }
 
     pub fn with_config(config: Config) -> Self {
-        let cache_host = config.cache_host.clone();
-        let cache_port = config.cache_port;
         Self {
             api_client: ApiClient::new(),
             credentials: Credentials::from_config(&config),
             config: Some(config),
             domain: API_DOMAIN_US,
-            endpoint_services: EndpointServices::<RegionUs>::new(cache_host, cache_port),
+            endpoint_services: EndpointServices::<RegionUs>::new(),
         }
     }
 
